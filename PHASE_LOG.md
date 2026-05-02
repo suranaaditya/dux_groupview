@@ -85,6 +85,7 @@ in each phase. Updated at the end of every Claude Code session.
 - **`bench new-app` install via `uv` failure pattern repeats** (carried over from Phase 0): `bench install-app` requires `dux_groupview` in `sites/apps.txt`. Phase 0's earlier fix is already in place; called out here for future apps.
 - **`bench execute` renders bubbled exceptions as a misleading `NameError: name '<app>' is not defined`** at the bottom of the traceback. The real exception (from `frappe.throw` in our case) is higher up. When debugging, scroll to the top of the traceback rather than trusting the bottom line.
 - **Frappe scheduler dedup by method** (see Decisions): the spec's original cron map with two entries pointing to `refresh_tb_snapshot` would silently lose one entry. Documented and worked around with two wrapper methods.
+- The three Frappe quirks documented above are also captured in `CLAUDE.md` under "Frappe gotchas to remember" so they're visible to all future Claude Code sessions, not just this phase log.
 
 **Performance:**
 
