@@ -194,6 +194,22 @@ SSH: frappe@187.127.132.58
   Only `clear-cache` is needed after Python changes; full `bench restart`
   is not required.
 
+### Bench execute paths
+
+Frappe's app layout double-nests the package directory. The correct
+dotted path for `bench execute` calls is:
+
+    dux_groupview.dux_groupview.<subpackage>.<module>.<function>
+
+Example:
+
+    bench --site erp.jewonline.in execute \
+      dux_groupview.dux_groupview.test_data.seed_light.seed_light_data
+
+Note the doubled `dux_groupview`. Single-level paths will fail with
+`ModuleNotFoundError`. This applies to all phases — Phase 1 refresh
+functions, Phase 2 spotlight cache rebuilds, etc.
+
 ## How to start a new Claude Code session
 
 1. Open Claude Code in the repo root.

@@ -26,6 +26,7 @@ in each phase. Updated at the end of every Claude Code session.
 - **Frappe Page lives at /app/groupview (i.e., /desk/groupview).** The spec text said "Visiting http://erp.jewonline.in/groupview" but also said "Frappe Page (NOT a Web Page)". Resolved in favor of the Frappe Page route — a Page named `groupview` is reachable at `/app/groupview` (or the legacy `/desk/groupview`). No www-level redirect was added; visual confirmed by Aditya in browser.
 - **Synthetic GL entries use voucher_type `DGV Test Seed` and voucher_no `DGV-TEST-NNNNNN`.** Lets the seeder safely purge-and-reseed via `WHERE voucher_no LIKE 'DGV-TEST-%'`, with a safety check that aborts if any matching row's voucher_no doesn't actually start with the prefix.
 - **Bulk insert via `frappe.db.bulk_insert`.** 50K rows in ~8 sec on this dev box. ORM-level inserts would have been ~5+ min. Acceptable for seed; production-scale snapshot inserts will use raw SQL per CLAUDE.md rule 4.
+- **Diagnostic discipline note (caught after Phase 0 main work).** When an error trace looks like a recurring problem (e.g. filename corruption from earlier in the session), verify the actual file state on disk before any destructive operation. `ls -la` / `git ls-tree` output may render misleadingly in chat transports due to markdown linkification.
 
 **Gotchas:**
 
@@ -35,6 +36,7 @@ in each phase. Updated at the end of every Claude Code session.
 - Seed `_split_amount` rounds at 2 decimals per leg, leaving ~₹24K total Dr/Cr drift across 50K rows (~0.0025%). Trial Balance will be slightly off. Acceptable for synthetic data; fixable later if Phase 1 demands bit-exact balance.
 - Frappe v16's `bench new-app` prompts for: Title, Description, Publisher, Email, License, GitHub workflow Y/N, Branch — 7 prompts total (one more than older versions; the GitHub-workflow prompt is new).
 - DB backup taken before the first seed run: `/home/frappe/frappe-bench/sites/erp.jewonline.in/private/backups/20260502_221932-erp_jewonline_in-database.sql.gz`.
+- Initial `bench execute` attempt failed with `ModuleNotFoundError` because the spec used a single-level dotted path. Correct path is double-nested: `dux_groupview.dux_groupview.test_data.seed_light`. CLAUDE.md updated to document this for future phases.
 
 **Verification:**
 
