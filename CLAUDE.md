@@ -210,6 +210,38 @@ Note the doubled `dux_groupview`. Single-level paths will fail with
 `ModuleNotFoundError`. This applies to all phases — Phase 1 refresh
 functions, Phase 2 spotlight cache rebuilds, etc.
 
+## Frappe gotchas to remember
+
+These are quirks discovered during this project's implementation. Future
+phases and future Claude Code sessions should be aware of them before
+debugging.
+
+1. **Scheduler events dedupe by method name only.**
+   If two cron entries in `scheduler_events` point to the same dotted
+   method, Frappe silently keeps only one Scheduled Job Type record
+   during `bench migrate`. Workaround: each cron entry must point to a
+   distinct method name. Use thin wrapper functions if needed:
+
+       def refresh_tb_snapshot_business_hours():
+           return refresh_tb_snapshot()
+
+       def refresh_tb_snapshot_off_hours():
+           return refresh_tb_snapshot()
+
+2. **`bench --site SITENAME mariadb -e "SQL"` does not autocommit.**
+   `UPDATE`s and `INSERT`s run via this shell appear to succeed but
+   the transaction rolls back at shell exit. For data modifications in
+   scripts or tests, use `frappe.db.sql()` with `frappe.db.commit()`
+   via `bench execute`, or use `frappe.db.set_value()` which handles
+   commit correctly. Read-only `SELECT`s through `bench mariadb` are
+   fine.
+
+3. **Composite indexes are not declared in doctype JSON.**
+   Frappe's doctype schema only supports per-field index flags
+   (single-column). For composite indexes (e.g. `(snapshot_date,
+   company, account)`), add them via a one-time `patches.txt`
+   migration using `frappe.db.add_index()` or raw `ALTER TABLE`.
+
 ## How to start a new Claude Code session
 
 1. Open Claude Code in the repo root.

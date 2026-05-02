@@ -11,9 +11,15 @@ they become blockers. Closed questions move to PHASE_LOG.md.
 **Asked by:** architecture
 **Blocking phase:** Phase 1 (production deploy)
 **Question:** When can we run the one-time historical snapshot
-backfill on ghraisoni.frappe.cloud? It will run 1–2 hours and hit
-tabGL Entry heavily. Sunday night is the obvious window, but need to
-confirm no batch jobs collide.
+backfill on ghraisoni.frappe.cloud? Updated estimate after Phase 1
+dev verification: a 12-month backfill on the dev seed (50K GL entries)
+took **1.5 seconds total**, not 1-2 hours. Linear projection to
+production (~5M GL entries) puts it at ~150 sec for a 12-month run,
+still under 3 minutes. Sunday night is no longer load-critical; could
+plausibly run any low-traffic window. Caveat: the 10M-row safety check
+in `backfill_snapshots` will trip on production (12 × 5M = 60M >
+threshold) and require `force=True`. Need Aditya / Kumar Sir sign-off
+on the actual window and the force flag.
 **Status:** Open
 
 ### Q2 — Frappe Cloud staging clone

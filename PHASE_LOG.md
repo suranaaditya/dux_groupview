@@ -49,21 +49,55 @@ in each phase. Updated at the end of every Claude Code session.
 
 ## Phase 1 — Snapshot Foundation
 
+**Status:** Done — 2026-05-03. Branch `phase-1-snapshots` ready for review (not yet merged to main).
+
 **Goal:** TB snapshot refreshes every 30 min, health page shows status.
 
 **Deliverables:**
-- [ ] `Dux GV TB Snapshot` (parent) doctype
-- [ ] `Dux GV TB Snapshot Row` (child) doctype with proper indexes
-- [ ] `refresh_tb_snapshot(snapshot_date)` function using raw SQL
-- [ ] `bench execute` command for manual refresh
-- [ ] Scheduler hook in hooks.py (every 30 min, business hours)
-- [ ] `Dux GV Cockpit Health` page showing snapshot age + last duration
-- [ ] Backfill script for historical snapshots
-- [ ] Unit tests on refresh logic
+- [x] `DGV TB Snapshot` (parent) doctype
+- [x] `DGV TB Snapshot Row` (child) doctype with composite indexes
+- [x] `refresh_tb_snapshot(snapshot_date)` function using raw `INSERT...SELECT`
+- [x] `bench execute` command for manual refresh
+- [x] Scheduler hooks in hooks.py (every 30 min business hours, hourly off hours, nightly finalize)
+- [x] `/groupview-health` admin page (System Manager only) showing latest snapshot, last 7, scheduler heartbeat, slow-refresh warning
+- [x] Whitelisted API at `dux_groupview.dux_groupview.api.health` (`get_snapshot_health`, `trigger_manual_refresh`, `trigger_backfill`)
+- [x] Backfill script with 10M-row safety check
+- [x] All 7 unit tests pass (gold-standard correctness included)
 
 **Decisions made:**
 
+- **PTD totals = lifetime cumulative** (Q-A). Both `debit_total` and `credit_total` use the same `posting_date <= snapshot_date` filter as `balance`. Window calculations (MTD / FYTD / arbitrary) are derived later by subtracting two snapshots' values. Maintains the invariant `balance = debit_total - credit_total` (verified zero violations across all 13 snapshots in dev).
+- **`is_opening = 'Yes'` entries included** (Q-B). Standard accounting convention; critical for migrated entities.
+- **Filter is `is_cancelled = 0 AND docstatus = 1 AND posting_date <= snapshot_date`.** Defence in depth against draft / cancelled rows.
+- **Sign convention:** raw `Dr - Cr` stored in `balance`. UI flips sign for Liability / Equity / Income based on `root_type`. Keeps `balance = debit_total - credit_total` exact.
+- **Composite indexes via patch.** Frappe doctype JSON has no native composite-index syntax; added `dgv_pivot (snapshot_date, company, account)`, `dgv_account_drill (account, snapshot_date)`, `dgv_company_drill (company, snapshot_date)` via `dux_groupview.patches.add_dgv_snapshot_row_indexes`.
+- **Two scheduler entry points (`refresh_tb_snapshot_business_hours` and `_off_hours`)** rather than one `refresh_tb_snapshot` referenced from both crons. Frappe's scheduler de-dupes Scheduled Job Type by `method` only (see `frappe/.../scheduled_job_type.py:267`); two crons pointing at the same method collide and the later one wins. Two thin wrapper methods sidestep this without changing semantics.
+- **Backfill auto-locks past dates.** After `refresh_tb_snapshot()` succeeds for a date strictly < today, the snapshot is immediately marked `is_immutable=1` so the next scheduler tick can't silently overwrite it. Closes the window between backfill completion and the nightly `finalize_past_snapshots`.
+- **Backfill `force=True` clears `is_immutable` before re-running** so `refresh_tb_snapshot()`'s own immutable check doesn't trip. The lock is then re-applied by the auto-lock step above. Without this, force-mode backfill would fail on every previously-locked date (caught by `test_backfill_force_override`).
+- **Backfill 10M-row safety threshold** = `12 * COUNT(tabGL Entry)`. On dev (50K rows): 600K, well under threshold. On production (~5M rows): 60M would trip → must use `force=True` on first prod backfill (see Q1).
+- **Health page uses Geist + light theme** matching the Phase 0 cockpit. Refresh button enqueues to `default` queue; backfill enqueues to `long` queue with 1-hour timeout. Polling timeout 60 seconds before showing "taking longer than expected".
+
 **Gotchas:**
+
+- **`bench --site mariadb -e "..."` does not commit by default** -- the wrapper opens a transaction that is rolled back on shell exit. UPDATE statements appear to succeed but the change vanishes. Cost an hour during immutable-protection testing. Workaround: use `frappe.db.set_value` via a `bench execute` or a small inline `python -c` (run from `~/frappe-bench/sites/`), which goes through the proper Frappe transaction layer with explicit `frappe.db.commit()`.
+- **`frappe.db.table_exists()` expects the doctype name, not the prefixed table name.** Passing `"tabDGV TB Snapshot Row"` produces a check for `"tabtabDGV TB Snapshot Row"` and silently returns False, so the index patch on first run did nothing. Fixed by passing `"DGV TB Snapshot Row"` to `table_exists` and using the prefixed form only for the SQL.
+- **`Role` doctype has no `description` field** in this Frappe v16 build. The first version of `ensure_groupview_roles` patch tried to set one and aborted the migrate with `(1054, "Unknown column 'description'")`. Removed the line.
+- **`bench new-app` install via `uv` failure pattern repeats** (carried over from Phase 0): `bench install-app` requires `dux_groupview` in `sites/apps.txt`. Phase 0's earlier fix is already in place; called out here for future apps.
+- **`bench execute` renders bubbled exceptions as a misleading `NameError: name '<app>' is not defined`** at the bottom of the traceback. The real exception (from `frappe.throw` in our case) is higher up. When debugging, scroll to the top of the traceback rather than trusting the bottom line.
+- **Frappe scheduler dedup by method** (see Decisions): the spec's original cron map with two entries pointing to `refresh_tb_snapshot` would silently lose one entry. Documented and worked around with two wrapper methods.
+- The three Frappe quirks documented above are also captured in `CLAUDE.md` under "Frappe gotchas to remember" so they're visible to all future Claude Code sessions, not just this phase log.
+
+**Performance:**
+
+| Operation | Source rows | Output rows | Duration | Target |
+|---|---|---|---|---|
+| Single refresh (today) | 50,726 | 507 | **0.15--0.32 sec** | < 15 sec ✅ |
+| 12-month backfill (12 refreshes + locks) | 50,726 | ~5,800 | **~1.5 sec total** | < 60 sec ✅ |
+| Unit test suite (7 tests) | -- | -- | **3.8 sec** | -- |
+
+Gold-standard correctness check (`SELECT COUNT(*) ... WHERE balance != live SUM`): **0 mismatched rows** across all 13 snapshots × ~500 rows each (~6,500 rows checked). Invariant `balance = debit_total - credit_total`: **0 violations**.
+
+Production projection: with ~5M GL entries instead of 50K, refresh duration scales roughly linearly to ~30 sec. Under the 30-second stop threshold but tight; will revisit perf if Phase 3 reads need finer cadence.
 
 ---
 
