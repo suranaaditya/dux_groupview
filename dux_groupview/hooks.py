@@ -140,8 +140,26 @@ app_include_css = "/assets/dux_groupview/css/cockpit.css"
 
 # Scheduled Tasks
 # ---------------
-# Phase 1 will wire up snapshot refresh.
-# scheduler_events = {}
+# All cron expressions run in the site timezone (Asia/Kolkata on dev),
+# not UTC, per Frappe's scheduler convention. Adjust if deploying to a
+# site in a different time zone.
+scheduler_events = {
+	"cron": {
+		# Refresh today's snapshot every 30 minutes during business hours
+		# (8:00 to 22:30 IST inclusive).
+		"*/30 8-22 * * *": [
+			"dux_groupview.dux_groupview.snapshots.refresh.refresh_tb_snapshot_business_hours"
+		],
+		# Hourly outside business hours (23:00, 00:00, ..., 07:00 IST).
+		"0 0-7,23 * * *": [
+			"dux_groupview.dux_groupview.snapshots.refresh.refresh_tb_snapshot_off_hours"
+		],
+		# Lock past snapshots one minute after midnight.
+		"1 0 * * *": [
+			"dux_groupview.dux_groupview.snapshots.refresh.finalize_past_snapshots"
+		],
+	}
+}
 
 # Testing
 # -------
