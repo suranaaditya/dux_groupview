@@ -103,4 +103,48 @@ Production projection: with ~5M GL entries instead of 50K, refresh duration scal
 
 ## Phase 2 — Spotlight Cards
 
-(scaffold continues for Phases 2–6...)
+**Status:** Done — 2026-05-03. Branch `phase-2-spotlight` ready for review (not yet merged to main).
+
+**Goal:** Replace the placeholder /groupview page with a real cockpit landing screen showing 6 live spotlight cards backed by a pre-aggregated cache.
+
+**Deliverables:**
+- [x] `DGV Spotlight Cache` doctype with composite `(card_id, snapshot_date)` index
+- [x] `spotlight/cards.py` — 6 hardcoded card definitions (sundry creditors / debtors, unsecured loans, cash & bank, inter-co receivable, fixed deposits)
+- [x] `snapshots/spotlight_refresh.py` — single-transaction refresh, sign-corrected aggregation, sparkline + delta computation
+- [x] Wired into both scheduler wrappers and the backfill loop; spotlight failures swallowed-and-logged so they never roll back a TB snapshot
+- [x] `/groupview` cockpit page rewritten — date selector, snapshot age pill (color-coded by freshness), 3-column card grid with sparklines, click-to-toast Phase 4 placeholder
+- [x] `api/cockpit.py` — `get_available_snapshot_dates`, `get_spotlight_cards`, `get_snapshot_age`, all GroupView Viewer or higher
+- [x] All 7 unit tests pass including the gold-standard `test_spotlight_value_matches_direct_aggregation`
+- [x] Q3 closed in `OPEN_QUESTIONS.md`
+
+**Decisions made:**
+
+- **`by_account_type` accepts string OR list.** The spec note "by_account_type = 'Bank' or 'Cash' (handle multi-value match)" was implemented by allowing the strategy value to be either a single string or a list -- the matcher emits `=` or `IN (...)` accordingly. Existing single-value cards keep the string form.
+- **Delta period definition.** `delta = current value - value at the latest snapshot strictly before the first day of this month`. With month-end backfill in place, this resolves to the prior month-end on dev. If no prior snapshot exists, delta = 0. `delta_percent` is 0 when the prior value is 0 (avoids divide-by-zero / infinity).
+- **Sparkline composition.** 6 most recent month-end snapshot dates with `snapshot_date <= target snapshot_date`. Padded with `null` at the front if fewer than 6 historical month-ends exist. Re-aggregates from `tabDGV TB Snapshot Row` (not from prior `DGV Spotlight Cache` rows) so a card-definition change re-bases the whole sparkline.
+- **Sign convention -- spotlight stores natural-side value.** Phase 1 stores `Dr - Cr` raw; spotlight applies `CASE WHEN root_type IN ('Liability','Equity','Income') THEN -balance ELSE balance` per row before summing. UI consumes this as positive = healthy direction. Polarity (`good_up` / `bad_up` / `neutral`) is purely UI metadata for delta colouring -- never affects the stored value (`test_polarity_does_not_affect_value`).
+- **One transaction per refresh.** All 6 cards upserted in a single `frappe.db` transaction. On any failure, full rollback so we never end with a partial cache.
+- **Spotlight failure does not roll back TB snapshot.** Both `_business_hours` / `_off_hours` wrappers and the backfill loop catch spotlight exceptions and log via `frappe.log_error`. TB is canonical, spotlight is derivative.
+- **Server-rendered `formatted_value` / `formatted_delta`.** API returns pre-formatted strings (e.g. `"4.5 Cr"`) so JS can't drift on locale / rounding bugs.
+- **Snapshot age pill colour bands:** green < 30 min, amber 30-60 min, red > 60 min. Polled client-side every 30 sec.
+
+**Gotchas:**
+
+- **`bench --site mariadb -e CURDATE()` returns the server's local date, not the site timezone date.** Cost a few minutes when a `WHERE snapshot_date = CURDATE()` query unexpectedly returned nothing right after a refresh that wrote `2026-05-03` rows (the server's CURDATE was a different date than the site-tz today). Workaround: pass the literal date string in test queries.
+- **`pkill -HUP -f gunicorn` causes SSH to exit 255.** The signal still fires and workers reload (visible via `ps aux`); the SSH client just bails because pkill targets the parent and the connection is briefly disrupted. Cosmetic; the reload itself succeeds.
+- **Frappe's "not whitelisted" error message is misleading.** An unauthenticated curl against a `@frappe.whitelist()` (no `allow_guest`) returns "Function ... is not whitelisted" rather than something like "authentication required". Function IS whitelisted; HTTP-level testing requires a session cookie. Verified via `bench execute` that the function is reachable in-process; browser as Administrator works.
+- **Real dev data has accounts matching `%Unsecured Loan%` and `%Inter%Compan%`.** The spec's expectation that cards 3, 5, 6 would be zero on dev was off -- only fixed_deposits (card 6) is truly zero. Test `test_zero_match_card_returns_zero` updated to use that card. The cards still show real numbers from jewonline live data, including a pathological `Trial Bank - DD` account in Dux Digitech with a -111 billion Cr balance that makes `cash_and_bank` look absurd on dev. Production RGI data won't have this.
+
+**Performance:**
+
+| Operation | Source | Duration | Target |
+|---|---|---|---|
+| `refresh_spotlight_cache` (cold, 1 date, 6 cards × 6 sparkline aggregations + 6 prior-month deltas) | 6 cards × ~13 snapshot dates | **0.18 sec** | < 2 sec ✅ |
+| `refresh_spotlight_cache` (warm, just upserts) | same | **0.034 sec** | -- |
+| `get_spotlight_cards` API (cold, via `bench execute` so includes Frappe bootstrap) | -- | **~0.5 sec** | -- |
+| `get_spotlight_cards` API (HTTP, would be substantially less without bootstrap overhead) | -- | TBD via browser | < 500 ms first paint |
+| Unit test suite (7 tests) | -- | **1.9 sec** | -- |
+
+Gold-standard test: cached value vs independent SQL aggregation -- exact match on all 6 cards.
+
+**`tabGL Entry` audit:** `grep -rn "tabGL Entry"` across all Phase 2 code (`spotlight/`, `api/cockpit.py`, `snapshots/spotlight_refresh.py`, `page/groupview/groupview.js`) returns only docstring mentions explaining the rule; no actual queries. Hard architectural rule preserved.

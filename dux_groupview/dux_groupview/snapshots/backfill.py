@@ -19,6 +19,9 @@ from frappe import _
 from frappe.utils import getdate, today
 
 from dux_groupview.dux_groupview.snapshots.refresh import refresh_tb_snapshot
+from dux_groupview.dux_groupview.snapshots.spotlight_refresh import (
+	refresh_spotlight_cache,
+)
 
 
 SAFETY_ROW_THRESHOLD = 10_000_000
@@ -91,6 +94,17 @@ def backfill_snapshots(months_back=12, force=False):
 				"error": str(e),
 			})
 			continue
+
+		# Refresh the spotlight cache for this historical date so
+		# sparklines populate. Failure is non-fatal; we log and continue
+		# since spotlight is derivative of the TB snapshot.
+		try:
+			refresh_spotlight_cache(snapshot_date=d)
+		except Exception as e:
+			frappe.log_error(
+				message=f"backfill: refresh_spotlight_cache failed for {d}: {e}",
+				title="DGV spotlight refresh",
+			)
 
 		# Lock past dates immediately so the next scheduler tick can't
 		# silently overwrite them.

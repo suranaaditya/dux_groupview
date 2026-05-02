@@ -215,9 +215,9 @@ def refresh_tb_snapshot_business_hours():
 	entries pointing at refresh_tb_snapshot would collide and only the last
 	one declared in hooks.py would survive. We expose business-hours and
 	off-hours runs as distinct method names; both delegate to
-	refresh_tb_snapshot() with default args (today's snapshot).
+	refresh_tb_snapshot() and then refresh the spotlight cache.
 	"""
-	return refresh_tb_snapshot()
+	return _refresh_with_spotlight()
 
 
 def refresh_tb_snapshot_off_hours():
@@ -225,7 +225,34 @@ def refresh_tb_snapshot_off_hours():
 
 	See refresh_tb_snapshot_business_hours for the why behind two methods.
 	"""
-	return refresh_tb_snapshot()
+	return _refresh_with_spotlight()
+
+
+def _refresh_with_spotlight():
+	"""Run refresh_tb_snapshot, then refresh_spotlight_cache for the same date.
+
+	Spotlight failures do not roll back the TB snapshot -- TB is the canonical
+	data, spotlight is derivative. A failed spotlight refresh is logged via
+	frappe.log_error and the TB result is returned unchanged.
+	"""
+	# Local import avoids a hard dependency on the spotlight module at the
+	# top of refresh.py (e.g. during the Phase 2 patch run, before the
+	# spotlight cache table exists).
+	from dux_groupview.dux_groupview.snapshots.spotlight_refresh import (
+		refresh_spotlight_cache,
+	)
+
+	result = refresh_tb_snapshot()
+	if result and result.get("status") == "Complete":
+		try:
+			refresh_spotlight_cache(snapshot_date=result["snapshot_date"])
+		except Exception as e:
+			frappe.log_error(
+				message=f"refresh_spotlight_cache failed for "
+				f"{result.get('snapshot_date')}: {e}",
+				title="DGV spotlight refresh",
+			)
+	return result
 
 
 def finalize_past_snapshots():

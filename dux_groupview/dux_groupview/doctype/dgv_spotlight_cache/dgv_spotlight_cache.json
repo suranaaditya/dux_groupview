@@ -1,0 +1,119 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "format:{card_id}-{snapshot_date}",
+ "creation": "2026-05-03 12:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "card_id",
+  "snapshot_date",
+  "value",
+  "delta",
+  "delta_percent",
+  "sparkline_data",
+  "computed_at",
+  "card_definition_hash"
+ ],
+ "fields": [
+  {
+   "description": "Stable string identifier for the card (e.g. sundry_creditors). Joined with the card definition in spotlight/cards.py at read time.",
+   "fieldname": "card_id",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Card ID",
+   "reqd": 1,
+   "search_index": 1,
+   "set_only_once": 1
+  },
+  {
+   "fieldname": "snapshot_date",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Snapshot Date",
+   "reqd": 1,
+   "search_index": 1,
+   "set_only_once": 1
+  },
+  {
+   "description": "Already sign-corrected so positive = the natural / healthy direction. Liability and Equity / Income balances are flipped at compute time.",
+   "fieldname": "value",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Value",
+   "reqd": 1
+  },
+  {
+   "default": "0",
+   "description": "current value - prior month's value (latest snapshot strictly before the first day of this month). 0 if no prior snapshot exists.",
+   "fieldname": "delta",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Delta"
+  },
+  {
+   "default": "0",
+   "description": "Same change as percent. Zero if either side is zero.",
+   "fieldname": "delta_percent",
+   "fieldtype": "Float",
+   "label": "Delta Percent",
+   "precision": "2"
+  },
+  {
+   "description": "JSON array of 6 floats (or nulls), oldest first. Pad with null if fewer than 6 historical snapshots exist.",
+   "fieldname": "sparkline_data",
+   "fieldtype": "Long Text",
+   "label": "Sparkline Data"
+  },
+  {
+   "fieldname": "computed_at",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Computed At",
+   "reqd": 1
+  },
+  {
+   "default": "phase2-hardcoded",
+   "description": "Hash of the card's definition at the time of computation. Phase 5 will use real hashes to detect stale entries after definition edits. For Phase 2, all rows carry phase2-hardcoded.",
+   "fieldname": "card_definition_hash",
+   "fieldtype": "Data",
+   "label": "Card Definition Hash"
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-05-03 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Dux GroupView",
+ "name": "DGV Spotlight Cache",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "read": 1,
+   "report": 1,
+   "role": "GroupView Owner"
+  },
+  {
+   "read": 1,
+   "report": 1,
+   "role": "GroupView Viewer"
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "snapshot_date",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 0
+}
