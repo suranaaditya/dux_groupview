@@ -30,15 +30,6 @@ ghraisoni.frappe.cloud for performance testing before Phase 3? Cost is
 typically <₹2,000 for a month. Reduces production deployment risk.
 **Status:** Open
 
-### Q3 — Default spotlight card set for owner role
-**Asked by:** Phase 2 design
-**Blocking phase:** Phase 2
-**Question:** Confirm the default 6 spotlight cards with Kumar Sir
-before hardcoding them: Sundry Creditors, Sundry Debtors, Unsecured
-Loans, Cash & Bank, Inter-Co Receivable, Fixed Deposits. Anything to
-swap?
-**Status:** Open
-
 ### Q4 — GHR CACS Pune GST Settings inconsistency
 **Asked by:** Phase 0 seed
 **Blocking phase:** Anything that creates a new Company on this site,
@@ -65,4 +56,15 @@ when convenient.
 
 ## Closed
 
-(closed questions move here with their resolution)
+### Q3 — Default spotlight card set for owner role
+**Asked by:** Phase 2 design
+**Blocking phase:** Phase 2
+**Question:** Confirm the default 6 spotlight cards with Kumar Sir
+before hardcoding them: Sundry Creditors, Sundry Debtors, Unsecured
+Loans, Cash & Bank, Inter-Co Receivable, Fixed Deposits. Anything to
+swap?
+**Resolution:** Closed in Phase 2 — default 6 cards (Sundry Creditors,
+Sundry Debtors, Unsecured Loans, Cash & Bank, Inter-co Receivable,
+Fixed Deposits) shipped as hardcoded definitions in
+`dux_groupview/dux_groupview/spotlight/cards.py`. Kumar Sir to validate
+via post-Phase-2 demo. Editor in Phase 5 will allow adjustment.
