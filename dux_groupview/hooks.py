@@ -5,6 +5,11 @@ app_description = "Multi-entity Trial Balance cockpit for ERPNext"
 app_email = "aditya.surana@thesvsgroup.org"
 app_license = "mit"
 
+# Includes in <head>
+# ------------------
+app_include_js = "/assets/dux_groupview/js/cockpit.js"
+app_include_css = "/assets/dux_groupview/css/cockpit.css"
+
 # Apps
 # ------------------
 
@@ -20,13 +25,6 @@ app_license = "mit"
 # 		"has_permission": "dux_groupview.api.permission.has_app_permission"
 # 	}
 # ]
-
-# Includes in <head>
-# ------------------
-
-# include js, css files in header of desk.html
-# app_include_css = "/assets/dux_groupview/css/dux_groupview.css"
-# app_include_js = "/assets/dux_groupview/js/dux_groupview.js"
 
 # include js, css files in header of web template
 # web_include_css = "/assets/dux_groupview/css/dux_groupview.css"
@@ -142,24 +140,8 @@ app_license = "mit"
 
 # Scheduled Tasks
 # ---------------
-
-# scheduler_events = {
-# 	"all": [
-# 		"dux_groupview.tasks.all"
-# 	],
-# 	"daily": [
-# 		"dux_groupview.tasks.daily"
-# 	],
-# 	"hourly": [
-# 		"dux_groupview.tasks.hourly"
-# 	],
-# 	"weekly": [
-# 		"dux_groupview.tasks.weekly"
-# 	],
-# 	"monthly": [
-# 		"dux_groupview.tasks.monthly"
-# 	],
-# }
+# Phase 1 will wire up snapshot refresh.
+# scheduler_events = {}
 
 # Testing
 # -------
@@ -249,4 +231,3 @@ app_license = "mit"
 # ------------
 # List of apps whose translatable strings should be excluded from this app's translations.
 # ignore_translatable_strings_from = []
-
