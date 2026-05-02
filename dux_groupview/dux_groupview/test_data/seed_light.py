@@ -101,6 +101,8 @@ def seed_light_data():
 def _ensure_companies():
 	"""Create the 5 test companies if missing. Returns the company dicts."""
 	created = 0
+	# WORKAROUND for OPEN_QUESTIONS.md Q4 (dangling GST tax-account refs on
+	# this dev site break any new Company insert). Scoped to this block only.
 	with _suppress_gst_settings_revalidation():
 		for c in COMPANIES:
 			if frappe.db.exists("Company", c["name"]):
@@ -126,12 +128,28 @@ def _ensure_companies():
 
 class _suppress_gst_settings_revalidation:
 	"""
+	WORKAROUND for a pre-existing dev-site data inconsistency
+	(see OPEN_QUESTIONS.md Q4 -- GHR CACS Pune GST Settings inconsistency).
+
 	Context manager that monkey-patches india_compliance's update_gst_settings
-	to a no-op for the duration of seed company creation. Without this, every
-	new Company insert triggers a re-save of the GST Settings doctype, which
-	fails on this dev site because pre-existing companies have dangling tax
-	account references. The patch is isolated to seed runtime; real GST
-	wiring on existing companies is untouched.
+	to a no-op for the duration of seed company creation only. Without this,
+	every new Company insert triggers a re-save of the GST Settings doctype,
+	which fails on the jewonline dev site because pre-existing companies
+	(GHR CACS Pune / abbr CACSPU) reference GST tax accounts that do not
+	exist.
+
+	Scope guarantees:
+	  * The patch is applied only inside the `with` block in
+	    _ensure_companies() and torn down on exit (or on exception, via the
+	    standard context-manager protocol).
+	  * The original `update_gst_settings` function reference is captured
+	    before patching and restored verbatim afterward -- no global state
+	    pollution beyond the `with` block.
+	  * If india_compliance is not installed at all, the patch is a no-op.
+
+	Remove this once Q4 is resolved (the dangling references are cleaned up
+	on the dev site and we have verified Company creation succeeds without
+	the patch).
 	"""
 
 	def __enter__(self):
