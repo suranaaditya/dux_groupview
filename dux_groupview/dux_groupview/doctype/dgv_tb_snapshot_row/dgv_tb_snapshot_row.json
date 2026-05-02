@@ -1,0 +1,124 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "hash",
+ "creation": "2026-05-02 22:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "parent_snapshot",
+  "snapshot_date",
+  "company",
+  "account",
+  "account_type",
+  "root_type",
+  "balance",
+  "debit_total",
+  "credit_total"
+ ],
+ "fields": [
+  {
+   "fieldname": "parent_snapshot",
+   "fieldtype": "Link",
+   "label": "Parent Snapshot",
+   "options": "DGV TB Snapshot",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "description": "Denormalised from parent_snapshot.snapshot_date for query speed.",
+   "fieldname": "snapshot_date",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "label": "Snapshot Date",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Company",
+   "options": "Company",
+   "reqd": 1
+  },
+  {
+   "fieldname": "account",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Account",
+   "options": "Account",
+   "reqd": 1
+  },
+  {
+   "description": "Denormalised from Account.account_type at snapshot time.",
+   "fieldname": "account_type",
+   "fieldtype": "Data",
+   "label": "Account Type"
+  },
+  {
+   "description": "Denormalised from Account.root_type at snapshot time. One of: Asset / Liability / Equity / Income / Expense.",
+   "fieldname": "root_type",
+   "fieldtype": "Data",
+   "label": "Root Type",
+   "reqd": 1
+  },
+  {
+   "description": "Closing balance at snapshot_date as raw debit minus credit. UI flips sign for Liability / Equity / Income based on root_type. Invariant: balance = debit_total - credit_total.",
+   "fieldname": "balance",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Balance (Dr - Cr)",
+   "reqd": 1
+  },
+  {
+   "default": "0",
+   "description": "Lifetime cumulative debits posted up to snapshot_date. For period totals, subtract another snapshot's debit_total.",
+   "fieldname": "debit_total",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Debit Total"
+  },
+  {
+   "default": "0",
+   "description": "Lifetime cumulative credits posted up to snapshot_date. For period totals, subtract another snapshot's credit_total.",
+   "fieldname": "credit_total",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Credit Total"
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-05-02 22:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Dux GroupView",
+ "name": "DGV TB Snapshot Row",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "read": 1,
+   "report": 1,
+   "role": "GroupView Owner"
+  },
+  {
+   "read": 1,
+   "report": 1,
+   "role": "GroupView Viewer"
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 0
+}

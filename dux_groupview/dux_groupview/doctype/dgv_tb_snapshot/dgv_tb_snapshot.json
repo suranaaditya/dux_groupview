@@ -1,0 +1,116 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "format:SNAPSHOT-{snapshot_date}",
+ "creation": "2026-05-02 22:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "snapshot_date",
+  "generated_at",
+  "status",
+  "duration_seconds",
+  "row_count",
+  "is_immutable",
+  "error_message"
+ ],
+ "fields": [
+  {
+   "fieldname": "snapshot_date",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Snapshot Date",
+   "reqd": 1,
+   "search_index": 1,
+   "set_only_once": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "generated_at",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Generated At",
+   "reqd": 1
+  },
+  {
+   "default": "Generating",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "Generating\nComplete\nFailed",
+   "reqd": 1
+  },
+  {
+   "description": "Wall-clock seconds spent computing this snapshot.",
+   "fieldname": "duration_seconds",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Duration (seconds)",
+   "precision": "3",
+   "read_only": 1
+  },
+  {
+   "description": "Number of DGV TB Snapshot Row records linked to this snapshot.",
+   "fieldname": "row_count",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Row Count",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "description": "Locks this historical snapshot from being overwritten by a refresh. Set automatically once snapshot_date is in the past (via finalize_past_snapshots, or by backfill).",
+   "fieldname": "is_immutable",
+   "fieldtype": "Check",
+   "label": "Is Immutable"
+  },
+  {
+   "depends_on": "eval:doc.status === 'Failed'",
+   "fieldname": "error_message",
+   "fieldtype": "Long Text",
+   "label": "Error Message",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-05-02 22:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Dux GroupView",
+ "name": "DGV TB Snapshot",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "read": 1,
+   "report": 1,
+   "role": "GroupView Owner"
+  },
+  {
+   "read": 1,
+   "report": 1,
+   "role": "GroupView Viewer"
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "snapshot_date",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 0
+}
