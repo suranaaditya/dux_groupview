@@ -220,3 +220,32 @@ invariant_violations: 0
 Every one of the 5,581 snapshot rows derived from the 5,015,000 GL entries matches an independent SQL aggregation against `tabGL Entry`, AND the `balance = debit_total - credit_total` invariant holds across the entire row set. The SQL restructure preserved correctness.
 
 **`tabGL Entry` audit:** `grep -rn "tabGL Entry"` across `pivot/`, `api/pivot.py`, `public/js/pivot_grid.js` returns only docstring mentions of the architectural rule; no real queries. Two-layer cache rule preserved. (`refresh.py` itself is the one permitted reader of `tabGL Entry` per CLAUDE.md rule 1.)
+
+---
+
+## Option A — RGI-named synthetic seed (post-Phase-3 follow-up)
+
+**Branch:** `feat/rgi-named-seed`
+**Status:** _to fill in on merge_
+
+**What was added:**
+
+- `seed_rgi_named_data()` — variant of `seed_production_data` using RGI's actual 59 company names from `pivot/trust_groups.py`. Voucher prefix `RGI-DEMO-` (vs `PROD-TEST-` for the generic seed). Same 5M-entry shape; same UUID-based name gen; same safety gate, separate env var (`RGI_DEMO_SEED_CONFIRM=yes`).
+- `teardown_rgi_named_data()` — paired teardown with two defensive guards: (a) only deletes companies whose only GL entries are `RGI-DEMO-*` (skips any company that has real / non-DEMO entries — protection against accidental run on production); (b) pre-cleans orphan `tabMode of Payment Account` rows for the deleted companies before dropping them, so the next Company.insert() doesn't trip `_validate_links` on stale singletons (see Gotcha below).
+- `get_seed_state()` API endpoint at `dux_groupview.api.cockpit.get_seed_state` — returns `{is_synthetic_preview, synthetic_entry_count}`. GroupView Viewer or higher.
+- "SYNTHETIC PREVIEW DATA" banner at the top of `/groupview` — sticky to viewport, amber background, automatically appears when `RGI-DEMO-*` data is present and disappears when torn down.
+- `_generate_gl_entries` refactored to accept `voucher_prefix=` (default `PROD-TEST-`); both seeds reuse the same generator.
+- `_purge_synthetic_gl_entries()` purges BOTH `PROD-TEST-*` and `RGI-DEMO-*` so the RGI seed acts as a clean reset (the generic seed only purges its own prefix; running it after RGI without teardown would mix data).
+
+**Purpose:** visually preview the cockpit's 10-trust grouping on dev without touching production. Allows screenshots and previews to be shared with Kumar Sir / Mr. Raisoni before production deploy.
+
+**Gotcha surfaced and fixed:**
+
+- **Orphan `tabMode of Payment Account` refs.** Phase 3's `teardown_production_data` deleted Companies but didn't clean their child-table rows in singletons. Mode of Payment held 59 rows pointing at the deleted Prod Co companies. The next Company.insert() in `seed_rgi_named_data` then tried to save Mode of Payment, which validated all child links and raised `frappe.exceptions.LinkValidationError: Could not find Row #N: Company: Prod Co N1...` for all 59 orphan refs. Same family of issue as Phase 0's GHR CACS Pune GST Settings inconsistency. Fixed by adding a `DELETE FROM tabMode of Payment Account WHERE company LIKE ...` to BOTH teardown functions before company deletion. One-time orphans on dev cleaned up manually too.
+- **Performance.** Both seeds reuse the Phase 3 `_generate_gl_entries` (5M rows in ~21 min) and `refresh_tb_snapshot` (~44 sec post-index). No regression introduced.
+
+**Notes:**
+
+- Both seeds are mutually exclusive: `seed_rgi_named_data` purges any pre-existing `PROD-TEST-*`, but `seed_production_data` only purges its own prefix (asymmetry documented in `_purge_synthetic_gl_entries` docstring).
+- Banner appears purely from server-side data state (`get_seed_state` queries `tabGL Entry` LIKE 'RGI-DEMO-%' LIMIT 1). No UI flag to toggle, no risk of drift.
+- Defensive teardown filter on RGI side: a company is only deleted if it has zero GL entries OUTSIDE the `RGI-DEMO-` prefix. Protects against accidental runs on a misconfigured production environment where a real RGI company exists.
