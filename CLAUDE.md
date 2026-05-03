@@ -210,6 +210,14 @@ SSH: frappe@187.127.132.58
 - Bench commands: dev server runs via `bench start`, not supervisor.
   Only `clear-cache` is needed after Python changes; full `bench restart`
   is not required.
+- **Do not propose or schedule autonomous `/schedule` tasks** (Routines,
+  cron-driven background agents, etc.). Production-relevant operations
+  -- backfill, deploy, scheduler health checks, refresh-perf
+  monitoring, any other long-running task -- happen during deliberate,
+  monitored windows with Aditya watching. Manual verification is the
+  rule. This applies even after a phase ships and the natural follow-up
+  signals (cleanup after a flag, re-run to verify, etc.) would
+  otherwise warrant a `/schedule` offer.
 
 ### Bench execute paths
 
