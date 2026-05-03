@@ -140,6 +140,14 @@ def teardown_production_data():
 		"SELECT name FROM tabCompany WHERE name LIKE %s",
 		(f"{COMPANY_PREFIX}%",),
 	)
+	# Pre-clean orphan child-table refs in singleton doctypes so that the
+	# next Company.insert() doesn't trip _validate_links on stale rows.
+	# Mode of Payment is the one we hit on RGI seed; add others here if
+	# new singletons surface during teardown.
+	frappe.db.sql(
+		"DELETE FROM `tabMode of Payment Account` WHERE company LIKE %s",
+		(f"{COMPANY_PREFIX}%",),
+	)
 	# Clean up dependent rows first to avoid FK constraint errors. We
 	# only need to delete the rows for our synthetic companies.
 	cleaned_companies = 0
@@ -282,11 +290,13 @@ def _purge_prod_gl_entries():
 	return len(matching)
 
 
-def _generate_gl_entries(companies):
-	"""Generate ~5M balanced GL entries across the 59 companies.
+def _generate_gl_entries(companies, voucher_prefix=VOUCHER_PREFIX):
+	"""Generate ~5M balanced GL entries across the given companies.
 
 	~85K entries per company. Each company contributes its own batch of
-	~28K vouchers with 2-4 legs each.
+	~28K vouchers with 2-4 legs each. `voucher_prefix` lets the same
+	generator be reused for both the generic PROD-TEST seed and the
+	RGI-named RGI-DEMO seed.
 	"""
 	t0 = time.time()
 	today_d = getdate(nowdate())
@@ -349,7 +359,7 @@ def _generate_gl_entries(companies):
 		v_idx = 0
 		while built < entries_for_this_company:
 			v_idx += 1
-			voucher_no = f"{VOUCHER_PREFIX}{counter_start + v_idx:08d}"
+			voucher_no = f"{voucher_prefix}{counter_start + v_idx:08d}"
 			days_back = rng.randint(0, 365)
 			posting = today_d - timedelta(days=days_back)
 			fy = fy_for(posting)
@@ -468,3 +478,289 @@ def _build_row(voucher_no, posting, company, fy, cc, acc,
 		"voucher_subtype": None,
 		"to_rename": 0,
 	}
+
+
+# ---------------------------------------------------------------------------
+# Option A -- RGI-named synthetic seed
+#
+# Mirrors seed_production_data() but uses the actual 59 RGI company names
+# from `pivot/trust_groups.py` so the dev cockpit renders with the real
+# 10-trust grouping for visual review and demo. Numbers are synthetic;
+# a banner on the cockpit (driven by api/cockpit.py:get_seed_state) makes
+# this clear to anyone looking at the page.
+#
+# Mutual exclusion: seed_rgi_named_data purges BOTH PROD-TEST and
+# RGI-DEMO entries on start, so the snapshot is consistent. The generic
+# seed_production_data only purges its own PROD-TEST prefix; if you ran
+# it after the RGI seed without first tearing down, you'd get a mix.
+# ---------------------------------------------------------------------------
+
+import re
+
+RGI_VOUCHER_PREFIX = "RGI-DEMO-"
+RGI_VOUCHER_TYPE = "DGV RGI Demo Seed"
+
+
+def seed_rgi_named_data():
+	"""Synthetic seed using real RGI company names (~30-40 min).
+
+	Refuses unless RGI_DEMO_SEED_CONFIRM=yes is set in the environment.
+	Companion teardown: teardown_rgi_named_data().
+	"""
+	if os.environ.get("RGI_DEMO_SEED_CONFIRM", "").lower() != "yes":
+		print(
+			"This will create 59 RGI-named companies and ~5M GL entries.\n"
+			"Existing seeds (PROD-TEST-*, RGI-DEMO-*) will be purged.\n"
+			"Estimated 30-40 minutes.\n"
+			"Set RGI_DEMO_SEED_CONFIRM=yes in the environment to proceed:\n"
+			"    RGI_DEMO_SEED_CONFIRM=yes bench --site <site> execute "
+			"dux_groupview.dux_groupview.test_data.seed_production.seed_rgi_named_data\n"
+		)
+		return {"status": "aborted", "reason": "RGI_DEMO_SEED_CONFIRM not set"}
+
+	t_start = time.time()
+
+	specs = _build_rgi_company_specs()
+	companies = _ensure_rgi_companies(specs)
+	purged = _purge_synthetic_gl_entries()
+	if purged is False:
+		return {"status": "aborted", "reason": "purge safety check tripped"}
+
+	_generate_gl_entries(companies, voucher_prefix=RGI_VOUCHER_PREFIX)
+
+	frappe.db.commit()
+	total = time.time() - t_start
+	print(f"\nseed_rgi_named_data complete in {total / 60:.1f} min")
+	return {"status": "complete", "duration_seconds": round(total, 1)}
+
+
+def teardown_rgi_named_data():
+	"""Reverse seed_rgi_named_data with defensive guards.
+
+	Only deletes companies that match the RGI names AND have NO non-RGI-DEMO
+	GL entries. If a company already has real (non-DEMO) GL entries, we
+	leave it alone -- this is the safety net against accidentally deleting
+	a real RGI company on a misconfigured environment.
+
+	After deletion, refreshes TB + spotlight to restore cockpit state.
+	Idempotent.
+	"""
+	from dux_groupview.dux_groupview.pivot.trust_groups import TRUSTS
+
+	t0 = time.time()
+	rgi_names = set()
+	for trust in TRUSTS:
+		rgi_names.update(trust["companies"])
+
+	# Step 1: nuke RGI-DEMO GL entries.
+	gl_count = frappe.db.sql(
+		"SELECT COUNT(*) FROM `tabGL Entry` WHERE voucher_no LIKE %s",
+		(f"{RGI_VOUCHER_PREFIX}%",),
+	)[0][0]
+	if gl_count:
+		frappe.db.sql(
+			"DELETE FROM `tabGL Entry` WHERE voucher_no LIKE %s",
+			(f"{RGI_VOUCHER_PREFIX}%",),
+		)
+		frappe.db.commit()
+
+	# Step 2: drop synthetic companies. DEFENSIVE: only delete a company
+	# if no non-RGI-DEMO GL entries reference it. If a real RGI company
+	# happens to share a name (e.g. on production where this script
+	# should never run), it'll have its real GL entries and we'll skip it.
+	#
+	# Before deleting, pre-clean orphan child-table refs in singletons
+	# (Mode of Payment) so a future Company.insert() doesn't trip
+	# _validate_links on stale rows. Filter strictly to our RGI names.
+	if rgi_names:
+		placeholders = ", ".join(["%s"] * len(rgi_names))
+		frappe.db.sql(
+			f"DELETE FROM `tabMode of Payment Account` "
+			f"WHERE company IN ({placeholders})",
+			tuple(rgi_names),
+		)
+	cleaned = 0
+	skipped = []
+	for name in sorted(rgi_names):
+		if not frappe.db.exists("Company", name):
+			continue
+		other_entries = frappe.db.sql(
+			"SELECT COUNT(*) FROM `tabGL Entry` "
+			"WHERE company = %s AND voucher_no NOT LIKE %s",
+			(name, f"{RGI_VOUCHER_PREFIX}%"),
+		)[0][0]
+		if other_entries > 0:
+			skipped.append(name)
+			continue
+		try:
+			frappe.delete_doc(
+				"Company", name,
+				force=True, ignore_permissions=True, ignore_on_trash=True,
+			)
+			cleaned += 1
+		except Exception as e:
+			print(f"  warning: failed to delete company {name}: {e}")
+	frappe.db.commit()
+
+	if skipped:
+		print(
+			f"  Defensive skip: {len(skipped)} companies have non-RGI-DEMO "
+			f"GL entries (looks like real data, not ours): "
+			f"{skipped[:3]}{'...' if len(skipped) > 3 else ''}"
+		)
+
+	# Step 3: refresh TB + spotlight so cockpit reflects post-teardown state.
+	from dux_groupview.dux_groupview.snapshots.refresh import refresh_tb_snapshot
+	from dux_groupview.dux_groupview.snapshots.spotlight_refresh import (
+		refresh_spotlight_cache,
+	)
+	try:
+		refresh_tb_snapshot()
+		refresh_spotlight_cache()
+	except Exception as e:
+		print(f"  warning: post-teardown refresh failed: {e}")
+
+	dur = time.time() - t0
+	print(
+		f"Teardown complete: removed {gl_count:,} GL entries, "
+		f"{cleaned} companies in {dur:.1f} sec."
+	)
+	return {
+		"status": "complete",
+		"gl_entries_removed": gl_count,
+		"companies_removed": cleaned,
+		"companies_skipped": len(skipped),
+		"duration_seconds": round(dur, 1),
+	}
+
+
+# ---------------------------------------------------------------------------
+# RGI seed helpers
+# ---------------------------------------------------------------------------
+
+def _build_rgi_company_specs():
+	"""Return a list of {name, abbr, trust_id} dicts for the 59 RGI companies.
+
+	Pulls names from `dux_groupview.pivot.trust_groups.TRUSTS`. Derives a
+	unique abbr per company using the leading-uppercase-cluster scheme,
+	avoiding collisions with any existing tabCompany.abbr.
+	"""
+	from dux_groupview.dux_groupview.pivot.trust_groups import TRUSTS
+
+	used_abbrs = set()
+	# Pre-populate with existing tabCompany abbrs so we don't collide.
+	for row in frappe.db.sql("SELECT abbr FROM tabCompany"):
+		if row[0]:
+			used_abbrs.add(row[0])
+
+	specs = []
+	for trust in TRUSTS:
+		for company_name in trust["companies"]:
+			abbr = _derive_abbr(company_name, used_abbrs)
+			specs.append({
+				"name": company_name,
+				"abbr": abbr,
+				"trust_id": trust["id"],
+			})
+	return specs
+
+
+def _derive_abbr(name, used):
+	"""First letter of each word, with leading uppercase clusters preserved.
+
+	Matches RGI's existing abbr style (e.g. "GH Raisoni College Of
+	Engineering" -> "GHRCOE"). Capped at 10 chars; collisions resolved
+	by appending a 2-digit ordinal.
+	"""
+	words = re.split(r"[\s\-—]+", name)
+	parts = []
+	for w in words:
+		if not w:
+			continue
+		m = re.match(r"^([A-Z]+)", w)
+		if m and len(m.group(1)) >= 2:
+			parts.append(m.group(1))
+		else:
+			parts.append(w[0].upper())
+	base = "".join(parts)[:10] or "COMP"
+	if base not in used:
+		used.add(base)
+		return base
+	for i in range(1, 100):
+		candidate = base[:8] + f"{i:02d}"
+		if candidate not in used:
+			used.add(candidate)
+			return candidate
+	raise ValueError(f"Couldn't derive unique abbr for {name}")
+
+
+def _ensure_rgi_companies(specs):
+	"""Create the 59 RGI-named companies, skipping any that already exist."""
+	created = 0
+	companies = []
+	with _suppress_gst_settings_revalidation():
+		for spec in specs:
+			companies.append({"name": spec["name"], "abbr": spec["abbr"]})
+			if frappe.db.exists("Company", spec["name"]):
+				continue
+			doc = frappe.new_doc("Company")
+			doc.company_name = spec["name"]
+			doc.abbr = spec["abbr"]
+			doc.default_currency = "INR"
+			doc.country = "India"
+			doc.create_chart_of_accounts_based_on = "Standard Template"
+			doc.chart_of_accounts = "Standard"
+			doc.flags.ignore_permissions = True
+			doc.insert()
+			created += 1
+			if created % 10 == 0:
+				frappe.db.commit()
+				print(f"  Created {created} RGI companies so far...")
+	frappe.db.commit()
+	if created == 0:
+		print(f"RGI companies: all {len(specs)} already exist (skipped)")
+	else:
+		print(f"RGI companies: created {created} of {len(specs)}")
+	return companies
+
+
+def _purge_synthetic_gl_entries():
+	"""Purge BOTH PROD-TEST-% and RGI-DEMO-% GL entries.
+
+	Both seeds are mutually exclusive -- running seed_rgi_named_data wipes
+	any pre-existing PROD-TEST-* entries so the snapshot stays consistent.
+	(seed_production_data still only purges its own prefix; the asymmetry
+	means RGI seed is the safer one to run after a switch.)
+
+	Safety check: if any matching row's voucher_no doesn't start with one
+	of the two prefixes, abort. Should never happen but defends against
+	accidental wide deletes.
+	"""
+	matching = frappe.db.sql(
+		"SELECT name, voucher_no FROM `tabGL Entry` "
+		"WHERE voucher_no LIKE 'PROD-TEST-%' OR voucher_no LIKE 'RGI-DEMO-%'",
+		as_dict=True,
+	)
+	if not matching:
+		print("Purge: no existing synthetic GL entries")
+		return 0
+	bad = [
+		r for r in matching
+		if not (
+			r.voucher_no.startswith("PROD-TEST-")
+			or r.voucher_no.startswith("RGI-DEMO-")
+		)
+	]
+	if bad:
+		print(
+			f"ABORT: safety check tripped, {len(bad)} rows match prefix LIKE "
+			f"but don't start with PROD-TEST- or RGI-DEMO-"
+		)
+		return False
+	frappe.db.sql(
+		"DELETE FROM `tabGL Entry` "
+		"WHERE voucher_no LIKE 'PROD-TEST-%' OR voucher_no LIKE 'RGI-DEMO-%'"
+	)
+	frappe.db.commit()
+	print(f"Purged {len(matching):,} existing synthetic GL entries (both prefixes)")
+	return len(matching)
