@@ -1,0 +1,322 @@
+/* DuxPivotGrid styles -- companion to public/js/pivot_grid.js.
+ * Loaded via app_include_css in hooks.py. Reuses Geist + light theme
+ * tokens from cockpit.css (which loads first).
+ */
+
+.pivot-container {
+	background: #fff;
+	border: 1px solid #e2e8f0;
+	border-radius: 14px;
+	overflow: hidden;
+	font-family: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+.pivot-scroll {
+	width: 100%;
+	height: 100%;
+	overflow: auto;
+	position: relative;
+}
+
+.pivot-table {
+	border-collapse: separate;
+	border-spacing: 0;
+	min-width: 100%;
+}
+
+/* ---------------------------------------------------------------- */
+/* Header                                                           */
+/* ---------------------------------------------------------------- */
+
+.pivot-table thead {
+	background: #f8fafc;
+}
+
+.pivot-table thead th {
+	background: #f8fafc;
+	font-weight: 600;
+	color: #475569;
+	font-size: 11px;
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+	padding: 8px 12px;
+	white-space: nowrap;
+	border-bottom: 1px solid #e2e8f0;
+	position: sticky;
+	top: 0;
+	z-index: 2;
+}
+
+.pivot-trust-row th.pivot-trust-head {
+	cursor: pointer;
+	border-left: 3px solid transparent;
+	user-select: none;
+	transition: background 0.1s ease;
+}
+
+.pivot-trust-row th.pivot-trust-head:hover {
+	background: #f1f5f9;
+}
+
+.pivot-trust-caret {
+	color: #64748b;
+	font-size: 10px;
+	margin-right: 6px;
+}
+
+.pivot-trust-abbr {
+	display: inline-block;
+	color: #fff;
+	font-weight: 600;
+	font-size: 10px;
+	letter-spacing: 0.04em;
+	padding: 2px 7px;
+	border-radius: 4px;
+	margin-right: 8px;
+	vertical-align: middle;
+}
+
+.pivot-trust-name {
+	color: #334155;
+	text-transform: none;
+	letter-spacing: 0;
+	font-weight: 500;
+	font-size: 12px;
+}
+
+.pivot-company-row th.pivot-company-head {
+	font-size: 10px;
+	color: #64748b;
+	max-width: 140px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	background: #fcfdfd;
+	top: 36px;
+}
+
+.pivot-company-head.pivot-collapsed-cell {
+	text-align: center;
+	color: #94a3b8;
+}
+
+.pivot-collapsed-count {
+	font-family: 'Geist Mono', ui-monospace, SFMono-Regular, monospace;
+	font-weight: 500;
+}
+
+th.pivot-corner {
+	text-align: left;
+	min-width: 280px;
+	background: #f8fafc;
+}
+
+th.pivot-total-head {
+	text-align: right;
+	min-width: 110px;
+	background: #f1f5f9;
+	border-left: 1px solid #e2e8f0;
+}
+
+/* ---------------------------------------------------------------- */
+/* Sticky columns                                                   */
+/* ---------------------------------------------------------------- */
+
+.pivot-sticky-left {
+	position: sticky;
+	left: 0;
+	z-index: 1;
+	background: #fff;
+	border-right: 1px solid #e2e8f0;
+}
+
+.pivot-sticky-right {
+	position: sticky;
+	right: 0;
+	z-index: 1;
+	background: #fff;
+	border-left: 1px solid #e2e8f0;
+}
+
+/* When sticky cells are header cells they need higher z so they sit
+ * above sticky body cells during scroll. */
+.pivot-table thead th.pivot-sticky-left,
+.pivot-table thead th.pivot-sticky-right {
+	z-index: 3;
+}
+
+/* ---------------------------------------------------------------- */
+/* Body rows                                                        */
+/* ---------------------------------------------------------------- */
+
+.pivot-row {
+	height: 32px;
+	transition: background 0.05s ease;
+}
+
+.pivot-row:hover td {
+	background: #f8fafc;
+}
+
+.pivot-row:hover .pivot-cell-label,
+.pivot-row:hover .pivot-cell-total {
+	background: #f1f5f9;
+}
+
+.pivot-row-search-hit .pivot-cell-label {
+	background: #fef9c3;
+}
+
+.pivot-row-group .pivot-account-name {
+	font-weight: 600;
+	color: #0f172a;
+}
+
+.pivot-row-leaf .pivot-account-name {
+	font-weight: 400;
+	color: #334155;
+}
+
+/* Total row lives in <tfoot> sticky to the bottom of the scroll
+ * container, kept out of the Clusterize-managed <tbody> so its
+ * non-uniform height (the 2px border-top + bold font) doesn't break
+ * the virtualization spacer math and cause scroll bounce at the end.
+ */
+.pivot-table tfoot td {
+	position: sticky;
+	bottom: 0;
+	z-index: 2;
+	background: #f1f5f9;
+	border-top: 2px solid #cbd5e1;
+	font-weight: 700;
+}
+.pivot-table tfoot td.pivot-sticky-left {
+	z-index: 4;
+}
+.pivot-table tfoot td.pivot-sticky-right {
+	z-index: 4;
+}
+
+.pivot-row-total {
+	background: #f1f5f9;
+}
+
+.pivot-row-total .pivot-account-name,
+.pivot-row-total .pivot-cell-num {
+	font-weight: 700;
+	color: #0f172a;
+}
+
+.pivot-row-total .pivot-cell-label,
+.pivot-row-total .pivot-cell-total {
+	background: #f1f5f9;
+}
+
+/* ---------------------------------------------------------------- */
+/* Cells                                                            */
+/* ---------------------------------------------------------------- */
+
+.pivot-cell-label,
+.pivot-cell-num,
+.pivot-cell-total,
+.pivot-cell-collapsed {
+	padding: 6px 10px;
+	font-size: 12px;
+	border-bottom: 1px solid #f1f5f9;
+}
+
+.pivot-cell-label {
+	min-width: 280px;
+	max-width: 360px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.pivot-cell-num {
+	font-family: 'Geist Mono', ui-monospace, SFMono-Regular, monospace;
+	text-align: right;
+	font-variant-numeric: tabular-nums;
+	min-width: 110px;
+	cursor: pointer;
+}
+
+.pivot-row-group .pivot-cell-num,
+.pivot-row-total .pivot-cell-num {
+	cursor: default;
+}
+
+.pivot-cell-num:hover:not(.pivot-cell-total-num) {
+	outline: 1px solid #cbd5e1;
+	outline-offset: -2px;
+}
+
+.pivot-cell-total {
+	font-family: 'Geist Mono', ui-monospace, SFMono-Regular, monospace;
+	text-align: right;
+	font-variant-numeric: tabular-nums;
+	min-width: 110px;
+	font-weight: 600;
+	color: #0f172a;
+}
+
+.pivot-cell-collapsed {
+	text-align: center;
+	color: #94a3b8;
+	background: #fafbfc;
+	border-left: 3px solid transparent;
+}
+
+.pivot-zero {
+	color: #cbd5e1;
+}
+
+.pivot-neg {
+	color: #dc2626;
+}
+
+/* ---------------------------------------------------------------- */
+/* Account label internals (caret + indent)                         */
+/* ---------------------------------------------------------------- */
+
+.pivot-indent {
+	display: inline-block;
+	height: 1px;
+}
+
+.pivot-account-caret {
+	display: inline-block;
+	width: 16px;
+	color: #64748b;
+	font-size: 10px;
+	cursor: pointer;
+	user-select: none;
+	text-align: center;
+}
+
+.pivot-account-caret.pivot-leaf {
+	cursor: default;
+	color: #cbd5e1;
+}
+
+.pivot-account-caret:hover:not(.pivot-leaf) {
+	color: #0f172a;
+}
+
+.pivot-account-name {
+	font-size: 12px;
+}
+
+/* ---------------------------------------------------------------- */
+/* Clusterize-required hooks                                        */
+/* ---------------------------------------------------------------- */
+
+.clusterize-extra-row {
+	height: 0 !important;
+	visibility: hidden;
+}
+
+.clusterize-no-data td {
+	padding: 24px;
+	text-align: center;
+	color: #94a3b8;
+}

@@ -7,8 +7,18 @@ app_license = "mit"
 
 # Includes in <head>
 # ------------------
-app_include_js = "/assets/dux_groupview/js/cockpit.js"
-app_include_css = "/assets/dux_groupview/css/cockpit.css"
+# Order matters: clusterize.min.js must load before pivot_grid.js,
+# which must load before cockpit.js (which instantiates DuxPivotGrid).
+app_include_js = [
+	"/assets/dux_groupview/vendor/clusterize/clusterize.min.js",
+	"/assets/dux_groupview/js/pivot_grid.js",
+	"/assets/dux_groupview/js/cockpit.js",
+]
+app_include_css = [
+	"/assets/dux_groupview/vendor/clusterize/clusterize.css",
+	"/assets/dux_groupview/css/cockpit.css",
+	"/assets/dux_groupview/css/pivot_grid.css",
+]
 
 # Apps
 # ------------------

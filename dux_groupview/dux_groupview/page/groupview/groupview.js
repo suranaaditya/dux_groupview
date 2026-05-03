@@ -34,8 +34,24 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 
 			<div class="dgv-card-grid" id="dgv-card-grid"></div>
 
+			<div class="dgv-section-row dgv-pivot-section-row">
+				<div class="dgv-section-title">Pivot</div>
+				<div class="dgv-pivot-controls">
+					<div class="dgv-view-toggle" role="tablist">
+						<button class="dgv-view-btn dgv-view-active" data-view="balance">Balance</button>
+						<button class="dgv-view-btn" data-view="movement" disabled title="Coming in Phase 4">Movement</button>
+						<button class="dgv-view-btn" data-view="compare" disabled title="Coming in Phase 4">Compare</button>
+					</div>
+					<input type="text" class="dgv-pivot-search" placeholder="Search account…" />
+					<button class="dgv-heatmap-toggle" id="dgv-heatmap-toggle">
+						<span class="dgv-heatmap-state">Plain</span>
+					</button>
+				</div>
+			</div>
+			<div id="pivot-grid"></div>
+
 			<div class="dgv-cockpit-footer">
-				Powered by Dux DigiTech &middot; Phase 2
+				Powered by Dux DigiTech &middot; Phase 3
 			</div>
 		</div>
 		${dgvCockpitStyles()}
@@ -43,6 +59,8 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 
 	let currentDate = null;
 	let agePollHandle = null;
+	let pivotGrid = null;
+	let heatmapOn = false;
 
 	bootstrap();
 
@@ -60,6 +78,8 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 				$('.dgv-date-select').val(currentDate);
 				loadCards(currentDate);
 				loadAge(currentDate);
+				loadPivot(currentDate);
+				wirePivotControls();
 				if (agePollHandle) clearInterval(agePollHandle);
 				agePollHandle = setInterval(() => loadAge(currentDate), 30000);
 			},
@@ -73,7 +93,64 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 			currentDate = $(this).val();
 			loadCards(currentDate);
 			loadAge(currentDate);
+			loadPivot(currentDate);
 		});
+	}
+
+	function loadPivot(snapshotDate) {
+		const containerEl = document.getElementById('pivot-grid');
+		if (!containerEl) return;
+		frappe.call({
+			method: 'dux_groupview.dux_groupview.api.pivot.get_pivot_data',
+			args: { snapshot_date: snapshotDate, format: 'crore' },
+			callback: function(r) {
+				if (!r || !r.message) return;
+				if (!pivotGrid) {
+					pivotGrid = new window.DuxPivotGrid(containerEl, {
+						format: 'crore', height: 600,
+					});
+				}
+				pivotGrid.render(r.message);
+				pivotGrid.setHeatmap(heatmapOn);
+			},
+		});
+	}
+
+	function wirePivotControls() {
+		const $search = $('.dgv-pivot-search');
+		let searchTimer = null;
+		$search.off('input').on('input', function() {
+			const v = $(this).val();
+			clearTimeout(searchTimer);
+			searchTimer = setTimeout(() => {
+				if (pivotGrid) pivotGrid.setSearch(v);
+			}, 80);
+		});
+
+		const $heatBtn = $('#dgv-heatmap-toggle');
+		$heatBtn.off('click').on('click', function() {
+			heatmapOn = !heatmapOn;
+			$heatBtn.toggleClass('dgv-heatmap-on', heatmapOn);
+			$heatBtn.find('.dgv-heatmap-state').text(heatmapOn ? 'Heatmap' : 'Plain');
+			if (pivotGrid) pivotGrid.setHeatmap(heatmapOn);
+		});
+
+		// Disabled view-mode buttons just show a tooltip; no handler needed.
+		$('.dgv-view-btn[disabled]').off('click').on('click', function(e) {
+			e.preventDefault();
+		});
+
+		// Listen for cell clicks bubbled from the pivot.
+		document.removeEventListener('dux-pivot-cell-click', _cellHandler);
+		document.addEventListener('dux-pivot-cell-click', _cellHandler);
+	}
+
+	function _cellHandler(e) {
+		if (!e.detail) return;
+		frappe.show_alert({
+			message: `Drill into ${e.detail.account} × ${e.detail.company} coming in Phase 4`,
+			indicator: 'blue',
+		}, 5);
 	}
 
 	function loadCards(snapshotDate) {
@@ -252,6 +329,40 @@ function dgvCockpitStyles() {
 		.dgv-section-row {
 			display: flex; justify-content: space-between; align-items: center;
 			margin-bottom: 16px;
+		}
+		.dgv-pivot-section-row { margin-top: 36px; }
+		.dgv-pivot-controls {
+			display: flex; gap: 10px; align-items: center;
+		}
+		.dgv-view-toggle {
+			display: inline-flex; background: #fff; border: 1px solid #e2e8f0;
+			border-radius: 8px; overflow: hidden;
+		}
+		.dgv-view-btn {
+			background: transparent; border: none; padding: 6px 14px;
+			font-family: 'Geist', sans-serif; font-size: 12px; color: #475569;
+			cursor: pointer; transition: background 0.1s ease;
+		}
+		.dgv-view-btn + .dgv-view-btn { border-left: 1px solid #e2e8f0; }
+		.dgv-view-btn:hover:not([disabled]) { background: #f1f5f9; }
+		.dgv-view-btn.dgv-view-active {
+			background: #0f172a; color: #fff; cursor: default;
+		}
+		.dgv-view-btn[disabled] { color: #cbd5e1; cursor: not-allowed; }
+		.dgv-pivot-search {
+			background: #fff; border: 1px solid #e2e8f0; border-radius: 8px;
+			padding: 6px 12px; font-family: 'Geist', sans-serif; font-size: 12px;
+			color: #0f172a; width: 200px;
+		}
+		.dgv-pivot-search:focus { outline: none; border-color: #94a3b8; }
+		.dgv-heatmap-toggle {
+			background: #fff; border: 1px solid #e2e8f0; border-radius: 8px;
+			padding: 6px 14px; font-family: 'Geist', sans-serif; font-size: 12px;
+			color: #475569; cursor: pointer; transition: all 0.1s ease;
+		}
+		.dgv-heatmap-toggle:hover { background: #f1f5f9; }
+		.dgv-heatmap-toggle.dgv-heatmap-on {
+			background: #0f172a; color: #fff; border-color: #0f172a;
 		}
 		.dgv-section-title {
 			font-size: 12px; font-weight: 700; letter-spacing: 0.1em;

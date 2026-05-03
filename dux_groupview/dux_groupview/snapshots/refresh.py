@@ -56,26 +56,39 @@ INSERT INTO `tabDGV TB Snapshot Row`
    account_type, root_type, balance, debit_total, credit_total,
    creation, modified, owner, modified_by, docstatus, idx)
 SELECT
-  MD5(CONCAT(%(snapshot_date)s, gl.company, gl.account, RAND())),
+  MD5(CONCAT(%(snapshot_date)s, agg.company, agg.account, RAND())),
   %(parent_snapshot)s,
   %(snapshot_date)s,
-  gl.company,
-  gl.account,
+  agg.company,
+  agg.account,
   COALESCE(a.account_type, ''),
   COALESCE(a.root_type, ''),
-  ROUND(SUM(gl.debit) - SUM(gl.credit), 2),
-  ROUND(SUM(gl.debit), 2),
-  ROUND(SUM(gl.credit), 2),
+  agg.balance,
+  agg.debit_total,
+  agg.credit_total,
   NOW(), NOW(), 'Administrator', 'Administrator', 0, 0
-FROM `tabGL Entry` gl
-INNER JOIN `tabAccount` a ON a.name = gl.account
-WHERE gl.is_cancelled = 0
-  AND gl.docstatus = 1
-  AND gl.posting_date <= %(snapshot_date)s
-GROUP BY gl.company, gl.account, a.account_type, a.root_type
-HAVING ABS(ROUND(SUM(gl.debit) - SUM(gl.credit), 2)) > 0
-    OR ABS(ROUND(SUM(gl.debit), 2)) > 0
-    OR ABS(ROUND(SUM(gl.credit), 2)) > 0
+FROM (
+  SELECT
+    gl.company,
+    gl.account,
+    ROUND(SUM(gl.debit) - SUM(gl.credit), 2) AS balance,
+    ROUND(SUM(gl.debit), 2) AS debit_total,
+    ROUND(SUM(gl.credit), 2) AS credit_total
+  FROM `tabGL Entry` gl
+  WHERE gl.is_cancelled = 0
+    AND gl.docstatus = 1
+    AND gl.posting_date <= %(snapshot_date)s
+  GROUP BY gl.company, gl.account
+  -- Skip company/account pairs whose aggregated debit, credit, and
+  -- balance ALL round to zero. These rows would carry no information
+  -- in the snapshot and writing them wastes space. A non-zero on any
+  -- one of the three columns is enough to include the row. Defensive
+  -- filter against floating-point noise; on clean data it's a no-op.
+  HAVING ABS(ROUND(SUM(gl.debit) - SUM(gl.credit), 2)) > 0
+      OR ABS(ROUND(SUM(gl.debit), 2)) > 0
+      OR ABS(ROUND(SUM(gl.credit), 2)) > 0
+) AS agg
+INNER JOIN `tabAccount` a ON a.name = agg.account
 """
 
 

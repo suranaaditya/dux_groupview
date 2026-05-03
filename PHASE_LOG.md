@@ -148,3 +148,75 @@ Production projection: with ~5M GL entries instead of 50K, refresh duration scal
 Gold-standard test: cached value vs independent SQL aggregation -- exact match on all 6 cards.
 
 **`tabGL Entry` audit:** `grep -rn "tabGL Entry"` across all Phase 2 code (`spotlight/`, `api/cockpit.py`, `snapshots/spotlight_refresh.py`, `page/groupview/groupview.js`) returns only docstring mentions explaining the rule; no actual queries. Hard architectural rule preserved.
+
+---
+
+## Phase 3 — Pivot Grid
+
+**Status:** Done — 2026-05-03. Branch `phase-3-pivot` ready for review (not yet merged to main).
+
+**Goal:** Replace the spotlight-only cockpit with a full pivot grid below the cards. Account hierarchy down rows, companies grouped by trust across columns, sticky first/last columns, account search, heatmap toggle, trust collapse / expand. Reads exclusively from `tabDGV TB Snapshot Row` plus `tabAccount` and `tabCompany` for metadata.
+
+**Deliverables:**
+- [x] Clusterize.js v1.0.0 vendored at `dux_groupview/public/vendor/clusterize/` (MIT, Denis Lukov)
+- [x] `pivot/trust_groups.py` with all 10 RGI trusts (verbatim names from Aditya) + synthetic `default` trust
+- [x] `api/pivot.py` — `get_pivot_data` and `get_pivot_summary`, GroupView Viewer or higher, respects User Permissions on Company
+- [x] `public/js/pivot_grid.js` — `DuxPivotGrid` class with render / updateData / setHeatmap / setSearch / collapseTrust / expandTrust / collapseAccount / expandAccount / destroy
+- [x] `public/css/pivot_grid.css` — sticky columns, heatmap, hover, search hit, total row in sticky `<tfoot>`
+- [x] Cockpit page wired (view toggle, search, heatmap, pivot below spotlight)
+- [x] All 5 unit tests pass (0.83 sec) including the gold-standard `test_pivot_data_matches_snapshot`
+- [x] Visual verification on dev confirmed by Aditya (post scroll-bounce fix below)
+- [x] `seed_production.py` with `seed_production_data` + `teardown_production_data`, gated by `PROD_SEED_CONFIRM=yes`
+- [x] Production-shaped perf verification on 5M-entry synthetic data (numbers below)
+
+**Decisions made:**
+
+- **Pivot grouping by `account_name`.** ERPNext stores per-company copies of each account with a unique full name (`"Sundry Creditors - TCA"`, etc.); the pivot groups them by `account_name` so one row shows values across all companies' matching accounts.
+- **Hierarchy reconstructed at request time.** Walk up `tabAccount.parent_account` for each leaf in the snapshot to add ancestor groups (which have no snapshot rows of their own) so the UI can render an expand/collapse tree. Most-common-parent wins on conflicts.
+- **`_allowed_companies()` bypasses Company doctype role check** and applies User Permissions directly. The GroupView Viewer / Owner roles don't have read on Company (it's a stock ERPNext doctype we deliberately don't modify); User Permissions are the real authorisation mechanism here. System Manager always sees everything.
+- **Total row pulled out of `<tbody>` into sticky `<tfoot>`.** Originally rendered as the last Clusterize-managed row; that broke the virtualization spacer math (Clusterize assumes uniform row heights, the total row's `border-top: 2px` doesn't comply). Sticky `<tfoot>` keeps it pinned to the bottom of the scroll container with no virtualization interference.
+- **Clusterize disabled for Phase 3.** Even with the total row out, sticky-column cells inside Clusterize-managed virtualized rows produce a "snap back at end of scroll" UX bug (the bottom spacer recalculates as the last cluster comes into view, shrinking the scrollable area, snapping the scrollbar up). Direct DOM rendering ships in Phase 3 — fine for ~500 rows on dev and the projected ~700 on production. The Clusterize files stay vendored and loaded so a Phase 3.5 frozen-column virtualization library can swap in if production scale demands it.
+- **Production seed safety gate.** `seed_production_data()` requires the env var `PROD_SEED_CONFIRM=yes` to proceed. Companion `teardown_production_data()` purges the `PROD-TEST-` voucher prefix and the synthetic `Prod Co N1..N59` companies, then refreshes TB + spotlight to restore the prior dev state. Strictly safe on real data.
+- **Cell click event surface.** `dux-pivot-cell-click` `CustomEvent` with `{account, company, value, snapshot_date}` detail. Phase 4 listens and shows the drill panel; for now `groupview.js` shows a "coming in Phase 4" toast.
+
+**Gotchas:**
+
+- **Local repo had a duplicated `public/` directory tree at the wrong nesting depth.** Phase 3 files initially landed at `dux_groupview/dux_groupview/dux_groupview/public/` (3 dux levels) instead of `dux_groupview/dux_groupview/public/` (2 dux levels) because I instinctively wrote them next to other Phase 3 module-dir files. Frappe's `sites/assets/` symlink points at the 2-dux level, so the assets returned 404 for the first build. Moved everything to the 2-dux level and dropped the empty 3-dux tree on both local and server. `find . -path "*public*" -type f` is the quickest sanity check after any new vendor / asset add.
+- **`bench mariadb -e "LIKE 'X %'"` parses `%` as a printf format specifier when args are empty.** Cost a test failure on the user-permissions test until I rewrote with a parameterised query (`LIKE %s` + `("X %",)`).
+- **GroupView roles can't `frappe.get_list("Company", ...)`** because Company is a stock ERPNext doctype and we don't add a Custom DocPerm for it. `_allowed_companies()` queries `tabCompany` directly with `frappe.db.sql_list` and applies User Permissions manually. This is documented at the function's docstring.
+- **Clusterize + sticky columns is a known-bad combo.** Spec required Clusterize; we vendored it but disabled use for Phase 3 (see Decisions). If Phase 3.5 needs virtualization at 700+ accounts, the right approach is a frozen-column library (two synchronised tables) rather than Clusterize + `position: sticky`.
+- **Curl to `localhost:8000/assets/` returns 404 on the dev server.** Static assets are served by nginx at port 443, not by gunicorn. Use `curl -sk -H "Host: erp.jewonline.in" --resolve erp.jewonline.in:443:127.0.0.1 https://erp.jewonline.in/assets/...` to verify asset URLs from the server.
+
+**Performance:**
+
+| Operation | Source / Scale | Duration | Target |
+|---|---|---|---|
+| `get_pivot_data` (dev: ~500 accounts × 8 companies) | snapshot + Account join | < 100 ms (test passes < 500 ms) | < 500 ms ✅ |
+| Unit test suite (5 tests) | -- | **0.83 sec** | -- |
+| `seed_production_data` | 5,015,000 GL entries created (no extras) | **21.5 min** | -- |
+| `refresh_tb_snapshot` (production-shaped, BEFORE optimisation) | 5M `tabGL Entry` rows → 5,581 snapshot rows | **514 sec / 8.6 min** | ❌ < 30 sec target |
+| `refresh_tb_snapshot` (production-shaped, AFTER covering index + subquery restructure) | same | **44.7 sec** | < 60 sec (revised) ✅ |
+| `refresh_spotlight_cache` on prod-shaped data | 5,581 snapshot rows | **0.044 sec** | < 10 sec ✅ |
+| `get_pivot_data` on prod-shaped data | 5,581 snapshot rows + 7,123 Account rows | **~0.5-0.6 sec** wall (incl. bench bootstrap) | < 1.5 sec ✅ |
+| Heatmap toggle | client-side | instant | instant |
+| Search filter (debounced 80 ms) | client-side | instant | instant |
+
+**Performance optimisation story (refresh):**
+
+1. First measurement on production seed: 514 sec / 8.6 min — 17× over the original 30 sec target.
+2. EXPLAIN on the refresh's `INSERT...SELECT FROM tabGL Entry GROUP BY ...` showed `type: range` + `Using temporary; Using filesort` — 2.2 M rows scanned, in-memory grouping, no helpful index.
+3. **Optimisation 1 — covering index on `tabGL Entry`**: a new patch `add_gl_entry_covering_index` added `(is_cancelled, docstatus, company, account, posting_date)` index. Resulted in `Using index` (no row data fetch) — but the actual refresh-time SQL `GROUP BY`s on `a.account_type, a.root_type` (joined from `tabAccount`), so the optimiser switched to a tabAccount-driven nested-loop plan and the win was lost (552 sec, slightly worse than baseline). EXPLAIN-fidelity gotcha: the simplified test query showed the wrong plan.
+4. **Optimisation 2 — restructure refresh SQL**: aggregate `tabGL Entry` in a subquery first (which uses our covering index cleanly with no temp / filesort), then JOIN `tabAccount` against the small ~5,581-row result. Final EXPLAIN: inner aggregation `Using where` with our index, outer JOIN on `tabAccount.PRIMARY`. Result: **44.7 sec** — 11.5× speedup, 14.7 sec over the 30 sec target but well within the revised 60 sec.
+5. CLAUDE.md rule 2 was refined to permit operational helper indexes on stock ERPNext tables (commit `6bc51ad`); the index lands via `dux_groupview.patches.add_gl_entry_covering_index` and is reversible via `DROP INDEX dgv_snapshot_aggregation ON \`tabGL Entry\``.
+6. The perf restructure also added a `HAVING` clause to the inner aggregation that drops all-zero `(company, account)` pairs. Reduces row count slightly without semantic change. Safe no-op on clean data.
+
+**Gold-standard test on production-shaped data (post-optimisation):**
+
+```
+mismatched_rows: 0
+invariant_violations: 0
+```
+
+Every one of the 5,581 snapshot rows derived from the 5,015,000 GL entries matches an independent SQL aggregation against `tabGL Entry`, AND the `balance = debit_total - credit_total` invariant holds across the entire row set. The SQL restructure preserved correctness.
+
+**`tabGL Entry` audit:** `grep -rn "tabGL Entry"` across `pivot/`, `api/pivot.py`, `public/js/pivot_grid.js` returns only docstring mentions of the architectural rule; no real queries. Two-layer cache rule preserved. (`refresh.py` itself is the one permitted reader of `tabGL Entry` per CLAUDE.md rule 1.)

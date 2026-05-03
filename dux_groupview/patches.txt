@@ -7,3 +7,4 @@ dux_groupview.patches.ensure_groupview_roles
 # Patches added in this section will be executed after doctypes are migrated
 dux_groupview.patches.add_dgv_snapshot_row_indexes
 dux_groupview.patches.add_dgv_spotlight_cache_index
+dux_groupview.patches.add_gl_entry_covering_index
