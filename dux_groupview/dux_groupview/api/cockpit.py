@@ -103,6 +103,26 @@ def get_spotlight_cards(snapshot_date):
 
 
 @frappe.whitelist()
+def get_seed_state():
+	"""Detect whether the cockpit is currently rendering synthetic preview data.
+
+	Used by the cockpit page to render a "SYNTHETIC PREVIEW DATA" banner
+	when the seed_rgi_named_data fixture is loaded (voucher_no LIKE
+	RGI-DEMO-%). Banner disappears automatically when the seed is torn
+	down -- no UI state to reset.
+	"""
+	_require_cockpit_role()
+	count = frappe.db.sql(
+		"SELECT COUNT(*) FROM `tabGL Entry` "
+		"WHERE voucher_no LIKE 'RGI-DEMO-%' LIMIT 1"
+	)[0][0]
+	return {
+		"is_synthetic_preview": int(count) > 0,
+		"synthetic_entry_count": int(count),
+	}
+
+
+@frappe.whitelist()
 def get_snapshot_age(snapshot_date):
 	"""Return generated_at + age_seconds for the snapshot age pill."""
 	_require_cockpit_role()

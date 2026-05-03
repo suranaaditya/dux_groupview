@@ -15,7 +15,11 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 	);
 
 	$body.html(`
-		<div class="dgv-cockpit-shell">
+		<div class="dux-synthetic-banner" id="dux-synthetic-banner" hidden>
+			<strong>SYNTHETIC PREVIEW DATA</strong>
+			<span>Numbers shown are random and not actual RGI figures. For UI/UX review only.</span>
+		</div>
+		<div class="dgv-cockpit-shell" id="dgv-cockpit-shell">
 			<div class="dgv-cockpit-topbar">
 				<div class="dgv-cockpit-brand">
 					<div class="dgv-cockpit-eyebrow">dux_groupview</div>
@@ -63,6 +67,22 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 	let heatmapOn = false;
 
 	bootstrap();
+	checkSyntheticPreview();
+
+	function checkSyntheticPreview() {
+		frappe.call({
+			method: 'dux_groupview.dux_groupview.api.cockpit.get_seed_state',
+			callback: function(r) {
+				if (r && r.message && r.message.is_synthetic_preview) {
+					document.getElementById('dux-synthetic-banner').hidden = false;
+					document.getElementById('dgv-cockpit-shell').classList.add('dgv-with-banner');
+				} else {
+					document.getElementById('dux-synthetic-banner').hidden = true;
+					document.getElementById('dgv-cockpit-shell').classList.remove('dgv-with-banner');
+				}
+			},
+		});
+	}
 
 	function bootstrap() {
 		frappe.call({
@@ -292,12 +312,39 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 
 function dgvCockpitStyles() {
 	return `<style>
+		.dux-synthetic-banner {
+			position: sticky;
+			top: 0;
+			z-index: 100;
+			background: #f59e0b;
+			color: #422006;
+			padding: 0 24px;
+			height: 36px;
+			display: flex;
+			align-items: center;
+			gap: 12px;
+			font-family: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+			font-size: 13px;
+			border-bottom: 2px solid #b45309;
+			box-shadow: 0 2px 4px rgba(15, 23, 42, 0.08);
+		}
+		.dux-synthetic-banner strong {
+			font-weight: 700;
+			letter-spacing: 0.05em;
+		}
+		.dux-synthetic-banner span {
+			font-weight: 500;
+			opacity: 0.9;
+		}
 		.dgv-cockpit-shell {
 			font-family: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 			color: #0f172a;
 			background: #f8fafc;
 			min-height: calc(100vh - 60px);
 			padding: 32px 40px 56px 40px;
+		}
+		.dgv-cockpit-shell.dgv-with-banner {
+			min-height: calc(100vh - 60px - 36px);
 		}
 		.dgv-cockpit-topbar {
 			display: flex; justify-content: space-between; align-items: flex-end;
