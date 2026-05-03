@@ -259,6 +259,27 @@ debugging.
    company, account)`), add them via a one-time `patches.txt`
    migration using `frappe.db.add_index()` or raw `ALTER TABLE`.
 
+4. **SSH disconnects kill long-running `bench execute` commands.**
+   Any bench command expected to run longer than ~5 minutes must be
+   wrapped with `nohup` and explicit output redirect:
+
+       nohup bench --site SITE execute MODULE.FUNC \
+         > /tmp/bench-output.log 2>&1 &
+
+   Otherwise an SSH session timeout will kill the process. Discovered
+   during Phase 3 perf measurement; affected refresh and seed runs
+   that ran past the SSH idle limit.
+
+5. **MariaDB `EXPLAIN` must be run against the EXACT query the
+   application executes, not a simplified version.** The Phase 3
+   refresh query GROUP BYs on `tabAccount` columns
+   (`account_type`, `root_type`) joined from a separate table; testing
+   `EXPLAIN` on the simple `SELECT FROM tabGL Entry GROUP BY ...`
+   misses this and shows misleading "index-only" results that don't
+   reflect what the optimizer actually chooses for the real query
+   (which switched to a tabAccount-driven nested-loop). Always copy
+   the literal SQL from the application code into `EXPLAIN`.
+
 ## How to start a new Claude Code session
 
 1. Open Claude Code in the repo root.
