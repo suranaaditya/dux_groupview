@@ -29,9 +29,12 @@ These are non-negotiable. They protect the project from drift.
    touches `tabGL Entry` is the background refresh function in
    `dux_groupview/snapshots/refresh.py`.
 
-2. **Never modify any ERPNext doctype.** No custom fields on Account,
-   Company, GL Entry, or any stock doctype. All extensions live in our
-   own doctypes. This protects upgrades and keeps the app removable.
+2. **Never modify ERPNext doctype schemas** (no custom fields, links,
+   child tables, or controller behavior). Adding helper indexes to
+   stock tables IS permitted when justified by aggregation perf,
+   documented in `patches.txt`, and reversible via `DROP INDEX`. The
+   intent of this rule is to prevent app coupling to ERPNext
+   internals — indexes are operational, not structural.
 
 3. **Never write to the books.** This app is read-only on accounting data.
    It can write to its own snapshot/cache/settings doctypes, nothing else.
@@ -101,17 +104,21 @@ without any custom scoping logic.
 
 These numbers are commitments. Regression triggers a fix.
 
-| Operation                  | Target         |
-|----------------------------|----------------|
-| Cockpit initial paint      | 200 ms         |
-| Spotlight cards filled     | 400 ms         |
-| Trust list filled          | 600 ms         |
-| Trust drill                | 300 ms         |
-| Account drill              | 500 ms         |
-| Heatmap toggle / search    | instant        |
-| Background refresh p95     | <15 sec        |
-| Manual full refresh        | <60 sec        |
-| Snapshot row read latency  | <50 ms         |
+| Operation                                    | Target         |
+|----------------------------------------------|----------------|
+| Cockpit initial paint                        | 200 ms         |
+| Spotlight cards filled                       | 400 ms         |
+| Trust list filled                            | 600 ms         |
+| Trust drill                                  | 300 ms         |
+| Account drill                                | 500 ms         |
+| Background refresh p95                       | <15 sec        |
+| Manual full refresh                          | <60 sec        |
+| Snapshot row read latency                    | <50 ms         |
+| Pivot grid initial render (production scale) | <2 sec         |
+| Heatmap toggle                               | instant        |
+| Search filter                                | instant        |
+| Date change (pivot refetch + re-render)      | <1.5 sec       |
+| Trust column collapse                        | <100 ms        |
 
 Measure on production-shaped data (59 entities, ~700 accounts each,
 5M+ GL entries). Dev site (~thousand entries) is meaningless for perf.
