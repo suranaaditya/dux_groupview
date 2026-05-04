@@ -113,11 +113,17 @@ def refresh_spotlight_cache(snapshot_date=None):
 # Aggregation
 # ---------------------------------------------------------------------------
 
-def _aggregate(card, snapshot_date):
+def _aggregate(card, snapshot_date, companies=None):
 	"""Sum matching accounts for one card on one snapshot date.
 
 	Returns 0.0 if snapshot_date is None, no matching rows exist, or
 	the snapshot itself does not exist.
+
+	`companies` is an optional iterable of company names. When supplied
+	(and non-empty), restricts the aggregation to those companies via
+	an additional `WHERE company IN (...)` clause. Used by the cockpit's
+	scope-filter endpoint; the standard cache refresh always passes None
+	(i.e. all companies the snapshot already covers).
 	"""
 	if snapshot_date is None:
 		return 0.0
@@ -126,6 +132,20 @@ def _aggregate(card, snapshot_date):
 	if clause is None:
 		return 0.0
 	params["snapshot_date"] = snapshot_date
+
+	company_clause = ""
+	if companies is not None:
+		companies = [c for c in companies if c]
+		if not companies:
+			return 0.0
+		# Single-element IN tuples are fine on MariaDB through the
+		# pyformat driver (`IN ('x')` is valid SQL); no need to duplicate.
+		placeholders = ", ".join(
+			f"%(co_{i})s" for i in range(len(companies))
+		)
+		for i, c in enumerate(companies):
+			params[f"co_{i}"] = c
+		company_clause = f" AND company IN ({placeholders})"
 
 	# CASE flips sign for natural-credit root types so the stored value
 	# is positive on the natural side.
@@ -140,10 +160,13 @@ def _aggregate(card, snapshot_date):
 		FROM `tabDGV TB Snapshot Row`
 		WHERE snapshot_date = %(snapshot_date)s
 		  AND ({clause})
+		  {company_clause}
 		""",
 		params,
 	)
 	return round(flt(rows[0][0]), 2) if rows else 0.0
+
+
 
 
 def _match_clause(card):
@@ -256,3 +279,13 @@ def _upsert(card_id, snapshot_date, value, delta, delta_percent,
 	doc.card_definition_hash = CARD_DEFINITION_HASH
 	doc.flags.ignore_permissions = True
 	doc.insert()
+
+
+# ---------------------------------------------------------------------------
+# Public aliases for cross-module reuse (cockpit's filtered-spotlight path
+# imports these). The underscored names remain canonical inside this module.
+# ---------------------------------------------------------------------------
+
+aggregate_card_value = _aggregate
+prior_month_snapshot_date = _prior_month_snapshot_date
+historical_month_end_dates = _historical_month_end_dates

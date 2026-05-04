@@ -16,6 +16,13 @@ import frappe
 from frappe import _
 from frappe.utils import flt, get_datetime, getdate, now_datetime
 
+from dux_groupview.dux_groupview.api.pivot import _resolve_scope
+from dux_groupview.dux_groupview.snapshots.spotlight_refresh import (
+	SPARKLINE_LENGTH,
+	aggregate_card_value,
+	historical_month_end_dates,
+	prior_month_snapshot_date,
+)
 from dux_groupview.dux_groupview.spotlight.cards import CARDS, by_id
 
 
@@ -100,6 +107,96 @@ def get_spotlight_cards(snapshot_date):
 			"formatted_delta": _format_delta(delta, card["format"]),
 		})
 	return out
+
+
+@frappe.whitelist()
+def get_spotlight_cards_filtered(snapshot_date, companies):
+	"""Return spotlight cards aggregated for an explicit subset of companies.
+
+	Mirrors the shape of get_spotlight_cards but bypasses
+	`tabDGV Spotlight Cache` (which stores all-company aggregations) and
+	re-computes each card's value, delta, and 6-point sparkline directly
+	from `tabDGV TB Snapshot Row`. Use only when scope is non-empty
+	and narrower than the user's full allowed set; for the default "all
+	companies" scope the cached endpoint is faster and equally correct.
+
+	`companies` is intersected with the user's User-Permission-allowed
+	set before any aggregation -- a user cannot widen their visibility.
+
+	Note on hierarchy: this endpoint aggregates by `account_type` or
+	name pattern at the leaf level (per the card definitions in
+	spotlight/cards.py). It deliberately does NOT do the
+	descendant-group aggregation that `get_pivot_data` does, because
+	spotlight matches are predicate-based (e.g. "all accounts with
+	account_type = Receivable") rather than hierarchy-based. A leaf
+	account with the matching predicate already produces the correct
+	value for its card; rolling that value up to a parent group would
+	double-count once the parent group has its own predicate match
+	(rare but not impossible). The pivot grid -- which IS hierarchy-
+	based -- is the right place for tree aggregation; spotlight cards
+	are flat sums.
+	"""
+	_require_cockpit_role()
+	snapshot_date = getdate(snapshot_date)
+
+	allowed = _resolve_scope(companies)
+	if not allowed:
+		# No accessible companies after intersection -- return zeroed
+		# cards in the same shape as get_spotlight_cards.
+		return [_zero_card_payload(card) for card in CARDS]
+
+	prior_month_date = prior_month_snapshot_date(snapshot_date)
+	hist_dates = historical_month_end_dates(snapshot_date, SPARKLINE_LENGTH)
+
+	out = []
+	for card in CARDS:
+		value = aggregate_card_value(card, snapshot_date, companies=allowed)
+		prior_value = (
+			aggregate_card_value(card, prior_month_date, companies=allowed)
+			if prior_month_date is not None else 0.0
+		)
+		delta = round(value - prior_value, 2)
+		delta_percent = (
+			round((delta / prior_value) * 100, 2)
+			if prior_value not in (0, 0.0) else 0.0
+		)
+		sparkline = []
+		for d in hist_dates:
+			sparkline.append(
+				aggregate_card_value(card, d, companies=allowed) if d is not None
+				else None
+			)
+
+		out.append({
+			"card_id": card["id"],
+			"label": card["label"],
+			"polarity": card["polarity"],
+			"format": card["format"],
+			"color": card["color"],
+			"value": value,
+			"delta": delta,
+			"delta_percent": delta_percent,
+			"sparkline_data": sparkline,
+			"formatted_value": _format_value(value, card["format"]),
+			"formatted_delta": _format_delta(delta, card["format"]),
+		})
+	return out
+
+
+def _zero_card_payload(card):
+	return {
+		"card_id": card["id"],
+		"label": card["label"],
+		"polarity": card["polarity"],
+		"format": card["format"],
+		"color": card["color"],
+		"value": 0.0,
+		"delta": 0.0,
+		"delta_percent": 0.0,
+		"sparkline_data": [],
+		"formatted_value": _format_value(0.0, card["format"]),
+		"formatted_delta": _format_delta(0.0, card["format"]),
+	}
 
 
 @frappe.whitelist()
