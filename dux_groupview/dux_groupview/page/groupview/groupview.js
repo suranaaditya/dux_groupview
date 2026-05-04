@@ -26,6 +26,11 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 					<div class="dgv-cockpit-title">Group cockpit</div>
 				</div>
 				<div class="dgv-cockpit-controls">
+					<button type="button" class="dgv-scope-pill" id="dgv-scope-pill" aria-haspopup="true" aria-expanded="false">
+						<span class="dgv-scope-pill-prefix">Showing:</span>
+						<span class="dgv-scope-pill-summary">All companies</span>
+						<span class="dgv-scope-pill-caret" aria-hidden="true">▾</span>
+					</button>
 					<select class="dgv-date-select"></select>
 					<span class="dgv-age-pill" id="dgv-age-pill">…</span>
 				</div>
@@ -47,6 +52,19 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 						<button class="dgv-view-btn" data-view="compare" disabled title="Coming in Phase 4">Compare</button>
 					</div>
 					<input type="text" class="dgv-pivot-search" placeholder="Search account…" />
+					<div class="dgv-depth-toggle" role="group" aria-label="Account depth">
+						<span class="dgv-depth-label">Depth</span>
+						<button class="dgv-depth-btn" data-depth="1">1</button>
+						<button class="dgv-depth-btn" data-depth="2">2</button>
+						<button class="dgv-depth-btn" data-depth="3">3</button>
+						<button class="dgv-depth-btn" data-depth="all">All</button>
+					</div>
+					<div class="dgv-format-toggle" role="group" aria-label="Number format">
+						<span class="dgv-format-label">Format</span>
+						<button class="dgv-format-btn" data-format="crore">Cr</button>
+						<button class="dgv-format-btn" data-format="lakh">L</button>
+						<button class="dgv-format-btn" data-format="full">Full</button>
+					</div>
 					<button class="dgv-heatmap-toggle" id="dgv-heatmap-toggle">
 						<span class="dgv-heatmap-state">Plain</span>
 					</button>
@@ -61,10 +79,28 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 		${dgvCockpitStyles()}
 	`);
 
+	const SCOPE_STORAGE_KEY = 'dgv_cockpit_scope_v1';
+	const SCOPE_STORAGE_VERSION = 1;
+	const DEPTH_STORAGE_KEY = 'dgv_cockpit_depth_v1';
+	const DEPTH_DEFAULT = 3;
+	const FORMAT_STORAGE_KEY = 'dgv_cockpit_format_v1';
+	const FORMAT_DEFAULT = 'crore';
+	const FORMAT_VALUES = ['crore', 'lakh', 'full'];
+
 	let currentDate = null;
 	let agePollHandle = null;
 	let pivotGrid = null;
 	let heatmapOn = false;
+	let trustSelector = null;
+	let depthSetting = loadDepthFromStorage();
+	let formatSetting = loadFormatFromStorage();
+	// `scopeCompanies` holds the currently-applied scope as an array of
+	// company names, OR null to mean "all companies the user can see"
+	// (the cockpit then uses the cached spotlight endpoint, which is
+	// fast). Loaded from localStorage on boot, repopulated on every
+	// Apply.
+	let scopeCompanies = loadScopeFromStorage();
+	let scopeUniverse = []; // every company this user can see (from get_scope_options)
 
 	bootstrap();
 	checkSyntheticPreview();
@@ -85,25 +121,210 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 	}
 
 	function bootstrap() {
-		frappe.call({
-			method: 'dux_groupview.dux_groupview.api.cockpit.get_available_snapshot_dates',
-			callback: function(r) {
-				if (!r || !r.message || !r.message.length) {
-					$('#dgv-card-grid').html(emptyState('No snapshots yet. Run a refresh first.'));
-					return;
-				}
-				const dates = r.message;
-				populateDateSelect(dates);
-				currentDate = dates[0];
-				$('.dgv-date-select').val(currentDate);
-				loadCards(currentDate);
-				loadAge(currentDate);
-				loadPivot(currentDate);
-				wirePivotControls();
-				if (agePollHandle) clearInterval(agePollHandle);
-				agePollHandle = setInterval(() => loadAge(currentDate), 30000);
-			},
+		// Fetch dates and scope options in parallel; both are cheap and
+		// the page can't render until both resolve.
+		const datesPromise = new Promise((resolve) => {
+			frappe.call({
+				method: 'dux_groupview.dux_groupview.api.cockpit.get_available_snapshot_dates',
+				callback: function(r) { resolve((r && r.message) || []); },
+			});
 		});
+		const scopePromise = new Promise((resolve) => {
+			frappe.call({
+				method: 'dux_groupview.dux_groupview.api.pivot.get_scope_options',
+				callback: function(r) { resolve((r && r.message) || { trusts: [] }); },
+			});
+		});
+
+		Promise.all([datesPromise, scopePromise]).then(([dates, scopeOptions]) => {
+			if (!dates.length) {
+				$('#dgv-card-grid').html(emptyState('No snapshots yet. Run a refresh first.'));
+				return;
+			}
+
+			// Build the universe of all companies this user can see.
+			scopeUniverse = [];
+			(scopeOptions.trusts || []).forEach(t => {
+				(t.companies || []).forEach(c => scopeUniverse.push(c));
+			});
+
+			// Reconcile any persisted scope against the current universe
+			// (companies the user no longer has permission for, or that
+			// were renamed, get pruned). An empty result coerces to
+			// "all companies" (== null).
+			scopeCompanies = reconcileScope(scopeCompanies, scopeUniverse);
+
+			// First-visit smart default: if no scope is persisted, land
+			// on the largest trust by company count rather than dump 59
+			// columns on a fresh user. We do NOT save this to localStorage
+			// -- the user's first explicit Apply is what becomes their
+			// "remembered" scope. If they never interact, they get the
+			// smart default again next time (and if the universe shifts,
+			// the default tracks it).
+			if (scopeCompanies === null) {
+				scopeCompanies = applySmartDefaultScope(
+					scopeOptions.trusts || [], scopeUniverse
+				);
+			}
+
+			// Mount the trust selector against the header pill.
+			mountTrustSelector(scopeOptions.trusts || []);
+
+			// Populate date dropdown and render initial data.
+			populateDateSelect(dates);
+			currentDate = dates[0];
+			$('.dgv-date-select').val(currentDate);
+			loadCards(currentDate);
+			loadAge(currentDate);
+			loadPivot(currentDate);
+			wirePivotControls();
+			if (agePollHandle) clearInterval(agePollHandle);
+			agePollHandle = setInterval(() => loadAge(currentDate), 30000);
+		});
+	}
+
+	function mountTrustSelector(trusts) {
+		const triggerEl = document.getElementById('dgv-scope-pill');
+		if (!triggerEl || !window.DuxTrustSelector) return;
+		// Tear down a previous instance (e.g. on reload).
+		if (trustSelector) {
+			try { trustSelector.destroy(); } catch (e) { /* swallow */ }
+		}
+		trustSelector = new window.DuxTrustSelector(triggerEl, {
+			trusts: trusts,
+			initialSelection: scopeCompanies || scopeUniverse,
+			onApply: function(selected, isAll) {
+				scopeCompanies = isAll ? null : selected;
+				saveScopeToStorage(scopeCompanies);
+				dimAffectedSections(true);
+				loadCards(currentDate);
+				loadPivot(currentDate);
+				// Cards / pivot fetches each clear their own dim on
+				// success; nothing else to do here.
+			},
+			onCancel: function() { /* no-op; selector handles state */ },
+		});
+	}
+
+	function dimAffectedSections(on) {
+		$('#dgv-card-grid').toggleClass('dgv-loading-dim', !!on);
+		$('#pivot-grid').toggleClass('dgv-loading-dim', !!on);
+	}
+
+	function reconcileScope(saved, universe) {
+		if (!saved || !saved.length) return null;  // null == all
+		const universeSet = new Set(universe);
+		const reconciled = saved.filter(c => universeSet.has(c));
+		if (!reconciled.length) return null;
+		// If the persisted scope == the user's full universe, normalize
+		// to null so the cached spotlight endpoint takes over.
+		if (reconciled.length === universe.length) return null;
+		return reconciled;
+	}
+
+	function pickLargestTrust(trusts) {
+		// "Largest" = most companies. Tie-break: trust id alphabetically
+		// (deterministic, no surprise on a re-render). Returns null if
+		// no trust has any companies.
+		let best = null;
+		(trusts || []).forEach(t => {
+			const count = (t.companies || []).length;
+			if (count === 0) return;
+			if (!best) { best = t; return; }
+			if (count > best.companies.length) { best = t; return; }
+			if (count === best.companies.length && t.id < best.id) best = t;
+		});
+		return best;
+	}
+
+	function applySmartDefaultScope(trusts, universe) {
+		// Called when there's no persisted scope. Land first-time users
+		// on the largest trust by company count, so they don't face a
+		// 59-column wall of data on first paint. If the largest trust IS
+		// the full universe (e.g. dev seed where all companies fall under
+		// "Other"), fall back to null (= all companies, cached path).
+		const largest = pickLargestTrust(trusts);
+		if (!largest) return null;
+		if (largest.companies.length >= universe.length) return null;
+		return [...largest.companies];
+	}
+
+	function loadScopeFromStorage() {
+		try {
+			const raw = window.localStorage.getItem(SCOPE_STORAGE_KEY);
+			if (!raw) return null;
+			const parsed = JSON.parse(raw);
+			if (!parsed || parsed.version !== SCOPE_STORAGE_VERSION) return null;
+			if (!Array.isArray(parsed.selected_companies)) return null;
+			return parsed.selected_companies;
+		} catch (e) {
+			// Incognito / blocked storage / parse error -- silent fallback.
+			return null;
+		}
+	}
+
+	function saveScopeToStorage(companies) {
+		try {
+			if (companies === null) {
+				window.localStorage.removeItem(SCOPE_STORAGE_KEY);
+				return;
+			}
+			window.localStorage.setItem(SCOPE_STORAGE_KEY, JSON.stringify({
+				version: SCOPE_STORAGE_VERSION,
+				selected_companies: companies,
+				saved_at: new Date().toISOString(),
+			}));
+		} catch (e) {
+			// Storage unavailable -- accept that scope won't persist.
+		}
+	}
+
+	function loadDepthFromStorage() {
+		try {
+			const raw = window.localStorage.getItem(DEPTH_STORAGE_KEY);
+			if (!raw) return DEPTH_DEFAULT;
+			if (raw === 'all') return 'all';
+			const parsed = parseInt(raw, 10);
+			if (!isNaN(parsed) && parsed >= 1 && parsed <= 99) return parsed;
+		} catch (e) { /* fall through */ }
+		return DEPTH_DEFAULT;
+	}
+
+	function saveDepthToStorage(value) {
+		try {
+			window.localStorage.setItem(DEPTH_STORAGE_KEY, String(value));
+		} catch (e) { /* ignore */ }
+	}
+
+	function syncDepthButtons() {
+		const $btns = $('.dgv-depth-btn');
+		$btns.removeClass('dgv-depth-active');
+		const target = String(depthSetting);
+		$btns.filter(function() {
+			return String($(this).data('depth')) === target;
+		}).addClass('dgv-depth-active');
+	}
+
+	function loadFormatFromStorage() {
+		try {
+			const raw = window.localStorage.getItem(FORMAT_STORAGE_KEY);
+			if (raw && FORMAT_VALUES.indexOf(raw) !== -1) return raw;
+		} catch (e) { /* fall through */ }
+		return FORMAT_DEFAULT;
+	}
+
+	function saveFormatToStorage(value) {
+		try {
+			window.localStorage.setItem(FORMAT_STORAGE_KEY, String(value));
+		} catch (e) { /* ignore */ }
+	}
+
+	function syncFormatButtons() {
+		const $btns = $('.dgv-format-btn');
+		$btns.removeClass('dgv-format-active');
+		$btns.filter(function() {
+			return String($(this).data('format')) === formatSetting;
+		}).addClass('dgv-format-active');
 	}
 
 	function populateDateSelect(dates) {
@@ -120,18 +341,28 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 	function loadPivot(snapshotDate) {
 		const containerEl = document.getElementById('pivot-grid');
 		if (!containerEl) return;
+		const args = { snapshot_date: snapshotDate, format: 'crore' };
+		// Only attach `companies` when scope is narrower than full --
+		// keeps the default request shape identical to Phase 3 and lets
+		// the server skip the JSON.loads + intersection work.
+		if (scopeCompanies !== null) {
+			args.companies = JSON.stringify(scopeCompanies);
+		}
 		frappe.call({
 			method: 'dux_groupview.dux_groupview.api.pivot.get_pivot_data',
-			args: { snapshot_date: snapshotDate, format: 'crore' },
+			args: args,
 			callback: function(r) {
+				$('#pivot-grid').removeClass('dgv-loading-dim');
 				if (!r || !r.message) return;
 				if (!pivotGrid) {
 					pivotGrid = new window.DuxPivotGrid(containerEl, {
-						format: 'crore', height: 600,
+						format: formatSetting, height: 600, depth: depthSetting,
 					});
 				}
 				pivotGrid.render(r.message);
 				pivotGrid.setHeatmap(heatmapOn);
+				pivotGrid.setDepth(depthSetting);
+				pivotGrid.setFormat(formatSetting);
 			},
 		});
 	}
@@ -155,6 +386,32 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 			if (pivotGrid) pivotGrid.setHeatmap(heatmapOn);
 		});
 
+		// Depth toggle: pill group, last-clicked wins, persisted to
+		// localStorage. The active state is also restored on page boot
+		// (see syncDepthButtons() below).
+		syncDepthButtons();
+		$('.dgv-depth-btn').off('click').on('click', function() {
+			const value = $(this).data('depth');
+			depthSetting = (value === 'all') ? 'all' : parseInt(value, 10);
+			saveDepthToStorage(depthSetting);
+			syncDepthButtons();
+			if (pivotGrid) pivotGrid.setDepth(depthSetting);
+		});
+
+		// Number format toggle: Cr / L / Full. Affects pivot cells only;
+		// spotlight cards always render in Cr (no toggle wiring there).
+		// State persisted in localStorage so a returning user keeps
+		// their last view.
+		syncFormatButtons();
+		$('.dgv-format-btn').off('click').on('click', function() {
+			const value = String($(this).data('format'));
+			if (FORMAT_VALUES.indexOf(value) === -1) return;
+			formatSetting = value;
+			saveFormatToStorage(formatSetting);
+			syncFormatButtons();
+			if (pivotGrid) pivotGrid.setFormat(formatSetting);
+		});
+
 		// Disabled view-mode buttons just show a tooltip; no handler needed.
 		$('.dgv-view-btn[disabled]').off('click').on('click', function(e) {
 			e.preventDefault();
@@ -174,11 +431,26 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 	}
 
 	function loadCards(snapshotDate) {
-		$('#dgv-card-grid').html(loadingState());
+		// First load (empty grid) shows the loading skeleton; subsequent
+		// loads (date change, scope change) dim the existing cards in
+		// place to avoid a jarring blank flash.
+		const $grid = $('#dgv-card-grid');
+		if (!$grid.children().length) {
+			$grid.html(loadingState());
+		}
+		// Full-scope -> cached endpoint (fast). Narrow scope -> filtered
+		// endpoint that re-aggregates from snapshot rows.
+		const isFullScope = scopeCompanies === null;
+		const method = isFullScope
+			? 'dux_groupview.dux_groupview.api.cockpit.get_spotlight_cards'
+			: 'dux_groupview.dux_groupview.api.cockpit.get_spotlight_cards_filtered';
+		const args = { snapshot_date: snapshotDate };
+		if (!isFullScope) args.companies = JSON.stringify(scopeCompanies);
 		frappe.call({
-			method: 'dux_groupview.dux_groupview.api.cockpit.get_spotlight_cards',
-			args: { snapshot_date: snapshotDate },
+			method: method,
+			args: args,
 			callback: function(r) {
+				$('#dgv-card-grid').removeClass('dgv-loading-dim');
 				if (r && r.message) {
 					renderCards(r.message);
 				}
@@ -400,6 +672,48 @@ function dgvCockpitStyles() {
 			background: #fff; border: 1px solid #e2e8f0; border-radius: 8px;
 			padding: 6px 12px; font-family: 'Geist', sans-serif; font-size: 12px;
 			color: #0f172a; width: 200px;
+		}
+		.dgv-depth-toggle {
+			display: inline-flex; align-items: center;
+			background: #fff; border: 1px solid #e2e8f0;
+			border-radius: 8px; overflow: hidden;
+		}
+		.dgv-depth-label {
+			padding: 0 10px 0 12px;
+			font-size: 11px; font-weight: 600;
+			letter-spacing: 0.06em; text-transform: uppercase;
+			color: #94a3b8;
+		}
+		.dgv-depth-btn {
+			background: transparent; border: none; padding: 6px 12px;
+			font-family: 'Geist', sans-serif; font-size: 12px; color: #475569;
+			cursor: pointer; border-left: 1px solid #e2e8f0;
+			transition: background 0.1s ease;
+		}
+		.dgv-depth-btn:hover:not(.dgv-depth-active) { background: #f1f5f9; }
+		.dgv-depth-btn.dgv-depth-active {
+			background: #0f172a; color: #fff; cursor: default;
+		}
+		.dgv-format-toggle {
+			display: inline-flex; align-items: center;
+			background: #fff; border: 1px solid #e2e8f0;
+			border-radius: 8px; overflow: hidden;
+		}
+		.dgv-format-label {
+			padding: 0 10px 0 12px;
+			font-size: 11px; font-weight: 600;
+			letter-spacing: 0.06em; text-transform: uppercase;
+			color: #94a3b8;
+		}
+		.dgv-format-btn {
+			background: transparent; border: none; padding: 6px 12px;
+			font-family: 'Geist', sans-serif; font-size: 12px; color: #475569;
+			cursor: pointer; border-left: 1px solid #e2e8f0;
+			transition: background 0.1s ease;
+		}
+		.dgv-format-btn:hover:not(.dgv-format-active) { background: #f1f5f9; }
+		.dgv-format-btn.dgv-format-active {
+			background: #0f172a; color: #fff; cursor: default;
 		}
 		.dgv-pivot-search:focus { outline: none; border-color: #94a3b8; }
 		.dgv-heatmap-toggle {
