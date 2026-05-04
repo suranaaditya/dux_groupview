@@ -77,6 +77,38 @@ profile + tear down; (b) wait for staging clone (Q2) and profile
 there.
 **Status:** Open
 
+### Q11 — Migrate trust selector scope persistence to a User Preferences doctype
+**Asked by:** Phase 3.5 trust selector
+**Blocking phase:** Phase 5 (settings + saved views)
+**Question:** Phase 3.5 persists the cockpit's trust-selector scope in
+`localStorage` under key `dgv_cockpit_scope_v1`. Storage is
+per-browser, not per-Frappe-user, so a user logging in from a second
+device starts with the all-companies default rather than their
+last-used scope. Phase 5 should lift this into a `DGV User
+Preferences` doctype (single-row-per-user) with a small whitelisted
+get/set pair, and the cockpit should fall back to localStorage only
+when the server-side preference is absent. The storage key is already
+versioned (`v1`) so the migration can be a one-shot copy from
+localStorage to the doctype on next page load, then localStorage can
+be cleared.
+**Status:** Open
+
+### Q12 — Hover tooltip on pivot cells showing full Indian-format value
+**Asked by:** Phase 3.5 round-2 review
+**Blocking phase:** None (UX nice-to-have)
+**Question:** When the pivot is rendering in Cr or L mode, the
+displayed value is rounded to 2 decimals against the scaled unit
+(e.g. `141.26 Cr` hides anything below ₹1 lakh per cell; `14,126.00 L`
+hides anything below ₹1). Add a hover tooltip on each numeric cell
+that shows the raw value formatted with the Indian comma-grouping
+helper (`format_indian`), regardless of the active toggle. Deferred
+from Phase 3.5 to keep the format-toggle scope tight; add when users
+ask for precision-on-demand without flipping the toggle. Cheapest
+implementation: `title` attribute on `.pivot-cell-num` carrying the
+pre-computed Indian-format string. Avoid re-computing on every
+hover.
+**Status:** Open
+
 ### Q5 — uv not installed on dev bench venv
 **Asked by:** Phase 0 scaffolding
 **Blocking phase:** None directly; future bench new-app calls would fail.
