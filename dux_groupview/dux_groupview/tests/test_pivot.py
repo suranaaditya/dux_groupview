@@ -64,16 +64,51 @@ class TestPivot(FrappeTestCase):
 			seen.add(a["name"])
 
 	# ------------------------------------------------------------------
-	# 2 -- gold standard: each cell matches DGV TB Snapshot Row exactly
+	# 2 -- leaf invariant: for every account that has no children in the
+	# response tree, its balance must equal the direct sum of snapshot
+	# rows for that account_name. Group / non-leaf accounts are
+	# covered by the recursive invariant in test_pivot_filter
+	# (test_get_pivot_data_group_totals_match_descendants_recursively),
+	# which asserts balance[node] = own_row + sum(balance[child]).
 	# ------------------------------------------------------------------
 
-	def test_pivot_data_matches_snapshot(self):
+	def test_pivot_leaf_balances_match_snapshot(self):
+		"""Leaf-only invariant.
+
+		Post-Phase-3.5 the API bubbles every direct snapshot row up
+		through its ancestor chain so non-leaf accounts carry rolled-up
+		totals. The original Phase 3 assertion (every cell == direct
+		snapshot sum by account_name) no longer holds for any account
+		that has descendants in the response.
+
+		This rewritten test guards the OTHER half of the invariant:
+		accounts that have NO children in the response tree must still
+		equal their direct snapshot sum. A regression that accidentally
+		bubbles values into a true leaf would fail this assertion;
+		Phase 3.5's recursive test would not catch that case (leaves
+		trivially satisfy `own + sum([]) == own`).
+
+		Together the two tests are complementary:
+		- Phase 3.5 recursive test: balance[node] == own + sum(children),
+		  asserted at every level.
+		- This test: leaves have no descendants, so balance[leaf] ==
+		  direct snapshot sum, asserted only on accounts the response
+		  tree treats as leaves.
+
+		Note: "leaf" here is determined by the response tree shape, NOT
+		by the per-account_name `is_group` field returned in the
+		response. `is_group` reflects a majority vote across companies
+		and can be False on accounts that have children in the response
+		(e.g. "Unsecured Loans" is is_group=False in most companies but
+		parents many child accounts in the unified hierarchy). The
+		reliable leaf signal is "no other account references this one
+		as `parent`".
+		"""
 		snapshot_date = today()
 		data = pivot_api.get_pivot_data(snapshot_date)
 
-		# Build expected: SUM(balance) per (account_name, company) for
-		# the snapshot. Use account_name (stripped of company suffix)
-		# so we match the API's grouping key.
+		# Direct sum of snapshot rows by (account_name, company) —
+		# the expected value for any true leaf.
 		expected = defaultdict(lambda: defaultdict(float))
 		rows = frappe.db.sql(
 			"""
@@ -88,16 +123,38 @@ class TestPivot(FrappeTestCase):
 		for r in rows:
 			expected[r["account_name"]][r["company"]] += float(flt(r["balance"]))
 
+		# Identify accounts referenced as a parent by anyone -- these
+		# are non-leaves regardless of their is_group flag.
+		has_children = set()
+		for a in data["accounts"]:
+			parent = a.get("parent") or ""
+			if parent:
+				has_children.add(parent)
+
+		leaves_checked = 0
 		for account_name, company_map in data["balances"].items():
+			if account_name in has_children:
+				# Non-leaf in the response tree; covered by the Phase
+				# 3.5 recursive invariant test.
+				continue
 			for company, value in company_map.items():
 				exp = expected[account_name][company]
 				self.assertAlmostEqual(
 					float(value), exp, places=2,
 					msg=(
-						f"Pivot value for {account_name} × {company}: "
-						f"got {value}, expected {exp}."
+						f"Leaf {account_name!r} × {company!r}: "
+						f"got {value}, expected direct snapshot sum {exp}. "
+						f"(A non-zero diff here means a leaf account is "
+						f"receiving bubbled-up descendant values, which "
+						f"violates the post-Phase-3.5 leaf invariant.)"
 					),
 				)
+			leaves_checked += 1
+
+		self.assertGreater(
+			leaves_checked, 0,
+			"Expected at least one true leaf in the response to verify",
+		)
 
 	# ------------------------------------------------------------------
 	# 3 -- user permissions
