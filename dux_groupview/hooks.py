@@ -9,15 +9,19 @@ app_license = "mit"
 # ------------------
 # Order matters: clusterize.min.js must load before pivot_grid.js,
 # which must load before cockpit.js (which instantiates DuxPivotGrid).
+# trust_selector.js is independent of the pivot but loaded ahead of
+# cockpit.js so the page can construct DuxTrustSelector during boot.
 app_include_js = [
 	"/assets/dux_groupview/vendor/clusterize/clusterize.min.js",
 	"/assets/dux_groupview/js/pivot_grid.js",
+	"/assets/dux_groupview/js/trust_selector.js",
 	"/assets/dux_groupview/js/cockpit.js",
 ]
 app_include_css = [
 	"/assets/dux_groupview/vendor/clusterize/clusterize.css",
 	"/assets/dux_groupview/css/cockpit.css",
 	"/assets/dux_groupview/css/pivot_grid.css",
+	"/assets/dux_groupview/css/trust_selector.css",
 ]
 
 # Apps

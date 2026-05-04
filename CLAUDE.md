@@ -47,6 +47,30 @@ These are non-negotiable. They protect the project from drift.
    the stock TB report", it does not belong here. We build pivot,
    drills, mobile, snapshots, owner UX — different product.
 
+6. **Snapshot rows are leaf-data canonical; group totals are computed
+   at request time, not stored.** `tabDGV TB Snapshot Row` holds one
+   row per (date, company, account) for leaf accounts only. Group /
+   parent-account totals are computed inside `get_pivot_data` by
+   bubbling each direct row's balance up through its ancestor chain
+   (~O(accounts × depth) Python, bounded ms even at production
+   scale). Do NOT add group rows to the snapshot cache as a
+   "performance optimization" — it doubles cache size, doubles
+   refresh cost, and the bubble-up is the right place to absorb
+   future changes in how the hierarchy is interpreted (alternate
+   trust groupings, schedule-III mapping, etc.). Rule set in Phase 3.5
+   after measurement.
+
+7. **Spotlight cards aggregate by predicate, never by hierarchy.**
+   Each card in `spotlight/cards.py` matches accounts via
+   `account_type = X` or `root_type + name LIKE pattern`. The
+   aggregator sums every leaf row that matches; it does NOT roll
+   that result up to ancestors that also match. A future session
+   might want to "fix" this for consistency with the pivot's group
+   totals — doing so silently double-counts any leaf whose ancestor
+   group also matches the predicate. The pivot is the tree-aware
+   view; spotlight is the predicate-aware view. They are different
+   products by design.
+
 ## Architecture
 
 ### Layers
@@ -207,9 +231,14 @@ SSH: frappe@187.127.132.58
 - Commit hygiene: no PATs in code; ask before pushing; descriptive
   commit messages.
 - Three docs stay current: `CLAUDE.md`, `PHASE_LOG.md`, `OPEN_QUESTIONS.md`.
-- Bench commands: dev server runs via `bench start`, not supervisor.
-  Only `clear-cache` is needed after Python changes; full `bench restart`
-  is not required.
+- Bench commands: dev server runs gunicorn under `bench start` (not
+  supervisor). `bench --site SITE clear-cache` flushes Frappe's app
+  cache (boot info, hooks, scheduler events, doctype metadata) — needed
+  for `hooks.py`, doctype JSON, and `app_include_js` changes. It does
+  NOT reload Python module code in the running gunicorn workers; new
+  module-level attributes (functions, classes added to an existing
+  file) require a SIGHUP to the gunicorn master. See Frappe gotcha #6
+  for the recipe.
 - **Do not propose or schedule autonomous `/schedule` tasks** (Routines,
   cron-driven background agents, etc.). Production-relevant operations
   -- backfill, deploy, scheduler health checks, refresh-perf
@@ -287,6 +316,64 @@ debugging.
    reflect what the optimizer actually chooses for the real query
    (which switched to a tabAccount-driven nested-loop). Always copy
    the literal SQL from the application code into `EXPLAIN`.
+
+6. **Gunicorn `--preload` workers cache imported Python modules;
+   adding new module attributes needs a SIGHUP.** The dev server's
+   gunicorn master runs with `--preload`, which imports the
+   application once in the master and forks workers from that
+   snapshot. Editing the body of an existing function is fine; ADDING
+   a new function or class to an existing module is invisible to
+   workers until they re-fork. Symptom: the browser shows
+   `module 'X' has no attribute 'Y'` from a `frappe.call`, but
+   `bench execute X.Y` works (fresh process, fresh import). Recipe:
+
+       # Find the master (oldest gunicorn process matching the bind):
+       MASTER=$(pgrep -of "gunicorn -b")
+       kill -HUP "$MASTER"
+
+   Workers respawn in ~3 seconds; the master PID is unchanged.
+   `bench restart` works too but is heavier (also bounces scheduler,
+   workers, socketio). Avoid `pkill -HUP -f gunicorn` (carry-over
+   from the Phase 2 perf work): pkill targets the parent and the
+   SSH client bails with exit 255 even though the signal still
+   fires — so it works but the shell return is misleading.
+
+   Discovered during Phase 3.5 deploy when `get_scope_options` was
+   added; the new endpoint returned `has no attribute` from HTTP
+   calls until the master was HUP'd, even though `bench execute`
+   could reach it.
+
+## Code conventions
+
+App-specific patterns to follow so the codebase stays readable as it
+grows. Distinct from "Hard architectural rules" — these are
+conventions, not laws; revise if there's a good reason.
+
+### Versioned localStorage keys for cockpit user prefs
+
+Until Phase 5 lifts user prefs into a `DGV User Preferences` doctype,
+the cockpit persists state per-browser via versioned localStorage
+keys:
+
+- `dgv_cockpit_scope_v1` — trust selector scope (JSON object;
+  payload includes a `version` field for the migration check on load)
+- `dgv_cockpit_depth_v1` — depth control (1 / 2 / 3 / "all")
+- `dgv_cockpit_format_v1` — number format (crore / lakh / full)
+
+Any new cockpit pref added before Phase 5 should follow the
+`dgv_cockpit_*_v1` naming pattern (and version-the-payload for
+non-trivial values), so the Phase 5 migration script can find them
+all and copy into the doctype on next page load.
+
+### Python / JS format helpers must move together
+
+Some helpers live in both Python and JS — e.g. `format_indian` in
+`dux_groupview/pivot/format.py` and `formatIndian` in
+`public/js/pivot_grid.js`. The Python version is the executable spec
+that the unit test runs against; the JS version is a hand translation
+that must agree on every test case. If you change one, change the
+other in the same commit, and update the shared test cases. Do not
+add a new helper to one side without the other.
 
 ## How to start a new Claude Code session
 

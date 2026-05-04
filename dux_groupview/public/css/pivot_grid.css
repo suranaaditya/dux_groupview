@@ -162,17 +162,108 @@ th.pivot-total-head {
 	background: #f1f5f9;
 }
 
-.pivot-row-search-hit .pivot-cell-label {
+/* Search hit overrides depth-tinted background on the label cell.
+ * Specificity bumped to (0,3,0) so it outranks the (0,2,1) depth
+ * rules above and the yellow consistently wins regardless of file
+ * order or future selector changes. */
+.pivot-row.pivot-row-search-hit .pivot-cell-label {
 	background: #fef9c3;
 }
 
-.pivot-row-group .pivot-account-name {
+/* Group rows: visually distinguished from leaves via three layered
+ * signals --
+ *
+ *   1. Depth-tinted row background. Same depth = same color across
+ *      all group rows in the pivot, with progressively lighter tints
+ *      as depth increases. Leaves stay white -- the absence of color
+ *      is itself a signal that the row is a leaf account.
+ *
+ *      The bg is set on every <td> in the row (not on the <tr>) so the
+ *      sticky-left label cell and sticky-right group total cell pick
+ *      up the same color; without explicit cell-level bg the sticky
+ *      positioning would let underlying scroll content bleed through.
+ *
+ *      Heatmap interaction: when heatmap is ON, the inline
+ *      style="background-color: rgba(trust_color, opacity)" on
+ *      .pivot-cell-num has higher specificity than these class rules,
+ *      so numeric cells show the heatmap color and the depth bg is
+ *      visible on the sticky label + total cells only. When heatmap
+ *      is OFF, every cell in a group row shares the depth color --
+ *      a horizontal stripe per sub-total level.
+ *
+ *   2. Font weight gradient by depth: depth 0/1 groups at 600, depth
+ *      2+ groups at 500, leaves at 400. Lets the eye read the
+ *      hierarchy from the numbers column alone, even when heatmap
+ *      blanks out the depth bg on numeric cells.
+ *
+ *   3. Inline icon (two horizontal stripes) prefixed to group account
+ *      names -- evokes the "summary line" convention. Always visible
+ *      on the sticky label cell.
+ *
+ *   4. Colour stays #0f172a for groups vs #334155 for leaves -- a
+ *      subtle contrast bump that complements the weight gradient.
+ *
+ * The 2 px accounting underline that lived here in round 2 was
+ * dropped after a visual review: a dark line drawn through every
+ * group row read as visual noise, especially when stacked across
+ * many sub-groups. The depth bg + weight gradient communicate the
+ * same hierarchy more cleanly.
+ */
+
+/* Depth-tinted backgrounds for group rows. Slate progression sampled
+ * from the palette already in use in this stylesheet; each step is
+ * ~5-7% lighter than the previous so the gradient reads at a glance
+ * without looking like data. Distinct from the total row's #f1f5f9
+ * and the search-hit yellow #fef9c3 so the three states never
+ * collide. */
+.pivot-row-group[data-depth] td {
+	/* Catch-all for depth >= 3; specific depth rules below override. */
+	background: #f9fafc;
+}
+.pivot-row-group[data-depth="0"] td {
+	background: #e2e8f0;
+}
+.pivot-row-group[data-depth="1"] td {
+	background: #ebeff4;
+}
+.pivot-row-group[data-depth="2"] td {
+	background: #f3f6f9;
+}
+
+/* Font-weight gradient. Default weight for non-total rows (data-depth
+ * is set on every group and leaf <tr> in _buildRowHTML). The total
+ * row has no data-depth attribute -- it keeps its 700 weight from
+ * the .pivot-row-total rule defined later in this file.
+ */
+.pivot-row-leaf[data-depth] td {
+	font-weight: 400;
+}
+.pivot-row-group[data-depth] td {
+	font-weight: 500;
+}
+/* Roots and depth-1 groups read as the strongest level in the tree. */
+.pivot-row-group[data-depth="0"] td,
+.pivot-row-group[data-depth="1"] td {
 	font-weight: 600;
+}
+
+.pivot-row-group .pivot-account-name {
 	color: #0f172a;
+}
+.pivot-row-group .pivot-cell-num {
+	color: #0f172a;
+}
+.pivot-account-icon {
+	display: inline-block;
+	width: 12px;
+	height: 12px;
+	margin-right: 6px;
+	vertical-align: middle;
+	color: #64748b;
+	flex-shrink: 0;
 }
 
 .pivot-row-leaf .pivot-account-name {
-	font-weight: 400;
 	color: #334155;
 }
 
@@ -240,7 +331,18 @@ th.pivot-total-head {
 	cursor: pointer;
 }
 
-.pivot-row-group .pivot-cell-num,
+/* Full-rupee Indian format (e.g. "1,41,26,00,000.00") needs more
+ * room than the compact crore / lakh views; bump the min-width so
+ * cells don't wrap or clip.
+ */
+.pivot-table[data-format="full"] .pivot-cell-num {
+	min-width: 150px;
+}
+
+/* Group cells stay clickable for Phase 4 drill (drill on a group total
+ * is a useful interaction). The total-row at the bottom is the only
+ * non-clickable surface.
+ */
 .pivot-row-total .pivot-cell-num {
 	cursor: default;
 }
