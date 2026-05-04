@@ -223,6 +223,274 @@ Every one of the 5,581 snapshot rows derived from the 5,015,000 GL entries match
 
 ---
 
+## Phase 3.5 — Trust Selector
+
+**Branch:** `feat/trust-selector`
+**Status:** _to fill in on merge_
+
+**Goal:** Header-pill popover that scopes the cockpit (spotlight cards
++ pivot grid) to a chosen subset of trusts and companies. Default is
+the last-used scope (or all-companies for first-time users). Persisted
+in `localStorage`. Server-side intersection with User Permissions on
+Company is the security boundary -- a user cannot widen their own
+visibility through the selector.
+
+**Deliverables:**
+- [x] `specs/phase-3.5-trust-selector.md` archived
+- [x] `dux_groupview/public/js/trust_selector.js` -- self-contained
+  `DuxTrustSelector` class with tri-state checkboxes, search,
+  click-outside / Esc cancel, localStorage-friendly Apply / Cancel API
+- [x] `dux_groupview/public/css/trust_selector.css` -- popover + pill
+  styling, plus a `dgv-loading-dim` utility for the affected sections
+  during a scope-change fetch
+- [x] `hooks.py` updated to ship the new JS/CSS in the right order
+- [x] `api/pivot.py`: `get_pivot_data` and `get_pivot_summary` accept
+  optional `companies` arg; new `_resolve_scope` helper does the
+  User-Permission intersection in one place; new `get_scope_options`
+  endpoint returns the trust × company universe for the popover
+- [x] `api/cockpit.py`: new `get_spotlight_cards_filtered` endpoint;
+  reuses `aggregate_card_value` / `prior_month_snapshot_date` /
+  `historical_month_end_dates` from `spotlight_refresh.py` (now
+  exported as public aliases) so the filtered path goes through the
+  same SQL-level aggregation as the cache refresh
+- [x] `snapshots/spotlight_refresh.py`: `_aggregate` accepts an
+  optional `companies` iterable. Default `None` keeps the cache-refresh
+  semantics unchanged.
+- [x] `page/groupview/groupview.js`: header pill, selector mount, scope
+  persistence, scoped card / pivot fetches, smooth re-render (existing
+  cards dim in place rather than blank-and-rebuild)
+- [x] `tests/test_pivot_filter.py`: 4 tests including gold-standard
+  filtered-vs-direct-SQL aggregation
+- [ ] Visual verification on dev (RGI-DEMO seed loaded) -- _Aditya_
+- [ ] Performance: scope-change re-render < 1 sec on dev seed -- _Aditya_
+
+**Decisions made:**
+
+- **`null` scope means "all companies".** When the cockpit has the user's
+  full allowed set selected, `scopeCompanies` is normalised to `null`
+  client-side and `companies` is omitted from API calls. This keeps the
+  default fetch shape identical to Phase 3 and lets the server skip the
+  JSON parsing + intersection work, AND lets the spotlight code path
+  hit the cached endpoint (`get_spotlight_cards`) instead of the
+  filtered one.
+- **Empty selection coerces to "all".** A blank scope renders a useless
+  cockpit; both client-side (`_handleApply`) and via the storage
+  reconciliation (`reconcileScope`) we promote empty back to the full
+  universe rather than show an empty page. The user's intent in
+  hitting Apply on an empty draft is almost certainly "reset" rather
+  than "show nothing".
+- **Storage key versioned (`dgv_cockpit_scope_v1`).** Lets us bump the
+  schema in Phase 5 (when scope migrates to `DGV User Preferences`)
+  without orphaning stale entries silently. Version mismatch -> ignore,
+  fall back to all-companies.
+- **Scope persistence is per-browser, not per-Frappe-user.** Logged as
+  Q11. Phase 5 lifts this into a server-side doctype.
+- **Single-trust summary distinguishes full vs partial.** "ASS (16
+  companies)" vs "ASS (14 of 16)". 4+ trusts collapses to "N trusts, M
+  companies" for compactness; below that threshold the pill keeps
+  trust abbreviations so the user can read the scope at a glance.
+- **`tabGL Entry` audit holds.** `grep -rn "tabGL Entry"` across the
+  Phase 3.5 surface (`trust_selector.js`, `pivot.py`, the new code
+  path in `cockpit.py`) returns only docstring mentions; no real
+  queries. The filtered spotlight path reads only
+  `tabDGV TB Snapshot Row`.
+
+**Gotchas surfaced:**
+
+- **Frappe whitelist serialises array args as JSON strings.** Calling
+  `frappe.call({args: {companies: ["a", "b"]}})` arrives at the server
+  as a string. `_resolve_scope` accepts either a Python list OR a
+  JSON-stringified list and decodes via `json.loads` if needed. Tests
+  exercise the Python-list path; the JS path was hand-traced.
+- **Single-element `IN %s` placeholder needs a duplicated tuple.**
+  Carried over from Phase 3's pattern but factored into a tiny
+  `_sql_in_tuple` helper in `pivot.py` to avoid the inline ternary
+  noise repeated across the two queries.
+- **MariaDB `IN ()` with named placeholders works fine.** The filtered
+  spotlight aggregator builds `co_0, co_1, ...` placeholders and
+  populates them from the `companies` list -- avoids the duplicate-the-
+  lone-value workaround when there's exactly one company.
+
+**Performance:**
+
+| Operation | Source / Scale | Duration | Target |
+|---|---|---|---|
+| `get_scope_options` (dev) | tabCompany only | TBD on dev | < 200 ms |
+| `get_pivot_data` with full scope (dev) | unchanged from Phase 3 | < 100 ms | < 500 ms ✅ |
+| `get_pivot_data` with subset scope (dev) | + `WHERE company IN ()` | TBD on dev | < 500 ms |
+| `get_spotlight_cards_filtered` (dev, 6 cards × 13 hist dates) | snapshot rows | TBD on dev | < 500 ms |
+| Scope-change client re-render (dev) | spotlight + pivot | TBD | < 1 sec |
+
+Numbers fill in after the dev verification pass.
+
+**Open follow-ups:**
+
+- Q11 added to OPEN_QUESTIONS.md: migrate scope persistence from
+  localStorage to `DGV User Preferences` doctype in Phase 5.
+
+**Additions (post-initial-review, 2026-05-04):**
+
+Issues raised in initial visual review:
+1. Default load showed all 59 companies (overwhelming on
+   production scale and slow to render).
+2. Group / sub-group totals were missing on the pivot rows -- only
+   leaf accounts had numbers.
+3. Full account hierarchy expanded by default -- on production the
+   pivot becomes a wall of leaves with no sub-totals to skim.
+
+Resolutions, all on the same `feat/trust-selector` branch:
+
+- **Smart default scope.** First-time users (no `dgv_cockpit_scope_v1`
+  in localStorage) now land on the largest trust by company count --
+  ASS for RGI (16 companies), falling back to all-companies if the
+  largest trust is itself the universe (e.g. dev seed where every
+  company is in the synthetic "Other" trust). Tie-broken by trust id
+  alphabetically. The smart default is NOT persisted to localStorage
+  -- the user's first explicit Apply becomes their "remembered"
+  scope; if they never interact, the default tracks the trust set
+  next time.
+- **Group totals at request time (B-lazy).** `get_pivot_data` now
+  bubbles every direct snapshot row's per-company balance up through
+  the ancestor chain in `account_meta`, populating every non-leaf
+  account's entry in the `balances` dict. Aggregation runs from a
+  snapshot of the pre-mutation values so an account's own direct row
+  never gets added to its ancestors twice. Empty-balance accounts are
+  still included in the response (with `{}`) so the hierarchy
+  structure renders intact. Cost is ~O(accounts × depth) Python-side,
+  bounded under 5 ms on the dev seed.
+
+  **Aggregation invariant**: `balance[node] = own_row +
+  sum(balance[child] for child in children(node))` at every level of
+  the response tree. The aggregator deliberately bubbles to ALL
+  ancestors regardless of `is_group` -- real-world charts of accounts
+  contain mid-tree accounts flagged `is_group=False` in the snapshot
+  but still parents to other accounts (e.g. an "Unsecured Loans" leaf
+  with its own balance plus child sub-accounts hanging under it). If
+  the aggregator skipped these, descendants would jump past them to
+  the next `is_group=True` ancestor and the intermediate's stored
+  balance would be just its own row, breaking the recursive
+  invariant. Discovered while running the gold-standard test on the
+  RGI-DEMO seed -- a `Source of Funds (Liabilities)` total was
+  -787 M but the test's leaf-walk only found -610 M; the missing
+  -177 M was descendants under a `is_group=False` "Unsecured Loans"
+  intermediate.
+- **Depth control toggle.** New toolbar pill group `Depth | 1 | 2 |
+  3 | All` next to the search box. Default 3. State persisted in
+  `dgv_cockpit_depth_v1` (separate key from the scope storage so
+  the two preferences evolve independently). The pivot grid grew a
+  `setDepth(n)` method and a new visibility model that merges the
+  depth-driven default with the user's manual expand / collapse
+  intent (separate `userExpanded` and `collapsedAccounts` sets).
+  Manual expand still works regardless of depth, and depth changes
+  preserve the user's manual choices.
+
+**Decisions made for the additions:**
+
+- **Group totals at the API boundary, not in the cache.** The
+  alternative was extending `tabDGV TB Snapshot Row` to also hold
+  group rows, doubling the cache size and forcing every refresh to
+  recompute group sums even when nobody's reading them. The B-lazy
+  approach pays the aggregation cost only on read paths that need it,
+  and reads are already two-layer-cached (the snapshot rows are
+  themselves a cache of `tabGL Entry`).
+- **Spotlight cards stay flat.** The filtered spotlight endpoint
+  deliberately does NOT do hierarchy aggregation -- spotlight matches
+  are predicate-based (`account_type = 'Receivable'`) rather than
+  tree-based, so a hierarchy roll-up would risk double-counting once
+  a parent group also matches the predicate. Documented in a comment
+  in `get_spotlight_cards_filtered` so future maintainers don't
+  retrofit that behaviour.
+- **Manual expand state survives depth changes.** Toggling depth
+  doesn't clear `userExpanded` / `collapsedAccounts`. Rationale:
+  someone who's drilled into a specific deep group expects to keep
+  seeing it when they zoom out. The merge rule (`_isGroupExpanded`)
+  consults the depth default LAST, so manual choices take priority.
+- **Smart default is computed, not saved.** Saving it would muddy the
+  storage semantics ("did the user pick this, or did the system?")
+  and means future tweaks to the rule (e.g. "largest trust by total
+  balance") wouldn't apply to existing browsers. Recomputing on
+  every first-visit boot is cheap.
+
+**Tests added:**
+
+- `test_get_pivot_data_includes_group_totals` -- every group account
+  has a balances dict entry (even if `{}`).
+- `test_get_pivot_data_group_totals_match_descendants_recursively`
+  -- gold-standard equality between every pure group's per-company
+  balance and the sum of its leaf descendants' balances. Skips
+  groups with their own direct snapshot rows (rare) to keep the
+  equality unambiguous.
+- `test_get_pivot_data_group_balance_obeys_companies_filter` --
+  group totals respect the same scope intersection as leaf balances;
+  out-of-scope companies never appear in a group's balance map.
+
+**Performance for the additions:** TBD on dev verification pass.
+Expected:
+- `get_pivot_data` (full scope, depth 3): < 1.5 sec on dev, < 2 sec
+  on prod-shaped (the aggregation overhead is ~ms; the dominating
+  cost remains the Phase 3 SQL).
+- Depth toggle re-render: instant (DOM filter on the existing rows).
+- First-visit smart-default on RGI: same fetch shape as Phase 3.5
+  initial scoped fetch.
+
+**Round-2 fixes after first visual review (2026-05-04):**
+
+- **Depth filter off-by-one fix.** Initial implementation read
+  `Depth=N` as "show every account whose depth ≤ N", which on RGI-DEMO
+  meant `Depth=3` displayed depths 0..3 inclusive (4 levels of rows).
+  Aditya's mental model is `Depth=N` = "N levels visible", so
+  `Depth=1` should collapse every tree to its root. Fix is one
+  character: `<=` → `<` in `_visibleByDepth`. Net effect: every tree
+  collapses uniformly at every Depth setting, default Depth=3 now
+  shows roots + sub-categories + sub-sub-categories (no leaves on the
+  default), and the user clicks individual chevrons or `Depth=All` to
+  drill into the leaf rows. Confirmed against the simulation in
+  `test_depth_filter_works_across_all_root_types`.
+
+- **Why it had looked Asset-only.** A second observation that
+  surfaced during diagnosis: on RGI-DEMO seed, only the Asset and
+  Liability trees go past depth 3 in the data; Equity, Expense, and
+  Income max out at depths 2-3. Even with the buggy `<=`, the toggle
+  IS firing across all rows -- but the visible delta between
+  `Depth=3` and `Depth=All` only shows up on the two trees that have
+  anything past depth 3 to hide. After the off-by-one fix, the
+  user-visible labels line up with the user's expectation regardless
+  of tree shape. (Documented in case future Claude Code sessions hit
+  the same "looks broken but isn't" pattern on a fresh seed.)
+
+- **Group / leaf differentiation refresh.** Dropped the subtle
+  background-tint difference for group rows -- it was too easy to
+  miss against the white surrounding cockpit. Replaced with two
+  layered cues:
+  1. A small inline-SVG icon (two horizontal stripes evoking a
+     "summary line") prefixed to the account name on group rows.
+  2. A 1 px top border on every numeric cell of a group row,
+     mimicking the accounting-traditional underline above a subtotal.
+  Background now matches leaves, so the heatmap toggle is the only
+  background-color signal in the grid (less visual noise when
+  heatmap is on). Bold name + bold number weight stays.
+
+- **Number format toggle.** New toolbar pill group `Format | Cr | L
+  | Full` next to the depth toggle. Persisted in
+  `dgv_cockpit_format_v1` (separate key from scope/depth). Default
+  Cr. Spotlight cards always render Cr regardless of the toggle --
+  they're the headline; compactness wins over precision. Pivot cells
+  in `Full` mode use Indian comma grouping (the canonical 17-char
+  form `1,41,26,00,000.00`); the table grows numeric columns to
+  150 px in Full mode via a `[data-format="full"]` CSS rule so cells
+  don't clip or wrap. Negatives are wrapped in parens across all
+  three formats. The Indian format is implemented twice -- a Python
+  `format_indian` in `dux_groupview/pivot/format.py` (executable
+  spec, used by `test_indian_format_function`) and a hand-translated
+  JS `formatIndian` in `pivot_grid.js`. Both must move together.
+
+- **Open follow-up:** Q12 added to OPEN_QUESTIONS.md -- hover
+  tooltip showing full Indian-format value on every cell regardless
+  of active toggle. Deferred from Phase 3.5 to keep the format
+  toggle scope tight.
+
+---
+
 ## Option A — RGI-named synthetic seed (post-Phase-3 follow-up)
 
 **Branch:** `feat/rgi-named-seed`
