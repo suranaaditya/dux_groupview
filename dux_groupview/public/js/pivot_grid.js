@@ -34,14 +34,24 @@
 		constructor(containerEl, options) {
 			this.container = containerEl;
 			this.options = Object.assign(
-				{ format: 'crore', height: 600 },
+				{ format: 'crore', height: 600, depth: 'all' },
 				options || {}
 			);
 			this.data = null;
 			this.heatmap = false;
 			this.searchQuery = '';
 			this.collapsedTrusts = new Set();
+			// `collapsedAccounts` and `userExpanded` together model the
+			// user's manual expand/collapse intent, layered on top of the
+			// depth-driven default. See _isGroupExpanded for the merge
+			// rule. We keep them as separate sets (rather than a single
+			// "currentlyExpanded" set) so toggling depth doesn't silently
+			// erase the user's manual choices.
 			this.collapsedAccounts = new Set();
+			this.userExpanded = new Set();
+			this.depth = this.options.depth;
+			this.format = this.options.format || 'crore';
+			this._byId = null;
 			this.clusterize = null;
 
 			this._mountSkeleton();
@@ -71,6 +81,35 @@
 			this._rebuildRows();
 		}
 
+		setFormat(fmt) {
+			// fmt: "crore" | "lakh" | "full". Anything else collapses
+			// to "crore" (the spec default; safer than blank cells).
+			const next = (fmt === 'lakh' || fmt === 'full') ? fmt : 'crore';
+			this.format = next;
+			if (this.data) this.data.format = next;
+			// Mark the table so CSS can widen numeric columns under
+			// "full" (17-char Indian-format numbers don't fit the
+			// default 110px min-width).
+			const table = this.container.querySelector('.pivot-table');
+			if (table) table.setAttribute('data-format', next);
+			this._rebuildRows();
+		}
+
+		setDepth(n) {
+			// n: a number (1, 2, 3, ...) or the string "all". Anything
+			// else collapses to "all" (= every account visible by depth).
+			if (n === 'all' || n === null || n === undefined) {
+				this.depth = 'all';
+			} else {
+				const parsed = parseInt(n, 10);
+				this.depth = (!isNaN(parsed) && parsed >= 0) ? parsed : 'all';
+			}
+			// Manual expand/collapse state intentionally preserved across
+			// depth changes -- a user who expanded a deep group keeps that
+			// expansion when they switch depths.
+			this._rebuildRows();
+		}
+
 		collapseTrust(trustId) {
 			this.collapsedTrusts.add(trustId);
 			this._renderHeader();
@@ -84,12 +123,34 @@
 		}
 
 		collapseAccount(accountId) {
-			this.collapsedAccounts.add(accountId);
+			const group = this._byId && this._byId.get(accountId);
+			if (!group) {
+				this.collapsedAccounts.add(accountId);
+				this._rebuildRows();
+				return;
+			}
+			this.userExpanded.delete(accountId);
+			if (this._visibleByDepth(group)) {
+				this.collapsedAccounts.add(accountId);
+			} else {
+				this.collapsedAccounts.delete(accountId);
+			}
 			this._rebuildRows();
 		}
 
 		expandAccount(accountId) {
+			const group = this._byId && this._byId.get(accountId);
+			if (!group) {
+				this.collapsedAccounts.delete(accountId);
+				this._rebuildRows();
+				return;
+			}
 			this.collapsedAccounts.delete(accountId);
+			if (!this._visibleByDepth(group)) {
+				this.userExpanded.add(accountId);
+			} else {
+				this.userExpanded.delete(accountId);
+			}
 			this._rebuildRows();
 		}
 
@@ -136,6 +197,11 @@
 			const accounts = data.accounts || [];
 			const balances = data.balances || {};
 
+			// Sync the table's data-format attribute now (rather than only
+			// from setFormat()) so a fresh render() picks up the option.
+			const table = this.container.querySelector('.pivot-table');
+			if (table) table.setAttribute('data-format', this.format);
+
 			const flatColumns = [];  // [{trustId, trustColor, company}]
 			trusts.forEach(t => {
 				t.companies.forEach(c => {
@@ -147,10 +213,17 @@
 				});
 			});
 
+			// Index accounts by id so depth/visibility helpers can walk
+			// the parent chain in O(depth).
+			this._byId = new Map(accounts.map(a => [a.id, a]));
+
 			return {
 				snapshot_date: data.snapshot_date,
 				snapshot_age_seconds: data.snapshot_age_seconds,
-				format: data.format || this.options.format,
+				// `this.format` is the live runtime value (mutated by
+				// setFormat). Server payload's format is treated as a
+				// hint only; user toolbar wins.
+				format: this.format,
 				trusts,
 				accounts,
 				balances,
@@ -259,33 +332,15 @@
 
 		_visibleAccounts() {
 			const { accounts } = this.data;
+			const byId = this._byId;
 			const search = this.searchQuery;
 
-			// Build descendant set for collapsed accounts so we can hide them.
-			const hidden = new Set();
-			if (this.collapsedAccounts.size) {
-				const childrenOf = new Map();
-				accounts.forEach(a => {
-					if (!childrenOf.has(a.parent)) childrenOf.set(a.parent, []);
-					childrenOf.get(a.parent).push(a.id);
-				});
-				const queue = [...this.collapsedAccounts];
-				while (queue.length) {
-					const id = queue.shift();
-					(childrenOf.get(id) || []).forEach(childId => {
-						hidden.add(childId);
-						queue.push(childId);
-					});
-				}
-			}
-
-			let visible = accounts.filter(a => !hidden.has(a.id));
-
 			if (search) {
-				// When searching, show matching rows AND their ancestors (for context).
-				const byId = new Map(accounts.map(a => [a.id, a]));
+				// Search overrides depth + manual collapse: show every
+				// account whose name matches, plus its ancestors so the
+				// hierarchy context is preserved.
 				const keep = new Set();
-				visible.forEach(a => {
+				accounts.forEach(a => {
 					if (a.name.toLowerCase().includes(search)) {
 						keep.add(a.id);
 						let cur = a;
@@ -297,11 +352,48 @@
 						}
 					}
 				});
-				visible = visible.filter(a => keep.has(a.id));
-				visible.searchActive = true;
+				return accounts.filter(a => keep.has(a.id));
 			}
 
-			return visible;
+			// Default mode: visible iff every ancestor in the chain is
+			// "expanded" in the merged sense (depth-default + manual
+			// overrides). See _isGroupExpanded.
+			return accounts.filter(a => this._isAccountVisible(a));
+		}
+
+		_visibleByDepth(node) {
+			// Semantics: `depth = N` shows N levels (1 = roots only,
+			// 2 = roots + first level of children, etc.). A node's
+			// children sit at node.depth + 1; they are visible by
+			// default only if node.depth + 1 < N (strict inequality --
+			// at depth=1 the root is at depth 0 and its children at
+			// depth 1 should NOT be visible, since "1 level" = roots
+			// alone).
+			if (this.depth === 'all') return true;
+			return (node.depth + 1) < this.depth;
+		}
+
+		_isGroupExpanded(group) {
+			// Merge rule:
+			//   user collapsed wins  → false
+			//   else user expanded   → true
+			//   else depth default
+			if (this.collapsedAccounts.has(group.id)) return false;
+			if (this.userExpanded.has(group.id)) return true;
+			return this._visibleByDepth(group);
+		}
+
+		_isAccountVisible(account) {
+			// Walk ancestors. If any ancestor is "effectively collapsed"
+			// per _isGroupExpanded, the account is hidden.
+			let cur = account;
+			while (cur && cur.parent) {
+				const parent = this._byId.get(cur.parent);
+				if (!parent) break;
+				if (!this._isGroupExpanded(parent)) return false;
+				cur = parent;
+			}
+			return true;
 		}
 
 		_buildRowHTML(acct) {
@@ -323,18 +415,28 @@
 			const caret = acct.is_group
 				? `<span class="pivot-account-caret"
 				          data-account-id="${escapeAttr(acct.id)}">${
-				    this.collapsedAccounts.has(acct.id) ? '▸' : '▾'
+				    this._isGroupExpanded(acct) ? '▾' : '▸'
 				}</span>`
 				: '<span class="pivot-account-caret pivot-leaf">·</span>';
+			// Group-row icon: two horizontal stripes evoking a
+			// "summary line". Inline SVG so it inherits currentColor
+			// and stays crisp at any zoom level.
+			const groupIcon = acct.is_group
+				? '<svg class="pivot-account-icon" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">' +
+				  '<rect x="1" y="3" width="10" height="1.5" rx="0.5" fill="currentColor" />' +
+				  '<rect x="1" y="7" width="10" height="1.5" rx="0.5" fill="currentColor" />' +
+				  '</svg>'
+				: '';
 			const groupClass = acct.is_group ? ' pivot-row-group' : ' pivot-row-leaf';
 			const searchHit = (this.searchQuery &&
 				acct.name.toLowerCase().includes(this.searchQuery))
 				? ' pivot-row-search-hit' : '';
 
 			let html = `<tr class="pivot-row${groupClass}${searchHit}"
-			                data-account-id="${escapeAttr(acct.id)}">`;
+			                data-account-id="${escapeAttr(acct.id)}"
+			                data-depth="${acct.depth}">`;
 			html += `<td class="pivot-cell-label pivot-sticky-left">
-			           ${indent}${caret}
+			           ${indent}${caret}${groupIcon}
 			           <span class="pivot-account-name">${escapeHtml(acct.name)}</span>
 			         </td>`;
 
@@ -424,10 +526,11 @@
 			const caret = e.target.closest('.pivot-account-caret');
 			if (caret && !caret.classList.contains('pivot-leaf')) {
 				const id = caret.getAttribute('data-account-id');
-				if (this.collapsedAccounts.has(id)) {
-					this.expandAccount(id);
-				} else {
+				const group = this._byId && this._byId.get(id);
+				if (group && this._isGroupExpanded(group)) {
 					this.collapseAccount(id);
+				} else {
+					this.expandAccount(id);
 				}
 				return;
 			}
@@ -453,20 +556,52 @@
 	function formatNumber(value, format) {
 		const num = Number(value) || 0;
 		if (num === 0) return '<span class="pivot-zero">—</span>';
-		let scaled, suffix;
-		if (format === 'lakh') {
-			scaled = num / 100000;
-			suffix = '';  // suffix shown in column header instead
-		} else {
-			scaled = num / 10000000;
-			suffix = '';
+
+		if (format === 'full') {
+			// Raw rupee value, Indian comma grouping, 2 decimal places.
+			// Negatives wrapped in parens (accounting convention; the
+			// minus sign from Indian formatting is dropped in favour of
+			// surrounding parentheses, mirroring the crore/lakh paths).
+			const formatted = formatIndian(num);
+			if (num < 0) {
+				// formatIndian already wraps negatives in parens; mark
+				// with .pivot-neg so the colour rule applies.
+				return `<span class="pivot-neg">${formatted}</span>`;
+			}
+			return formatted;
 		}
+
+		// crore / lakh: scale, then locale-format (en-IN handles
+		// Indian grouping for the integer part).
+		const scaled = (format === 'lakh') ? num / 100000 : num / 10000000;
 		const abs = Math.abs(scaled);
 		const formatted = abs.toLocaleString('en-IN', {
 			minimumFractionDigits: 2, maximumFractionDigits: 2,
 		});
-		if (num < 0) return `<span class="pivot-neg">(${formatted})</span>${suffix}`;
-		return `${formatted}${suffix}`;
+		if (num < 0) return `<span class="pivot-neg">(${formatted})</span>`;
+		return formatted;
+	}
+
+	// Indian-format the raw value. Last 3 digits before the decimal,
+	// then groups of 2 to the left. Mirrors the spec'd JS reference and
+	// the Python equivalent in dux_groupview/pivot/format.py used by
+	// the unit test.
+	function formatIndian(value) {
+		if (value === 0) return '0.00';
+		const abs = Math.abs(value).toFixed(2);  // "12345678901.23"
+		const [whole, decimal] = abs.split('.');
+		const lastThree = whole.slice(-3);
+		const rest = whole.slice(0, -3);
+		// `\B(?=(\d{2})+(?!\d))` inserts commas before every position
+		// where 2+ pairs of digits follow with no trailing digit -- the
+		// classic Indian-grouping regex.
+		const restWithCommas = rest
+			? rest.replace(/\B(?=(\d{2})+(?!\d))/g, ',')
+			: '';
+		const formatted = restWithCommas
+			? `${restWithCommas},${lastThree}.${decimal}`
+			: `${lastThree}.${decimal}`;
+		return value < 0 ? `(${formatted})` : formatted;
 	}
 
 	function rgbaFromHex(hex, alpha) {
