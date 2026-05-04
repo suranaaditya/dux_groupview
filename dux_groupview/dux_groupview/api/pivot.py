@@ -64,13 +64,50 @@ def _allowed_companies():
 	return frappe.db.sql_list("SELECT name FROM tabCompany ORDER BY name")
 
 
+def _resolve_scope(companies):
+	"""Resolve the requested company scope against the user's permissions.
+
+	Returns the sorted list of companies the request may read. The
+	intersection rule is the security boundary -- a user can never widen
+	their own visibility through the `companies` argument.
+
+	`companies` can be:
+	  - None / "" / [] -> use the user's full allowed set.
+	  - JSON-stringified list of names (frappe.call serialises arrays).
+	  - Python list of names.
+	"""
+	allowed = set(_allowed_companies())
+	if companies in (None, "", "null"):
+		return sorted(allowed)
+	if isinstance(companies, str):
+		try:
+			companies = json.loads(companies)
+		except (ValueError, TypeError):
+			# Treat malformed input as "no scope provided" -- safer than
+			# returning an empty set, which would render an empty cockpit
+			# silently.
+			return sorted(allowed)
+	if not isinstance(companies, (list, tuple, set)):
+		return sorted(allowed)
+	requested = {c for c in companies if isinstance(c, str)}
+	if not requested:
+		return sorted(allowed)
+	return sorted(allowed & requested)
+
+
 # ---------------------------------------------------------------------------
 # Public endpoints
 # ---------------------------------------------------------------------------
 
 @frappe.whitelist()
-def get_pivot_data(snapshot_date, format="crore"):
+def get_pivot_data(snapshot_date, format="crore", companies=None):
 	"""Return the full pivot dataset for one snapshot date.
+
+	`companies` is an optional explicit scope (JSON-stringified list of
+	company names from the trust selector). When provided, it is
+	intersected with the user's User-Permission-allowed set on the
+	server -- a user can never widen their own visibility through this
+	parameter. When None, falls back to the user's full allowed set.
 
 	Shape:
 	  {
@@ -83,7 +120,7 @@ def get_pivot_data(snapshot_date, format="crore"):
 	_require_cockpit_role()
 	snapshot_date = getdate(snapshot_date)
 
-	allowed = set(_allowed_companies())
+	allowed = _resolve_scope(companies)
 	if not allowed:
 		return _empty_payload(snapshot_date, format)
 
@@ -98,7 +135,7 @@ def get_pivot_data(snapshot_date, format="crore"):
 		""",
 		{
 			"snapshot_date": snapshot_date,
-			"companies": tuple(allowed) if len(allowed) > 1 else (next(iter(allowed)), next(iter(allowed))),
+			"companies": _sql_in_tuple(allowed),
 		},
 		as_dict=True,
 	)
@@ -117,8 +154,12 @@ def get_pivot_data(snapshot_date, format="crore"):
 
 
 @frappe.whitelist()
-def get_pivot_summary(snapshot_date):
-	"""Return lightweight metadata about a snapshot."""
+def get_pivot_summary(snapshot_date, companies=None):
+	"""Return lightweight metadata about a snapshot.
+
+	`companies` follows the same intersection-with-user-permissions rule
+	as get_pivot_data.
+	"""
 	_require_cockpit_role()
 	snapshot_date = getdate(snapshot_date)
 
@@ -137,7 +178,7 @@ def get_pivot_summary(snapshot_date):
 			"trust_count": 0,
 		}
 
-	allowed = set(_allowed_companies())
+	allowed = _resolve_scope(companies)
 	if not allowed:
 		return {
 			"snapshot_date": str(snapshot_date),
@@ -156,7 +197,7 @@ def get_pivot_summary(snapshot_date):
 		""",
 		{
 			"snapshot_date": snapshot_date,
-			"companies": tuple(allowed) if len(allowed) > 1 else (next(iter(allowed)), next(iter(allowed))),
+			"companies": _sql_in_tuple(allowed),
 		},
 		as_dict=True,
 	)[0]
@@ -172,9 +213,37 @@ def get_pivot_summary(snapshot_date):
 	}
 
 
+@frappe.whitelist()
+def get_scope_options():
+	"""Return the universe of trusts × companies the current user can see.
+
+	Used by the trust-selector popover to render its tree, independent of
+	the currently-applied scope. Shape:
+
+	    {trusts: [{id, name, abbr, color, companies}, ...]}
+	"""
+	_require_cockpit_role()
+	allowed = _allowed_companies()
+	return {"trusts": _build_trusts(allowed)}
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _sql_in_tuple(values):
+	"""Return a tuple usable in a MariaDB `WHERE col IN %(...)s` placeholder.
+
+	MariaDB rejects 1-element tuples with a syntax error after parameter
+	substitution (`IN ('x',)` -> `IN ('x', )` which can confuse some
+	drivers); we duplicate the lone value to keep the SQL valid. For
+	2+ values, `tuple(values)` is fine.
+	"""
+	values = list(values)
+	if len(values) == 1:
+		return (values[0], values[0])
+	return tuple(values)
+
 
 def _empty_payload(snapshot_date, format):
 	return {
@@ -320,6 +389,54 @@ def _build_accounts_and_balances(rows):
 			if grandparent and grandparent not in account_meta:
 				next_pending.add(grandparent)
 		pending = next_pending
+
+	# Aggregate every direct snapshot-row contribution upward into its
+	# ancestors, so the response carries per-company totals for every
+	# non-leaf row. This is a B-lazy approach: cheaper to recompute
+	# group totals at request time than to maintain them in the
+	# snapshot cache (which would mean rebuilding cache rows for group
+	# accounts every refresh, doubling the row count).
+	#
+	# We bubble up to ALL ancestors regardless of `is_group`, not just
+	# is_group=True ones. Real-world charts of accounts contain mid-
+	# tree accounts that are flagged is_group=False in the snapshot but
+	# still have children in the response (e.g. an "Unsecured Loans"
+	# account with its own snapshot row AND child accounts hanging
+	# under it). Skipping is_group=False ancestors during aggregation
+	# would let descendants jump past them to the next is_group=True
+	# ancestor, leaving the intermediate's stored balance as just its
+	# own row -- inconsistent with the surrounding subtree. By always
+	# aggregating, we preserve the invariant `balance[node] = own_row
+	# + sum(balance[child] for child in children(node))` at every level
+	# of the response tree.
+	#
+	# Important: aggregate from a snapshot of the *direct* (own-row)
+	# balances captured before any mutation, so a node's own direct
+	# value never gets added to its ancestors twice (once as its own
+	# contribution, once via the already-bubbled-up descendants).
+	#
+	# Sign convention: balances are stored as raw `Dr - Cr`, just like
+	# leaves. The UI flips sign per root_type for display. Naive
+	# summing preserves the descendant-sum invariant in this stored
+	# sign.
+	direct_balances = {
+		name: dict(per_company) for name, per_company in balances.items()
+	}
+	for direct_name, direct_company_balances in direct_balances.items():
+		cur_parent = account_meta[direct_name]["parent"]
+		while cur_parent and cur_parent in account_meta:
+			bucket = balances.setdefault(cur_parent, {})
+			for c, v in direct_company_balances.items():
+				bucket[c] = bucket.get(c, 0.0) + v
+			cur_parent = account_meta[cur_parent]["parent"]
+
+	# Ensure every account has a balances entry, even if zero, so the
+	# frontend renders the row regardless of whether it had any
+	# contribution. Zero-balance groups still need to appear so the
+	# user can see the structure of the chart of accounts.
+	for name in account_meta:
+		if name not in balances:
+			balances[name] = {}
 
 	# Build the children index, then walk depth-first.
 	children = defaultdict(list)
