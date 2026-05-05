@@ -179,7 +179,12 @@ class TestSpotlightCache(FrappeTestCase):
 
 	def test_sparkline_data_format(self):
 		# Need historical snapshots to produce a non-empty sparkline.
-		backfill_snapshots(months_back=3)
+		# force=True bypasses the SAFETY_ROW_THRESHOLD check that trips
+		# on the RGI-DEMO production-shaped seed (5M GL × 3 months >
+		# 10M threshold). This test only verifies sparkline shape, not
+		# the without-force backfill path, so force=True is the
+		# minimal change.
+		backfill_snapshots(months_back=3, force=True)
 		refresh_spotlight_cache()
 		raw = frappe.db.get_value(
 			"DGV Spotlight Cache",
@@ -202,7 +207,10 @@ class TestSpotlightCache(FrappeTestCase):
 		"""With a backfill in place, today's delta for each card should
 		equal today_value - prior_month_value.
 		"""
-		backfill_snapshots(months_back=2)
+		# force=True bypasses SAFETY_ROW_THRESHOLD on the prod-scale
+		# RGI-DEMO seed. The test verifies delta math, not the
+		# without-force backfill path.
+		backfill_snapshots(months_back=2, force=True)
 		# At this point the spotlight cache for each backfilled date has
 		# already been written by backfill_snapshots. Today's value is a
 		# fresh refresh.
