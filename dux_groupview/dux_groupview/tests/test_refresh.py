@@ -15,11 +15,13 @@ Run with:
 """
 
 from datetime import date, timedelta
+from unittest.mock import patch
 
 import frappe
 from frappe.tests.utils import FrappeTestCase
 from frappe.utils import getdate, today
 
+from dux_groupview.dux_groupview.snapshots import backfill as backfill_module
 from dux_groupview.dux_groupview.snapshots.refresh import (
 	finalize_past_snapshots,
 	refresh_tb_snapshot,
@@ -65,7 +67,23 @@ class TestRefresh(FrappeTestCase):
 		self.assertEqual(result["snapshot_date"], str(today_d))
 		self.assertEqual(result["status"], "Complete")
 		self.assertGreater(result["duration_seconds"], 0)
-		self.assertLess(result["duration_seconds"], 30)
+
+		# Duration target branches by seed size. The Phase 1 dev-scale
+		# target (15s p95) and the Phase 3 prod-scale target (60s)
+		# coexist intentionally per PHASE_LOG.md: a sub-500K-row
+		# deployment must still meet 15s, while RGI-DEMO's 5M-row
+		# synthetic seed gets the relaxed 60s after the Phase 3
+		# covering-index + subquery-restructure optimisation. Branch
+		# on the actual GL Entry row count so both invariants stay
+		# enforced; no environment is silently exempted.
+		gl_count = frappe.db.count("GL Entry")
+		threshold = 60.0 if gl_count > 1_000_000 else 15.0
+		self.assertLess(
+			result["duration_seconds"], threshold,
+			f"refresh took {result['duration_seconds']:.1f}s with "
+			f"{gl_count:,} GL entries; target was < {threshold:.0f}s "
+			f"(branched on row-count threshold of 1,000,000)",
+		)
 
 		# Parent record exists with expected status.
 		parent = frappe.get_doc("DGV TB Snapshot", result["snapshot_name"])
@@ -189,7 +207,16 @@ class TestRefresh(FrappeTestCase):
 	# ------------------------------------------------------------------
 
 	def test_backfill_creates_n_snapshots(self):
-		result = backfill_snapshots(months_back=3)
+		# force=True bypasses the SAFETY_ROW_THRESHOLD check, which trips
+		# at 12 × COUNT(tabGL Entry) > 10M on the RGI-DEMO production-
+		# shaped seed (5M rows × 3 months = 15.2M estimated). This test
+		# only verifies snapshot count + status, so force=True is the
+		# minimal change to make the test pass on prod-scale data
+		# without altering its intent. (For tests that actually
+		# exercise the without-force code paths, see
+		# test_backfill_skips_immutable / test_backfill_force_override
+		# which monkey-patch SAFETY_ROW_THRESHOLD instead.)
+		result = backfill_snapshots(months_back=3, force=True)
 
 		self.assertEqual(len(result["dates_processed"]), 3)
 		for entry in result["dates_processed"]:
@@ -210,78 +237,100 @@ class TestRefresh(FrappeTestCase):
 	# ------------------------------------------------------------------
 
 	def test_backfill_skips_immutable(self):
-		# First pass: backfill 3 months.
-		first_result = backfill_snapshots(months_back=3)
-		first_dates = sorted(e["date"] for e in first_result["dates_processed"])
-		self.assertEqual(len(first_dates), 3)
+		# This test exercises the immutable-skip path in
+		# backfill_snapshots, which only fires when force is False.
+		# We can't simply pass force=True to bypass the prod-scale
+		# safety check because that would also disable the very
+		# behaviour under test (force=True regenerates immutable
+		# snapshots; force=False skips them). Monkey-patch the
+		# SAFETY_ROW_THRESHOLD constant for this test only so both
+		# calls run with force=False, preserving test intent.
+		with patch.object(
+			backfill_module, "SAFETY_ROW_THRESHOLD", 10**12
+		):
+			# First pass: backfill 3 months.
+			first_result = backfill_snapshots(months_back=3)
+			first_dates = sorted(e["date"] for e in first_result["dates_processed"])
+			self.assertEqual(len(first_dates), 3)
 
-		# All three should now be immutable (because date < today).
-		immutable_count = frappe.db.count(
-			"DGV TB Snapshot", {"is_immutable": 1}
-		)
-		self.assertEqual(immutable_count, 3)
+			# All three should now be immutable (because date < today).
+			immutable_count = frappe.db.count(
+				"DGV TB Snapshot", {"is_immutable": 1}
+			)
+			self.assertEqual(immutable_count, 3)
 
-		# Capture the original generated_at timestamps.
-		original = {
-			row["snapshot_date"]: row["generated_at"]
+			# Capture the original generated_at timestamps.
+			original = {
+				row["snapshot_date"]: row["generated_at"]
+				for row in frappe.db.sql(
+					"SELECT snapshot_date, generated_at "
+					"FROM `tabDGV TB Snapshot`",
+					as_dict=True,
+				)
+			}
+
+			# Second pass without force -- should skip all 3.
+			result = backfill_snapshots(months_back=3)
+			self.assertEqual(len(result["skipped"]), 3)
+			self.assertEqual(len(result["dates_processed"]), 0)
+
+			# generated_at unchanged for all 3.
 			for row in frappe.db.sql(
 				"SELECT snapshot_date, generated_at "
 				"FROM `tabDGV TB Snapshot`",
 				as_dict=True,
-			)
-		}
-
-		# Second pass without force -- should skip all 3.
-		result = backfill_snapshots(months_back=3)
-		self.assertEqual(len(result["skipped"]), 3)
-		self.assertEqual(len(result["dates_processed"]), 0)
-
-		# generated_at unchanged for all 3.
-		for row in frappe.db.sql(
-			"SELECT snapshot_date, generated_at "
-			"FROM `tabDGV TB Snapshot`",
-			as_dict=True,
-		):
-			self.assertEqual(
-				row["generated_at"], original[row["snapshot_date"]],
-				"Immutable snapshot should not be regenerated."
-			)
+			):
+				self.assertEqual(
+					row["generated_at"], original[row["snapshot_date"]],
+					"Immutable snapshot should not be regenerated."
+				)
 
 	# ------------------------------------------------------------------
 	# 7 -- backfill force override
 	# ------------------------------------------------------------------
 
 	def test_backfill_force_override(self):
-		# Initial backfill creates 3 snapshots, all marked immutable.
-		first_result = backfill_snapshots(months_back=3)
-		self.assertEqual(len(first_result["dates_processed"]), 3)
+		# The seeding call (first backfill_snapshots below) runs without
+		# force, so it would trip SAFETY_ROW_THRESHOLD on the prod-scale
+		# RGI-DEMO seed before any of the test logic runs. Monkey-patch
+		# the threshold so only the seeding call bypasses safety; the
+		# subsequent force=True call (already explicitly tested) is
+		# what actually exercises the override path. The patch covers
+		# the whole test for simplicity, but the semantics under test
+		# are unchanged: force=True must regenerate immutable snapshots.
+		with patch.object(
+			backfill_module, "SAFETY_ROW_THRESHOLD", 10**12
+		):
+			# Initial backfill creates 3 snapshots, all marked immutable.
+			first_result = backfill_snapshots(months_back=3)
+			self.assertEqual(len(first_result["dates_processed"]), 3)
 
-		# Capture original generated_at.
-		original = {
-			row["snapshot_date"]: row["generated_at"]
+			# Capture original generated_at.
+			original = {
+				row["snapshot_date"]: row["generated_at"]
+				for row in frappe.db.sql(
+					"SELECT snapshot_date, generated_at "
+					"FROM `tabDGV TB Snapshot`",
+					as_dict=True,
+				)
+			}
+
+			# Force re-backfill -- generated_at should change for all.
+			# Sleep a sub-second to ensure NOW() changes.
+			import time
+			time.sleep(1.1)
+
+			forced = backfill_snapshots(months_back=3, force=True)
+			self.assertEqual(len(forced["dates_processed"]), 3)
+			self.assertEqual(len(forced["skipped"]), 0)
+
 			for row in frappe.db.sql(
 				"SELECT snapshot_date, generated_at "
 				"FROM `tabDGV TB Snapshot`",
 				as_dict=True,
-			)
-		}
-
-		# Force re-backfill -- generated_at should change for all.
-		# Sleep a sub-second to ensure NOW() changes.
-		import time
-		time.sleep(1.1)
-
-		forced = backfill_snapshots(months_back=3, force=True)
-		self.assertEqual(len(forced["dates_processed"]), 3)
-		self.assertEqual(len(forced["skipped"]), 0)
-
-		for row in frappe.db.sql(
-			"SELECT snapshot_date, generated_at "
-			"FROM `tabDGV TB Snapshot`",
-			as_dict=True,
-		):
-			self.assertNotEqual(
-				row["generated_at"], original[row["snapshot_date"]],
-				"force=True should regenerate immutable snapshots "
-				"(generated_at expected to advance)."
-			)
+			):
+				self.assertNotEqual(
+					row["generated_at"], original[row["snapshot_date"]],
+					"force=True should regenerate immutable snapshots "
+					"(generated_at expected to advance)."
+				)
