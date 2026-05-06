@@ -526,14 +526,43 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 
 		document.removeEventListener('dux-pivot-cell-click', _cellHandler);
 		document.addEventListener('dux-pivot-cell-click', _cellHandler);
+
+		// Pivot leaf-row account-name click → open the drill panel scoped
+		// to that account across all in-scope companies. Group rows keep
+		// their existing collapse/expand caret behaviour; this delegated
+		// handler only fires on .pivot-row-leaf rows.
+		const $pivot = $('#pivot-grid');
+		$pivot.off('click.dgv-drill').on('click.dgv-drill',
+			'tr.pivot-row-leaf .pivot-cell-label', function(e) {
+			// Don't intercept clicks on the caret (collapse/expand) or
+			// numeric cells (which already dispatch dux-pivot-cell-click).
+			if (e.target.closest('.pivot-account-caret')) return;
+			if (e.target.closest('.pivot-cell-num'))      return;
+			const $row = $(this).closest('tr');
+			const acctId = $row.data('account-id');
+			const acctName = $row.find('.pivot-account-name').text().trim();
+			if (!acctId) return;
+			openDrillFromPivot(acctId, acctName);
+		});
 	}
 
 	function _cellHandler(e) {
+		// Numeric cell click: drill into that account × company. We open
+		// the panel scoped to the single company the user clicked on.
 		if (!e.detail) return;
-		frappe.show_alert({
-			message: `Drill into ${e.detail.account} × ${e.detail.company} coming in Phase 4`,
-			indicator: 'blue',
-		}, 5);
+		openDrillFromPivot(e.detail.account, e.detail.account, [e.detail.company]);
+	}
+
+	function openDrillFromPivot(accountId, accountName, companiesOverride) {
+		if (!window.dgvOpenAccountDrillPanel) return;
+		window.dgvOpenAccountDrillPanel({
+			source: 'pivot',
+			scope: { type: 'account', value: accountId },
+			scope_label: accountName || accountId,
+			as_of_date: currentDate,
+			companies: companiesOverride
+				|| (scopeCompanies === null ? null : scopeCompanies),
+		});
 	}
 
 	// -----------------------------------------------------------------
@@ -691,21 +720,22 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 		return $card;
 	}
 
-	// Stub for the spotlight card click handler. Wire to the drill panel
-	// in commit 5; today this just logs the resolved scope so the click
-	// shape is in place and visually verifiable.
+	// Spotlight card click: open the account drill panel scoped to the
+	// card's `match` predicate. account_drill.js owns the panel; this
+	// dispatch just hands it the inputs.
 	function dgvSpotlightCardClick(card) {
-		console.log('[dux_groupview] spotlight card clicked', {
+		if (!window.dgvOpenAccountDrillPanel) {
+			console.warn('[dux_groupview] account_drill.js not loaded');
+			return;
+		}
+		window.dgvOpenAccountDrillPanel({
+			source: 'card',
 			card_id: card.card_id,
-			label: card.label,
-			value: card.value,
-			scope_companies: scopeCompanies,
+			match: card.match,
+			scope_label: card.label,
 			as_of_date: currentDate,
+			companies: scopeCompanies,  // null = all
 		});
-		frappe.show_alert({
-			message: `Drill into ${card.label} coming in commit 5.`,
-			indicator: 'blue',
-		}, 4);
 	}
 
 	function formatFigure(rupeeValue) {

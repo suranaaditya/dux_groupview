@@ -1,0 +1,1014 @@
+/*
+ * dux_groupview — account drill UI (Phase 4 commit 3)
+ *
+ * Two surfaces share the same render code:
+ *   - Slide-out panel inside the cockpit page (dgvOpenAccountDrillPanel)
+ *   - Full Frappe page at /app/account-drill (consumes the same component
+ *     functions with different `opts` for size / density)
+ *
+ * "Components" here are render functions that return HTML strings
+ * parameterised by (data, opts). A bug fix in one function applies to
+ * both surfaces.
+ *
+ * Stubs for commit 4: View GL entries, Export CSV, View all parties.
+ * The buttons exist now so panel chrome reads as complete.
+ */
+
+(function (root) {
+	'use strict';
+
+	// =========================================================================
+	// Public API
+	// =========================================================================
+
+	root.dgvOpenAccountDrillPanel = openPanel;
+	root.dgvCloseAccountDrillPanel = closePanel;
+	root.dgvParseAccountDrillHash = parseDrillUrlParams;
+
+	// Component render functions exported so the full page (account_drill.js
+	// inside the new Frappe page) can call them with its own opts.
+	root.dgvDrill = {
+		renderHeader: renderHeader,
+		renderHero: renderHero,
+		renderTrendChart: renderTrendChart,
+		renderCompanyBreakdownTable: renderCompanyBreakdownTable,
+		renderPartyBreakdownTable: renderPartyBreakdownTable,
+		renderActionBar: renderActionBar,
+		formatCrore: formatCrore,
+		formatMonth: formatMonth,
+		bindTrendTooltip: bindTrendTooltip,
+		stubGlDrill: stubGlDrill,
+		stubExportCsv: stubExportCsv,
+		stubViewAllParties: stubViewAllParties,
+	};
+
+
+	// =========================================================================
+	// Panel state
+	// =========================================================================
+
+	var panelEl = null;            // <div class="dgv-drill-overlay">
+	var panelKeyHandler = null;    // Esc key listener (added on open, removed on close)
+	var panelLastFocus = null;     // element to restore focus to on close
+	var currentRequest = null;     // most-recent open args (for the expand-to-full-page)
+
+
+	// =========================================================================
+	// Open / close
+	// =========================================================================
+
+	/**
+	 * Open the drill panel.
+	 *
+	 * args:
+	 *   source       'card' | 'pivot'
+	 *   match        (card source) the predicate dict from cards.py
+	 *   card_id      (card source) used to build a deep-link URL on expand
+	 *   scope        (pivot source) {type: 'account', value: <account_name>}
+	 *   scope_label  human-readable title shown in the header
+	 *   as_of_date   ISO date string. Defaults to today server-side.
+	 *   companies    array of company names, OR null for "all"
+	 */
+	function openPanel(args) {
+		args = args || {};
+		currentRequest = args;
+		ensurePanelDom();
+		panelLastFocus = document.activeElement;
+		showSkeleton(args);
+		showPanel();
+		attachKeyHandler();
+		fetchAndRender(args);
+	}
+
+	function closePanel() {
+		if (!panelEl) return;
+		panelEl.hidden = true;
+		panelEl.classList.remove('dgv-drill-open');
+		detachKeyHandler();
+		// Restore focus to the trigger if it's still in the DOM.
+		if (panelLastFocus && document.body.contains(panelLastFocus)) {
+			try { panelLastFocus.focus(); } catch (e) { /* ignore */ }
+		}
+		panelLastFocus = null;
+	}
+
+	function showPanel() {
+		panelEl.hidden = false;
+		// Force layout, then add the open class so the slide-in transition
+		// runs from translateX(100%) to translateX(0).
+		// eslint-disable-next-line no-unused-expressions
+		panelEl.offsetHeight;
+		panelEl.classList.add('dgv-drill-open');
+		// Focus the close button so Tab cycles inside the panel.
+		var closeBtn = panelEl.querySelector('.dgv-drill-close');
+		if (closeBtn) {
+			try { closeBtn.focus(); } catch (e) { /* ignore */ }
+		}
+	}
+
+
+	// =========================================================================
+	// DOM scaffolding
+	// =========================================================================
+
+	function ensurePanelDom() {
+		if (panelEl) return;
+		panelEl = document.createElement('div');
+		panelEl.className = 'dgv-drill-overlay';
+		panelEl.id = 'dgv-drill-overlay';
+		panelEl.hidden = true;
+		panelEl.innerHTML = panelHtml();
+		document.body.appendChild(panelEl);
+
+		// Wire close-button + backdrop click + expand button.
+		var backdrop = panelEl.querySelector('.dgv-drill-backdrop');
+		if (backdrop) {
+			backdrop.addEventListener('click', closePanel);
+		}
+		var closeBtn = panelEl.querySelector('.dgv-drill-close');
+		if (closeBtn) {
+			closeBtn.addEventListener('click', closePanel);
+		}
+		var expandBtn = panelEl.querySelector('.dgv-drill-expand');
+		if (expandBtn) {
+			expandBtn.addEventListener('click', expandToFullPage);
+		}
+	}
+
+	function panelHtml() {
+		return '' +
+			'<div class="dgv-drill-backdrop" aria-hidden="true"></div>' +
+			'<aside class="dgv-drill-panel" role="dialog"' +
+			'        aria-modal="true" aria-labelledby="dgv-drill-title">' +
+				'<header class="dgv-drill-panel-head">' +
+					'<div class="dgv-drill-panel-meta">' +
+						'<div class="dgv-drill-eyebrow">Account drill</div>' +
+						'<h2 class="dgv-drill-title" id="dgv-drill-title">…</h2>' +
+						'<div class="dgv-drill-scope-sub" id="dgv-drill-scope-sub"></div>' +
+					'</div>' +
+					'<div class="dgv-drill-panel-actions">' +
+						expandIconButton() +
+						closeIconButton() +
+					'</div>' +
+				'</header>' +
+				'<div class="dgv-drill-body" id="dgv-drill-body">' +
+					sectionHtml('hero',       '<div class="dgv-drill-hero-skeleton">…</div>') +
+					sectionHtml('trend',      '<div class="dgv-section-eyebrow">12-month trend</div>' +
+					                          '<div class="dgv-drill-trend-host"></div>') +
+					sectionHtml('by-company', '<div class="dgv-section-eyebrow">By company</div>' +
+					                          '<div class="dgv-drill-company-host"></div>') +
+					sectionHtml('by-party',   '<div class="dgv-drill-party-host"></div>',
+					            { hidden: true }) +
+				'</div>' +
+				'<footer class="dgv-drill-actions" id="dgv-drill-actions"></footer>' +
+			'</aside>';
+	}
+
+	function sectionHtml(name, inner, opts) {
+		var hiddenAttr = opts && opts.hidden ? ' hidden' : '';
+		return '<section class="dgv-drill-section dgv-drill-' + name + '"' + hiddenAttr + '>' +
+		       inner + '</section>';
+	}
+
+	function expandIconButton() {
+		return '<button class="dgv-drill-expand" type="button"' +
+		       ' title="Open as full page" aria-label="Open as full page">' +
+				'<svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true">' +
+				'<path d="M9 1 H13 V5 M13 1 L8 6 M5 13 H1 V9 M1 13 L6 8"' +
+				' stroke="currentColor" stroke-width="1.5" fill="none"' +
+				' stroke-linecap="round" stroke-linejoin="round"/>' +
+				'</svg>' +
+				'</button>';
+	}
+
+	function closeIconButton() {
+		return '<button class="dgv-drill-close" type="button"' +
+		       ' title="Close" aria-label="Close panel">' +
+				'<svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true">' +
+				'<path d="M2 2 L12 12 M12 2 L2 12"' +
+				' stroke="currentColor" stroke-width="1.5" fill="none"' +
+				' stroke-linecap="round"/>' +
+				'</svg>' +
+				'</button>';
+	}
+
+
+	// =========================================================================
+	// Render — orchestration
+	// =========================================================================
+
+	function showSkeleton(args) {
+		var titleEl = panelEl.querySelector('#dgv-drill-title');
+		var subEl   = panelEl.querySelector('#dgv-drill-scope-sub');
+		var bodyEl  = panelEl.querySelector('#dgv-drill-body');
+		var actionsEl = panelEl.querySelector('#dgv-drill-actions');
+
+		var title = args.scope_label || (args.scope && args.scope.value) || '…';
+		titleEl.textContent = title;
+		subEl.textContent = scopeSubLine(args);
+
+		// Reset the sections to skeleton state.
+		bodyEl.querySelector('.dgv-drill-hero').innerHTML =
+			'<div class="dgv-drill-hero-skeleton">Loading…</div>';
+		bodyEl.querySelector('.dgv-drill-trend-host').innerHTML =
+			'<div class="dgv-drill-skel-line"></div>';
+		bodyEl.querySelector('.dgv-drill-company-host').innerHTML =
+			'<div class="dgv-drill-skel-line"></div>' +
+			'<div class="dgv-drill-skel-line"></div>' +
+			'<div class="dgv-drill-skel-line"></div>';
+		// Reset section visibility to defaults (visible by-company,
+		// hidden by-party) — renderDrillData adjusts after data arrives.
+		bodyEl.querySelector('.dgv-drill-by-company').hidden = false;
+		bodyEl.querySelector('.dgv-drill-by-party').hidden = true;
+		bodyEl.querySelector('.dgv-drill-party-host').innerHTML = '';
+
+		actionsEl.innerHTML = renderActionBar({ disabled: true });
+	}
+
+	function scopeSubLine(args) {
+		// Single-company scope shows the company NAME — losing it to a
+		// "1 companies" count was the original information loss. Pivot
+		// numeric-cell clicks always hit this branch; spotlight cards
+		// and pivot leaf-row clicks hit the multi-company branch.
+		var parts = [];
+		var cos = args.companies;
+		if (Array.isArray(cos) && cos.length === 1) {
+			parts.push(cos[0]);
+		} else if (Array.isArray(cos) && cos.length > 1) {
+			parts.push(cos.length + ' companies');
+		} else {
+			parts.push('All companies');
+		}
+		if (args.as_of_date) {
+			parts.push('as of ' + formatLongDate(args.as_of_date));
+		}
+		return parts.join(' · ');
+	}
+
+	function fetchAndRender(args) {
+		// Path 1: spotlight card click. Resolve the match predicate to a
+		// leaf list, then fetch the account breakdown by `accounts`.
+		// Path 2: pivot leaf row click. We already have a scope object;
+		// pass it to the breakdown API directly.
+		if (args.source === 'card') {
+			frappe.call({
+				method: 'dux_groupview.dux_groupview.api.cards_v1.resolve_match_to_accounts',
+				args: {
+					match: JSON.stringify(args.match || {}),
+					companies: args.companies ? JSON.stringify(args.companies) : null,
+					label: args.scope_label || '',
+				},
+				callback: function (r) {
+					var accounts = (r && r.message && r.message.accounts) || [];
+					var label = (r && r.message && r.message.label) || args.scope_label || '';
+					if (!accounts.length) {
+						renderEmptyDrill(label, args);
+						return;
+					}
+					fetchBreakdownByAccounts(accounts, label, args);
+				},
+			});
+		} else if (args.source === 'pivot') {
+			fetchBreakdownByScope(args);
+		} else {
+			renderEmptyDrill(args.scope_label || '', args);
+		}
+	}
+
+	function fetchBreakdownByAccounts(accounts, label, args) {
+		var apiArgs = {
+			accounts: JSON.stringify(accounts),
+			scope_label: label,
+		};
+		if (args.as_of_date) apiArgs.as_of_date = args.as_of_date;
+		if (args.companies)  apiArgs.companies = JSON.stringify(args.companies);
+
+		frappe.call({
+			method: 'dux_groupview.dux_groupview.api.account_drill_v1.get_account_breakdown',
+			args: apiArgs,
+			callback: function (r) {
+				var data = (r && r.message) || null;
+				renderDrillData(data, args, { accounts: accounts, label: label });
+				if (data && data.is_party_trackable) {
+					fetchPartyBreakdown({ accounts: accounts }, args);
+				}
+			},
+		});
+	}
+
+	function fetchBreakdownByScope(args) {
+		var apiArgs = {
+			scope: JSON.stringify(args.scope || {}),
+		};
+		if (args.scope_label) apiArgs.scope_label = args.scope_label;
+		if (args.as_of_date)  apiArgs.as_of_date = args.as_of_date;
+		if (args.companies)   apiArgs.companies = JSON.stringify(args.companies);
+
+		frappe.call({
+			method: 'dux_groupview.dux_groupview.api.account_drill_v1.get_account_breakdown',
+			args: apiArgs,
+			callback: function (r) {
+				var data = (r && r.message) || null;
+				renderDrillData(data, args, { scope: args.scope, label: args.scope_label });
+				if (data && data.is_party_trackable) {
+					fetchPartyBreakdown({ scope: args.scope }, args);
+				}
+			},
+		});
+	}
+
+	function fetchPartyBreakdown(scopeOrAccounts, args) {
+		var apiArgs = {
+			page: 1,
+			page_size: 5,  // panel shows top 5
+			sort: 'balance_desc',
+		};
+		if (scopeOrAccounts.accounts) {
+			apiArgs.accounts = JSON.stringify(scopeOrAccounts.accounts);
+		}
+		if (scopeOrAccounts.scope) {
+			apiArgs.scope = JSON.stringify(scopeOrAccounts.scope);
+		}
+		if (args.as_of_date) apiArgs.as_of_date = args.as_of_date;
+		if (args.companies)  apiArgs.companies = JSON.stringify(args.companies);
+
+		frappe.call({
+			method: 'dux_groupview.dux_groupview.api.party_drill_v1.get_party_breakdown',
+			args: apiArgs,
+			callback: function (r) {
+				var data = (r && r.message) || null;
+				renderPartySection(data, args);
+			},
+		});
+	}
+
+	function renderEmptyDrill(label, args) {
+		var bodyEl = panelEl.querySelector('#dgv-drill-body');
+		var actionsEl = panelEl.querySelector('#dgv-drill-actions');
+		bodyEl.querySelector('.dgv-drill-hero').innerHTML =
+			'<div class="dgv-drill-empty">No matching accounts in scope.</div>';
+		bodyEl.querySelector('.dgv-drill-trend-host').innerHTML = '';
+		bodyEl.querySelector('.dgv-drill-company-host').innerHTML = '';
+		bodyEl.querySelector('.dgv-drill-by-party').hidden = true;
+		actionsEl.innerHTML = renderActionBar({ disabled: true });
+		updateHeader(label, args);
+	}
+
+	function renderDrillData(data, args, ctx) {
+		if (!data) {
+			renderEmptyDrill(ctx.label, args);
+			return;
+		}
+		updateHeader(data.scope_label || ctx.label || '', args);
+
+		var bodyEl    = panelEl.querySelector('#dgv-drill-body');
+		var heroEl    = bodyEl.querySelector('.dgv-drill-hero');
+		var trendHost = bodyEl.querySelector('.dgv-drill-trend-host');
+		var coHost    = bodyEl.querySelector('.dgv-drill-company-host');
+		var actions   = panelEl.querySelector('#dgv-drill-actions');
+
+		heroEl.innerHTML = renderHero(data, { tier: 'panel' });
+
+		trendHost.innerHTML = renderTrendChart(data.trend_12mo || [], {
+			width: 432,
+			height: 120,
+			monthLabels: 'sparse',
+			tooltipsEnabled: true,
+		});
+		bindTrendTooltip(trendHost);
+
+		// Hide the by-company section when scope is a single company.
+		// Same conditional-render rationale as by-party for non-trackable
+		// accounts: a one-row "By company" table adds no information when
+		// the user's scope is already a single entity. Multi-company scope
+		// with one active company still renders ("only X moved" is useful
+		// information; we trigger off the scope, not the result size).
+		var coSection = bodyEl.querySelector('.dgv-drill-by-company');
+		var isSingleCoScope = Array.isArray(args.companies)
+		                     && args.companies.length === 1;
+		if (isSingleCoScope) {
+			coSection.hidden = true;
+			coHost.innerHTML = '';
+		} else {
+			coSection.hidden = false;
+			coHost.innerHTML = renderCompanyBreakdownTable(data.by_company || [], {
+				showSparklines: false,
+				maxNameLength: null,
+			});
+		}
+
+		actions.innerHTML = renderActionBar({
+			disabled: false,
+			ctx: ctx, args: args,
+		});
+		bindActionBar(actions, ctx, args);
+
+		// Party section stays hidden until renderPartySection fills it.
+		// Avoids a brief flash of an empty "By party" header while the
+		// party_breakdown call is in flight.
+		bodyEl.querySelector('.dgv-drill-by-party').hidden = true;
+	}
+
+	function renderPartySection(data, args) {
+		var section = panelEl.querySelector('.dgv-drill-by-party');
+		var host    = panelEl.querySelector('.dgv-drill-party-host');
+		if (!data || !data.parties || !data.parties.length) {
+			section.hidden = true;
+			host.innerHTML = '';
+			return;
+		}
+		section.hidden = false;
+		host.innerHTML = renderPartyBreakdownTable(data.parties, {
+			total: data.total_parties || data.parties.length,
+			displayedCount: data.parties.length,
+			showCompanyCount: false,
+			showViewAll: (data.total_parties || 0) > data.parties.length,
+		});
+		bindPartyViewAll(host, args);
+	}
+
+	function updateHeader(label, args) {
+		var titleEl = panelEl.querySelector('#dgv-drill-title');
+		var subEl   = panelEl.querySelector('#dgv-drill-scope-sub');
+		titleEl.textContent = label || '—';
+		subEl.textContent = scopeSubLine(args);
+	}
+
+
+	// =========================================================================
+	// Components — header, hero, trend, by-company, by-party, action bar
+	// =========================================================================
+
+	function renderHeader(data, opts) {
+		// Used by the full page; the panel renders header inline.
+		opts = opts || {};
+		var eyebrow = escapeHtml(opts.eyebrow || 'Account drill');
+		var title   = escapeHtml(data.scope_label || '—');
+		var sub     = escapeHtml(opts.scopeSub || '');
+		return '' +
+			'<div class="dgv-drill-eyebrow">' + eyebrow + '</div>' +
+			'<h2 class="dgv-drill-title">' + title + '</h2>' +
+			'<div class="dgv-drill-scope-sub">' + sub + '</div>';
+	}
+
+	function renderHero(data, opts) {
+		opts = opts || {};
+		var v = Number(data.group_total) || 0;
+		var fig = formatCrore(v);
+		var deltaHtml = renderHeroDelta(data);
+		return '' +
+			'<div class="dgv-drill-hero-eyebrow">Group total</div>' +
+			'<div class="dgv-drill-hero-figure ' +
+			(opts.tier === 'page' ? 'dgv-drill-hero-page' : '') + '">' +
+				'<span class="dgv-drill-hero-amount">₹' + escapeHtml(fig.amount) + '</span>' +
+				'<span class="dgv-drill-hero-unit">' + escapeHtml(fig.unit) + '</span>' +
+			'</div>' +
+			deltaHtml;
+	}
+
+	function renderHeroDelta(data) {
+		// Compute MoM delta from the 12-month trend: latest minus the
+		// month before it. Avoids shipping a separate field; trend
+		// already has the values we need.
+		var trend = data.trend_12mo || [];
+		if (trend.length < 2) return '';
+		var current = trend[trend.length - 1];
+		var prior   = trend[trend.length - 2];
+		if (!current || current.value === null || current.value === undefined) return '';
+		if (!prior   || prior.value   === null || prior.value   === undefined) return '';
+		var delta = (Number(current.value) || 0) - (Number(prior.value) || 0);
+		if (Math.abs(delta) < 0.01) {
+			return '<div class="dgv-drill-hero-delta flat">' +
+			       'Unchanged from ' + escapeHtml(formatMonth(prior.month)) +
+			       '</div>';
+		}
+		var dir   = delta > 0 ? 'Up' : 'Down';
+		var klass = delta > 0 ? 'up' : 'down';
+		var fig   = formatCrore(Math.abs(delta));
+		return '<div class="dgv-drill-hero-delta ' + klass + '">' +
+		       dir + ' ₹' + escapeHtml(fig.amount) + ' ' + escapeHtml(fig.unit) +
+		       ' from ' + escapeHtml(formatMonth(prior.month)) +
+		       '</div>';
+	}
+
+	/**
+	 * Render a 12-month trend chart as inline SVG.
+	 *
+	 * data: array of { month: 'YYYY-MM', value: number|null }. Order is
+	 *       oldest-first (left-to-right).
+	 *
+	 * opts: { width, height, monthLabels: 'sparse' | 'dense',
+	 *         tooltipsEnabled: bool }
+	 *
+	 * Hover tooltips are enabled by default in the cockpit panel; the
+	 * caller binds them post-render via bindTrendTooltip(hostEl).
+	 */
+	function renderTrendChart(data, opts) {
+		opts = opts || {};
+		var W = opts.width || 432;
+		var H = opts.height || 120;
+		var labelStyle = opts.monthLabels || 'sparse';
+		var tooltipsEnabled = opts.tooltipsEnabled !== false;
+
+		var padL = 6, padR = 6;
+		var padT = 8;
+		var padB = labelStyle === 'none' ? 8 : 22;  // room for axis labels
+		var plotW = W - padL - padR;
+		var plotH = H - padT - padB;
+
+		if (!data.length) {
+			return '<div class="dgv-drill-trend-empty">No trend data.</div>';
+		}
+
+		// Compute min/max across non-null values.
+		var values = data.map(function (d) { return d.value; })
+		                 .filter(function (v) { return v !== null && v !== undefined; });
+		var hasData = values.length > 0;
+		var min = hasData ? Math.min.apply(null, values) : 0;
+		var max = hasData ? Math.max.apply(null, values) : 0;
+		// Pad the range so flat lines don't sit on top/bottom edge.
+		if (min === max) {
+			var pad = Math.abs(max) * 0.1 || 1;
+			min -= pad; max += pad;
+		} else {
+			var pad2 = (max - min) * 0.1;
+			min -= pad2; max += pad2;
+		}
+		var range = max - min || 1;
+
+		function xFor(i) { return padL + (i / (data.length - 1 || 1)) * plotW; }
+		function yFor(v) { return padT + (1 - (v - min) / range) * plotH; }
+
+		// Build a polyline path that splits at null gaps.
+		var pathSegments = [];
+		var seg = [];
+		data.forEach(function (d, i) {
+			if (d.value === null || d.value === undefined) {
+				if (seg.length > 1) pathSegments.push(seg);
+				seg = [];
+				return;
+			}
+			seg.push([xFor(i), yFor(d.value)]);
+		});
+		if (seg.length > 1) pathSegments.push(seg);
+
+		var pathsHtml = pathSegments.map(function (s) {
+			var d = 'M' + s.map(function (p) { return p[0].toFixed(2) + ',' + p[1].toFixed(2); })
+			              .join(' L');
+			return '<path d="' + d + '" class="dgv-trend-line" />';
+		}).join('');
+
+		// Endpoint dot at the latest non-null point.
+		var lastIdx = -1;
+		for (var i = data.length - 1; i >= 0; i--) {
+			if (data[i].value !== null && data[i].value !== undefined) { lastIdx = i; break; }
+		}
+		var endpointHtml = '';
+		if (lastIdx >= 0) {
+			endpointHtml = '<circle cx="' + xFor(lastIdx).toFixed(2) +
+			               '" cy="' + yFor(data[lastIdx].value).toFixed(2) +
+			               '" r="3" class="dgv-trend-endpoint" />';
+		}
+
+		// Hit-zones (transparent circles, larger radius for easier hover).
+		var hitZonesHtml = '';
+		if (tooltipsEnabled) {
+			data.forEach(function (d, i) {
+				if (d.value === null || d.value === undefined) return;
+				var fig = formatCrore(d.value);
+				var sign = d.value < 0 ? '−' : '';
+				var label = sign + '₹' + fig.amount + ' ' + fig.unit + ' · ' + formatMonth(d.month);
+				hitZonesHtml += '<circle class="dgv-trend-hit"' +
+					' cx="' + xFor(i).toFixed(2) + '"' +
+					' cy="' + yFor(d.value).toFixed(2) + '"' +
+					' r="10"' +
+					' data-tooltip="' + escapeAttr(label) + '"' +
+					'></circle>';
+			});
+		}
+
+		// Axis labels (months) -- sparse: every 3rd; dense: every label.
+		var labelsHtml = '';
+		if (labelStyle !== 'none') {
+			var stride = labelStyle === 'dense' ? 1 : 3;
+			data.forEach(function (d, i) {
+				if (i % stride !== 0 && i !== data.length - 1) return;
+				labelsHtml += '<text class="dgv-trend-axis-label"' +
+					' x="' + xFor(i).toFixed(2) + '"' +
+					' y="' + (H - 4) + '"' +
+					' text-anchor="middle">' +
+					escapeHtml(formatMonthShort(d.month)) +
+					'</text>';
+			});
+		}
+
+		// Subtle horizontal grid: top, mid, bottom.
+		var gridHtml = '';
+		[padT, padT + plotH / 2, padT + plotH].forEach(function (y) {
+			gridHtml += '<line class="dgv-trend-grid"' +
+				' x1="' + padL + '" x2="' + (W - padR) + '"' +
+				' y1="' + y + '" y2="' + y + '"></line>';
+		});
+
+		return '<svg class="dgv-trend-svg" width="' + W + '" height="' + H + '"' +
+			' viewBox="0 0 ' + W + ' ' + H + '"' +
+			' role="img" aria-label="12-month trend chart">' +
+			gridHtml +
+			pathsHtml +
+			endpointHtml +
+			labelsHtml +
+			hitZonesHtml +
+			'</svg>';
+	}
+
+	/**
+	 * Wire mousemove tooltips on a trend-chart host element. The chart
+	 * SVG must have been rendered by renderTrendChart with
+	 * tooltipsEnabled: true (default).
+	 */
+	function bindTrendTooltip(hostEl) {
+		if (!hostEl) return;
+		var hits = hostEl.querySelectorAll('.dgv-trend-hit');
+		if (!hits.length) return;
+
+		var tooltip = ensureTooltipEl();
+		hits.forEach(function (hit) {
+			hit.addEventListener('mouseenter', function (e) {
+				tooltip.textContent = hit.getAttribute('data-tooltip') || '';
+				tooltip.hidden = false;
+			});
+			hit.addEventListener('mousemove', function (e) {
+				positionTooltip(tooltip, e);
+			});
+			hit.addEventListener('mouseleave', function () {
+				tooltip.hidden = true;
+			});
+		});
+	}
+
+	function ensureTooltipEl() {
+		var t = document.getElementById('dgv-drill-tooltip');
+		if (t) return t;
+		t = document.createElement('div');
+		t.id = 'dgv-drill-tooltip';
+		t.className = 'dgv-drill-tooltip';
+		t.hidden = true;
+		document.body.appendChild(t);
+		return t;
+	}
+
+	function positionTooltip(el, evt) {
+		var x = evt.clientX + 12;
+		var y = evt.clientY - 28;
+		// Clamp to viewport so the tooltip never disappears off-screen.
+		var ww = window.innerWidth;
+		var hh = window.innerHeight;
+		var rect = el.getBoundingClientRect();
+		if (x + rect.width > ww - 8) x = ww - rect.width - 8;
+		if (y < 8) y = evt.clientY + 16;
+		if (y + rect.height > hh - 8) y = hh - rect.height - 8;
+		el.style.left = x + 'px';
+		el.style.top  = y + 'px';
+	}
+
+	/**
+	 * rows: [{ company, value, sparkline }]
+	 *
+	 * opts: { showSparklines, sparklineSize: [w, h], maxNameLength }
+	 */
+	function renderCompanyBreakdownTable(rows, opts) {
+		opts = opts || {};
+		if (!rows.length) {
+			return '<div class="dgv-drill-empty">' +
+				'No companies with activity in this scope.</div>';
+		}
+		var sparklineW = opts.sparklineSize ? opts.sparklineSize[0] : 80;
+		var sparklineH = opts.sparklineSize ? opts.sparklineSize[1] : 14;
+
+		var rowsHtml = rows.map(function (row) {
+			var fig = formatCrore(row.value);
+			var sign = (Number(row.value) || 0) < 0 ? '−' : '';
+			var name = escapeHtml(row.company);
+			if (opts.maxNameLength && row.company.length > opts.maxNameLength) {
+				name = escapeHtml(row.company.slice(0, opts.maxNameLength - 1) + '…');
+			}
+			var sparkCell = '';
+			if (opts.showSparklines) {
+				sparkCell = '<td class="dgv-drill-co-spark">' +
+					renderSparkline(row.sparkline || [], sparklineW, sparklineH) +
+					'</td>';
+			}
+			return '<tr>' +
+				'<td class="dgv-drill-co-name">' + name + '</td>' +
+				sparkCell +
+				'<td class="dgv-drill-co-value">' +
+					sign + '₹' + escapeHtml(fig.amount) + ' ' +
+					'<span class="dgv-drill-co-unit">' + escapeHtml(fig.unit) + '</span>' +
+				'</td>' +
+				'</tr>';
+		}).join('');
+
+		return '<table class="dgv-drill-co-table' +
+			(opts.showSparklines ? ' dgv-drill-co-table-with-spark' : '') +
+			'"><tbody>' + rowsHtml + '</tbody></table>';
+	}
+
+	/**
+	 * Tiny inline-SVG sparkline. data: [number|null, ...] (12 entries).
+	 */
+	function renderSparkline(data, W, H) {
+		if (!data.length) return '';
+		var values = data.filter(function (v) { return v !== null && v !== undefined; });
+		if (!values.length) return '';
+		var min = Math.min.apply(null, values);
+		var max = Math.max.apply(null, values);
+		if (min === max) { min -= 1; max += 1; }
+		var range = max - min;
+		var padX = 1;
+		function xFor(i) { return padX + (i / (data.length - 1 || 1)) * (W - 2 * padX); }
+		function yFor(v) { return 2 + (1 - (v - min) / range) * (H - 4); }
+
+		var d = '';
+		var started = false;
+		data.forEach(function (v, i) {
+			if (v === null || v === undefined) return;
+			d += (started ? ' L' : 'M') + xFor(i).toFixed(2) + ',' + yFor(v).toFixed(2);
+			started = true;
+		});
+		if (!d) return '';
+		return '<svg class="dgv-drill-spark" width="' + W + '" height="' + H +
+			'" viewBox="0 0 ' + W + ' ' + H + '" aria-hidden="true">' +
+			'<path d="' + d + '" class="dgv-drill-spark-line" />' +
+			'</svg>';
+	}
+
+	/**
+	 * rows: [{ party_type, party, balance, company_count, is_group_company }]
+	 *
+	 * opts: { total, displayedCount, showCompanyCount, showViewAll }
+	 */
+	function renderPartyBreakdownTable(rows, opts) {
+		opts = opts || {};
+		var total = opts.total || rows.length;
+		var displayed = opts.displayedCount || rows.length;
+
+		var subline = displayed >= total
+			? total + (total === 1 ? ' party' : ' parties') + ' — sorted by balance'
+			: 'Top ' + displayed + ' of ' + total + ' — sorted by balance';
+
+		var viewAllBtn = opts.showViewAll
+			? '<button class="dgv-drill-view-all" type="button">View all →</button>'
+			: '';
+
+		var rowsHtml = rows.map(function (row) {
+			var fig = formatCrore(row.balance);
+			var sign = (Number(row.balance) || 0) < 0 ? '−' : '';
+			var groupBadge = row.is_group_company
+				? '<span class="dgv-drill-party-group-badge"' +
+				  ' title="Group company">Group co</span>'
+				: '';
+			var coCount = (opts.showCompanyCount && row.company_count > 1)
+				? '<span class="dgv-drill-party-co-count">' +
+				  row.company_count + ' cos</span>'
+				: '';
+			return '<tr>' +
+				'<td class="dgv-drill-party-name">' +
+				escapeHtml(row.party) + groupBadge + coCount +
+				'</td>' +
+				'<td class="dgv-drill-party-value">' +
+					sign + '₹' + escapeHtml(fig.amount) + ' ' +
+					'<span class="dgv-drill-party-unit">' + escapeHtml(fig.unit) + '</span>' +
+				'</td>' +
+				'</tr>';
+		}).join('');
+
+		return '<header class="dgv-drill-party-head">' +
+				'<div>' +
+					'<div class="dgv-section-eyebrow">By party</div>' +
+					'<div class="dgv-drill-party-sub">' + escapeHtml(subline) + '</div>' +
+				'</div>' +
+				viewAllBtn +
+			'</header>' +
+			'<table class="dgv-drill-party-table"><tbody>' + rowsHtml + '</tbody></table>';
+	}
+
+	function renderActionBar(opts) {
+		opts = opts || {};
+		var disabledAttr = opts.disabled ? ' disabled' : '';
+		return '<button class="dgv-drill-action-primary" type="button"' + disabledAttr + '>' +
+				'View GL entries →' +
+			'</button>' +
+			'<button class="dgv-drill-action-secondary" type="button"' + disabledAttr + '>' +
+				'Export CSV' +
+			'</button>';
+	}
+
+	function bindActionBar(actionsEl, ctx, args) {
+		var primary = actionsEl.querySelector('.dgv-drill-action-primary');
+		var secondary = actionsEl.querySelector('.dgv-drill-action-secondary');
+		if (primary)   primary.addEventListener('click', function () { stubGlDrill(ctx, args); });
+		if (secondary) secondary.addEventListener('click', function () { stubExportCsv(ctx, args); });
+	}
+
+	function bindPartyViewAll(host, args) {
+		var btn = host.querySelector('.dgv-drill-view-all');
+		if (btn) btn.addEventListener('click', function () { stubViewAllParties(args); });
+	}
+
+
+	// =========================================================================
+	// Stubs (commit 4 will wire these for real)
+	// =========================================================================
+
+	function stubGlDrill(ctx, args) {
+		console.log('[dux_groupview] View GL entries clicked', { ctx: ctx, args: args });
+		frappe.show_alert({
+			message: 'GL drill coming in commit 4.',
+			indicator: 'blue',
+		}, 4);
+	}
+
+	function stubExportCsv(ctx, args) {
+		console.log('[dux_groupview] Export CSV clicked', { ctx: ctx, args: args });
+		frappe.show_alert({
+			message: 'CSV export coming in commit 4.',
+			indicator: 'blue',
+		}, 4);
+	}
+
+	function stubViewAllParties(args) {
+		console.log('[dux_groupview] View all parties clicked', { args: args });
+		frappe.show_alert({
+			message: 'Full party list coming in commit 4.',
+			indicator: 'blue',
+		}, 4);
+	}
+
+
+	// =========================================================================
+	// Expand → full page
+	// =========================================================================
+
+	function expandToFullPage() {
+		if (!currentRequest) {
+			closePanel();
+			return;
+		}
+		var url = buildDrillUrl(currentRequest);
+		closePanel();
+		// frappe.set_route handles SPA-friendly navigation when the
+		// caller is already inside the desk. Falling back to plain
+		// location.href keeps the share-link / paste-URL path working
+		// the same way (Frappe's router intercepts /app/* loads).
+		try {
+			window.location.href = url;
+		} catch (e) {
+			window.location.assign(url);
+		}
+	}
+
+	function buildDrillUrl(args) {
+		var params = [];
+		if (args.source === 'card' && args.card_id) {
+			params.push('scope=' + encodeURIComponent(args.card_id));
+		} else if (args.source === 'pivot' && args.scope) {
+			var sv = (args.scope.value || '');
+			var prefix = (args.scope.type === 'subtree') ? 'subtree:' : 'account:';
+			params.push('scope=' + encodeURIComponent(prefix + sv));
+		}
+		if (args.as_of_date) {
+			params.push('as_of=' + encodeURIComponent(args.as_of_date));
+		}
+		if (args.companies && args.companies.length) {
+			params.push('companies=' + encodeURIComponent(args.companies.join(',')));
+		}
+		return '/app/account-drill' + (params.length ? '?' + params.join('&') : '');
+	}
+
+	/**
+	 * Parse the deep-link URL params on the full page. Returns:
+	 *   { scope: {kind, id}, as_of_date, companies }
+	 *
+	 * scope.kind is one of 'card' | 'account' | 'subtree' (matching
+	 * the encoding in buildDrillUrl).
+	 */
+	function parseDrillUrlParams(searchString) {
+		var s = (searchString || window.location.search || '').replace(/^\?/, '');
+		var out = { scope: null, as_of_date: null, companies: null };
+		if (!s) return out;
+		s.split('&').forEach(function (kv) {
+			if (!kv) return;
+			var eq = kv.indexOf('=');
+			if (eq < 0) return;
+			var k = decodeURIComponent(kv.slice(0, eq));
+			var v = decodeURIComponent(kv.slice(eq + 1));
+			if (k === 'scope') {
+				if (v.indexOf('account:') === 0) {
+					out.scope = { kind: 'account', id: v.slice(8) };
+				} else if (v.indexOf('subtree:') === 0) {
+					out.scope = { kind: 'subtree', id: v.slice(8) };
+				} else {
+					out.scope = { kind: 'card', id: v };
+				}
+			} else if (k === 'as_of') {
+				out.as_of_date = v;
+			} else if (k === 'companies') {
+				out.companies = v.split(',').filter(Boolean);
+			}
+		});
+		return out;
+	}
+
+
+	// =========================================================================
+	// Key handler — Esc closes
+	// =========================================================================
+
+	function attachKeyHandler() {
+		if (panelKeyHandler) return;
+		panelKeyHandler = function (e) {
+			if (e.key === 'Escape' || e.key === 'Esc') {
+				closePanel();
+			}
+		};
+		document.addEventListener('keydown', panelKeyHandler);
+	}
+
+	function detachKeyHandler() {
+		if (!panelKeyHandler) return;
+		document.removeEventListener('keydown', panelKeyHandler);
+		panelKeyHandler = null;
+	}
+
+
+	// =========================================================================
+	// Format helpers
+	// =========================================================================
+
+	function formatCrore(value) {
+		var n = Number(value) || 0;
+		var abs = Math.abs(n);
+		// Default to crore. Nothing in the panel uses lakh.
+		var cr = abs / 10000000;
+		// 1 decimal at >= 1 Cr, 2 decimals below (so values like
+		// "₹0.42 Cr" don't degenerate to "₹0.4 Cr").
+		var amount = cr >= 1 ? cr.toFixed(1) : cr.toFixed(2);
+		return { amount: amount, unit: 'Cr' };
+	}
+
+	function formatMonth(yyyymm) {
+		// 'YYYY-MM' → 'MMM YYYY'
+		if (!yyyymm) return '';
+		var parts = String(yyyymm).split('-');
+		if (parts.length < 2) return yyyymm;
+		var y = parseInt(parts[0], 10);
+		var m = parseInt(parts[1], 10);
+		var months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+		              'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+		if (!m || m < 1 || m > 12 || isNaN(y)) return yyyymm;
+		return months[m - 1] + ' ' + y;
+	}
+
+	function formatMonthShort(yyyymm) {
+		// 'YYYY-MM' → 'MMM' (or 'MMM YY' on January as a year boundary cue)
+		if (!yyyymm) return '';
+		var parts = String(yyyymm).split('-');
+		if (parts.length < 2) return yyyymm;
+		var y = parseInt(parts[0], 10);
+		var m = parseInt(parts[1], 10);
+		var months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+		              'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+		if (!m || m < 1 || m > 12 || isNaN(y)) return yyyymm;
+		var label = months[m - 1];
+		if (m === 1) label += " '" + String(y).slice(-2);
+		return label;
+	}
+
+	function formatLongDate(iso) {
+		if (!iso) return '';
+		try {
+			var d = new Date(iso);
+			return d.toLocaleDateString(undefined, {
+				day: 'numeric', month: 'long', year: 'numeric',
+			});
+		} catch (e) { return iso; }
+	}
+
+
+	// =========================================================================
+	// Tiny escape helpers
+	// =========================================================================
+
+	function escapeHtml(s) {
+		if (s === null || s === undefined) return '';
+		return String(s)
+			.replace(/&/g, '&amp;')
+			.replace(/</g, '&lt;')
+			.replace(/>/g, '&gt;')
+			.replace(/"/g, '&quot;')
+			.replace(/'/g, '&#39;');
+	}
+
+	function escapeAttr(s) { return escapeHtml(s); }
+
+})(window);

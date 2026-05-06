@@ -112,6 +112,12 @@ def get_spotlight_cards(snapshot_date):
 		out.append({
 			"card_id": card["id"],
 			"label": card["label"],
+			# `match` exposes the card's predicate dict so the cockpit JS
+			# can hand it to `cards_v1.resolve_match_to_accounts` when
+			# opening the drill panel (Phase 4 commit 3). It carries no
+			# user-data sensitivity -- the predicate is a server-side
+			# constant from spotlight/cards.py.
+			"match": card["match"],
 			"polarity": card["polarity"],
 			"format": card["format"],
 			"color": card["color"],
@@ -195,6 +201,7 @@ def get_spotlight_cards_filtered(snapshot_date, companies):
 		out.append({
 			"card_id": card["id"],
 			"label": card["label"],
+			"match": card["match"],
 			"polarity": card["polarity"],
 			"format": card["format"],
 			"color": card["color"],
@@ -213,6 +220,7 @@ def _zero_card_payload(card):
 	return {
 		"card_id": card["id"],
 		"label": card["label"],
+		"match": card["match"],
 		"polarity": card["polarity"],
 		"format": card["format"],
 		"color": card["color"],

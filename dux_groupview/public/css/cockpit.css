@@ -640,3 +640,618 @@
 		padding: 16px;
 	}
 }
+
+
+/* ===========================================================================
+ * Account drill — slide-out panel (Phase 4 commit 3)
+ *
+ * Mounted at the top of the document body so it overlays the cockpit
+ * shell. The panel slides in from the right; backdrop dims the cockpit.
+ * The same component CSS classes (.dgv-drill-section, eyebrow, table
+ * styles) are reused on the full-page surface at /app/account-drill —
+ * size-specific rules live below the panel rules.
+ * ======================================================================== */
+
+.dgv-drill-overlay {
+	position: fixed;
+	inset: 0;
+	z-index: 1100;
+	pointer-events: auto;
+}
+.dgv-drill-overlay[hidden] { display: none; }
+
+.dgv-drill-backdrop {
+	position: absolute;
+	inset: 0;
+	background: rgba(27, 40, 69, 0.45);
+	opacity: 0;
+	transition: opacity 220ms ease-out;
+}
+.dgv-drill-overlay.dgv-drill-open .dgv-drill-backdrop { opacity: 1; }
+
+.dgv-drill-panel {
+	position: absolute;
+	top: 0;
+	right: 0;
+	width: 480px;
+	max-width: 100vw;
+	height: 100%;
+	background: var(--rgi-bg-page);
+	color: var(--rgi-text-secondary);
+	font-family: var(--rgi-font-sans);
+	display: flex;
+	flex-direction: column;
+	box-shadow: -8px 0 24px rgba(27, 40, 69, 0.12);
+	transform: translateX(100%);
+	transition: transform 220ms ease-out;
+}
+.dgv-drill-overlay.dgv-drill-open .dgv-drill-panel { transform: translateX(0); }
+
+
+/* Panel header */
+
+.dgv-drill-panel-head {
+	background: var(--rgi-bg-surface);
+	border-bottom: 1px solid var(--rgi-border);
+	padding: 18px 22px;
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 12px;
+	flex-shrink: 0;
+}
+
+.dgv-drill-panel-meta { flex: 1; min-width: 0; }
+
+.dgv-drill-eyebrow {
+	font-family: var(--rgi-font-sans);
+	font-size: 10px;
+	font-weight: 500;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--rgi-text-tertiary);
+	margin-bottom: 6px;
+}
+
+.dgv-drill-title {
+	font-family: var(--rgi-font-serif);
+	font-size: 20px;
+	font-weight: 500;
+	color: var(--rgi-text-primary);
+	margin: 0 0 4px 0;
+	line-height: 1.2;
+	word-break: break-word;
+}
+
+.dgv-drill-scope-sub {
+	font-family: var(--rgi-font-serif);
+	font-style: italic;
+	font-size: 12px;
+	color: var(--rgi-text-tertiary);
+	line-height: 1.3;
+}
+
+.dgv-drill-panel-actions {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	flex-shrink: 0;
+}
+
+.dgv-drill-expand,
+.dgv-drill-close {
+	background: transparent;
+	border: 1px solid transparent;
+	color: var(--rgi-text-tertiary);
+	width: 30px;
+	height: 30px;
+	border-radius: 3px;
+	cursor: pointer;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.dgv-drill-expand:hover,
+.dgv-drill-close:hover {
+	background: var(--rgi-bg-row-alt);
+	color: var(--rgi-text-primary);
+	border-color: var(--rgi-border);
+}
+
+
+/* Panel body */
+
+.dgv-drill-body {
+	flex: 1;
+	overflow-y: auto;
+	padding: 0;
+}
+
+.dgv-drill-section {
+	padding: 18px 22px;
+	border-bottom: 1px solid var(--rgi-border);
+	background: var(--rgi-bg-surface);
+}
+.dgv-drill-section:last-child { border-bottom: none; }
+.dgv-drill-trend  { background: var(--rgi-bg-page); }
+.dgv-drill-by-party { background: var(--rgi-bg-page); }
+.dgv-drill-section[hidden] { display: none; }
+
+.dgv-section-eyebrow {
+	font-family: var(--rgi-font-sans);
+	font-size: 10px;
+	font-weight: 500;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--rgi-text-tertiary);
+	margin-bottom: 10px;
+}
+
+
+/* Hero (group total) */
+
+.dgv-drill-hero-eyebrow {
+	font-family: var(--rgi-font-sans);
+	font-size: 10px;
+	font-weight: 500;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--rgi-text-tertiary);
+	margin-bottom: 8px;
+}
+
+.dgv-drill-hero-figure {
+	display: flex;
+	align-items: baseline;
+	gap: 6px;
+	margin-bottom: 6px;
+}
+
+.dgv-drill-hero-amount {
+	font-family: var(--rgi-font-serif);
+	font-size: 36px;
+	font-weight: 400;
+	color: var(--rgi-text-primary);
+	line-height: 1;
+}
+
+.dgv-drill-hero-unit {
+	font-family: var(--rgi-font-serif);
+	font-size: 16px;
+	color: var(--rgi-text-tertiary);
+}
+
+.dgv-drill-hero-page .dgv-drill-hero-amount { font-size: 44px; }
+.dgv-drill-hero-page .dgv-drill-hero-unit   { font-size: 18px; }
+
+.dgv-drill-hero-delta {
+	font-family: var(--rgi-font-serif);
+	font-style: italic;
+	font-size: 13px;
+	line-height: 1.3;
+}
+.dgv-drill-hero-delta.up   { color: var(--rgi-success); }
+.dgv-drill-hero-delta.down { color: var(--rgi-danger); }
+.dgv-drill-hero-delta.flat { color: var(--rgi-text-tertiary); }
+
+.dgv-drill-hero-skeleton {
+	font-family: var(--rgi-font-serif);
+	font-style: italic;
+	font-size: 14px;
+	color: var(--rgi-text-tertiary);
+}
+
+.dgv-drill-empty {
+	font-family: var(--rgi-font-serif);
+	font-style: italic;
+	font-size: 13px;
+	color: var(--rgi-text-tertiary);
+	padding: 4px 0;
+}
+
+.dgv-drill-skel-line {
+	height: 12px;
+	background: var(--rgi-bg-row-alt);
+	border-radius: 3px;
+	margin-bottom: 8px;
+	opacity: 0.7;
+}
+
+
+/* Trend chart */
+
+.dgv-drill-trend-host {
+	display: block;
+	width: 100%;
+}
+.dgv-trend-svg {
+	display: block;
+	width: 100%;
+	height: auto;
+}
+.dgv-trend-line {
+	fill: none;
+	stroke: var(--rgi-text-primary);
+	stroke-width: 1.5;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+}
+.dgv-trend-endpoint {
+	fill: var(--rgi-text-primary);
+	stroke: var(--rgi-bg-surface);
+	stroke-width: 1.5;
+}
+.dgv-trend-grid {
+	stroke: var(--rgi-border);
+	stroke-width: 1;
+	stroke-dasharray: 2 3;
+}
+.dgv-trend-axis-label {
+	font-family: var(--rgi-font-sans);
+	font-size: 9px;
+	fill: var(--rgi-text-tertiary);
+	letter-spacing: 0.04em;
+}
+.dgv-trend-hit {
+	fill: transparent;
+	cursor: crosshair;
+}
+.dgv-drill-trend-empty {
+	font-family: var(--rgi-font-serif);
+	font-style: italic;
+	font-size: 12px;
+	color: var(--rgi-text-tertiary);
+	padding: 12px 0;
+}
+
+/* Tooltip — appended to <body> so positioning is viewport-relative */
+.dgv-drill-tooltip {
+	position: fixed;
+	z-index: 1200;
+	background: var(--rgi-text-primary);
+	color: #FFFFFF;
+	font-family: var(--rgi-font-sans);
+	font-size: 11px;
+	letter-spacing: 0.02em;
+	padding: 6px 9px;
+	border-radius: 3px;
+	pointer-events: none;
+	box-shadow: 0 4px 12px rgba(27, 40, 69, 0.18);
+	white-space: nowrap;
+}
+.dgv-drill-tooltip[hidden] { display: none; }
+
+
+/* By-company table */
+
+.dgv-drill-co-table {
+	width: 100%;
+	border-collapse: collapse;
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+}
+.dgv-drill-co-table td {
+	padding: 10px 0;
+	border-bottom: 1px solid #F0EBE0;
+	color: var(--rgi-text-secondary);
+	vertical-align: top;
+}
+.dgv-drill-co-table tr:last-child td { border-bottom: none; }
+
+.dgv-drill-co-name {
+	color: var(--rgi-text-primary);
+	font-weight: 400;
+	line-height: 1.35;
+	padding-right: 10px;
+}
+
+.dgv-drill-co-spark {
+	width: 90px;
+	padding-right: 10px;
+}
+.dgv-drill-spark { display: block; }
+.dgv-drill-spark-line {
+	fill: none;
+	stroke: var(--rgi-text-secondary);
+	stroke-width: 1.2;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+}
+
+.dgv-drill-co-value {
+	font-family: var(--rgi-font-mono);
+	font-size: 13px;
+	color: var(--rgi-text-primary);
+	text-align: right;
+	white-space: nowrap;
+	width: 1%;  /* shrink-to-fit */
+}
+.dgv-drill-co-unit {
+	color: var(--rgi-text-tertiary);
+	font-size: 11px;
+}
+
+
+/* By-party table */
+
+.dgv-drill-party-head {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 12px;
+	margin-bottom: 8px;
+}
+.dgv-drill-party-sub {
+	font-family: var(--rgi-font-serif);
+	font-style: italic;
+	font-size: 11px;
+	color: var(--rgi-text-tertiary);
+	margin-top: 2px;
+}
+.dgv-drill-view-all {
+	background: transparent;
+	border: 1px solid var(--rgi-border);
+	color: var(--rgi-text-primary);
+	font-family: var(--rgi-font-sans);
+	font-size: 11px;
+	font-weight: 500;
+	border-radius: 3px;
+	padding: 4px 10px;
+	cursor: pointer;
+	flex-shrink: 0;
+	transition: border-color 0.15s ease;
+}
+.dgv-drill-view-all:hover { border-color: var(--rgi-text-primary); }
+
+.dgv-drill-party-table {
+	width: 100%;
+	border-collapse: collapse;
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+}
+.dgv-drill-party-table td {
+	padding: 8px 0;
+	border-bottom: 1px solid #F0EBE0;
+	color: var(--rgi-text-secondary);
+}
+.dgv-drill-party-table tr:last-child td { border-bottom: none; }
+
+.dgv-drill-party-name {
+	color: var(--rgi-text-primary);
+	padding-right: 10px;
+	line-height: 1.3;
+}
+.dgv-drill-party-value {
+	font-family: var(--rgi-font-mono);
+	color: var(--rgi-text-primary);
+	text-align: right;
+	white-space: nowrap;
+	width: 1%;
+}
+.dgv-drill-party-unit {
+	color: var(--rgi-text-tertiary);
+	font-size: 11px;
+}
+.dgv-drill-party-group-badge {
+	display: inline-block;
+	margin-left: 8px;
+	padding: 1px 6px;
+	background: #E8F0DA;
+	color: var(--rgi-success);
+	font-family: var(--rgi-font-sans);
+	font-size: 10px;
+	font-weight: 500;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	border-radius: 2px;
+	vertical-align: 1px;
+}
+.dgv-drill-party-co-count {
+	display: inline-block;
+	margin-left: 8px;
+	font-family: var(--rgi-font-sans);
+	font-size: 11px;
+	color: var(--rgi-text-tertiary);
+}
+
+
+/* Action bar */
+
+.dgv-drill-actions {
+	display: flex;
+	gap: 8px;
+	background: var(--rgi-bg-surface);
+	border-top: 1px solid var(--rgi-border);
+	padding: 12px 22px;
+	flex-shrink: 0;
+}
+.dgv-drill-action-primary,
+.dgv-drill-action-secondary {
+	font-family: var(--rgi-font-sans);
+	font-size: 12px;
+	font-weight: 500;
+	border-radius: 3px;
+	padding: 8px 14px;
+	cursor: pointer;
+	transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.dgv-drill-action-primary {
+	background: var(--rgi-text-primary);
+	color: #FFFFFF;
+	border: 1px solid var(--rgi-text-primary);
+	flex: 1;
+	text-align: center;
+}
+.dgv-drill-action-primary:hover:not([disabled]) {
+	background: #122039;
+	border-color: #122039;
+}
+.dgv-drill-action-secondary {
+	background: var(--rgi-bg-surface);
+	color: var(--rgi-text-primary);
+	border: 1px solid var(--rgi-border);
+}
+.dgv-drill-action-secondary:hover:not([disabled]) {
+	border-color: var(--rgi-text-primary);
+}
+.dgv-drill-action-primary[disabled],
+.dgv-drill-action-secondary[disabled] {
+	opacity: 0.55;
+	cursor: not-allowed;
+}
+
+
+/* Responsive — three breakpoints
+ *   Desktop      (default)        : 480px slide-out panel
+ *   iPad portrait ≤900 / ≥600     : 75% width, cockpit peeks behind backdrop
+ *   Phone        ≤600             : 100% width, no backdrop (panel IS the page)
+ */
+
+@media (max-width: 900px) and (min-width: 601px) {
+	.dgv-drill-panel { width: 75%; }
+}
+
+@media (max-width: 600px) {
+	.dgv-drill-panel {
+		width: 100%;
+		box-shadow: none;
+	}
+	.dgv-drill-backdrop { display: none; }
+}
+
+
+/* ===========================================================================
+ * Account drill — full page (/app/account-drill)
+ * ======================================================================== */
+
+.dgv-drill-page {
+	background: var(--rgi-bg-page);
+	color: var(--rgi-text-secondary);
+	font-family: var(--rgi-font-sans);
+	min-height: 100vh;
+}
+
+.dgv-drill-page-breadcrumb {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	background: var(--rgi-bg-surface);
+	border-bottom: 1px solid var(--rgi-border);
+	padding: 14px 32px;
+	font-size: 12px;
+	color: var(--rgi-text-secondary);
+}
+.dgv-drill-page-breadcrumb a {
+	color: var(--rgi-text-primary);
+	text-decoration: none;
+}
+.dgv-drill-page-breadcrumb a:hover { text-decoration: underline; }
+.dgv-bc-sep { color: var(--rgi-text-tertiary); }
+.dgv-bc-mid { color: var(--rgi-text-secondary); }
+.dgv-bc-current {
+	color: var(--rgi-text-primary);
+	font-weight: 500;
+}
+
+.dgv-drill-page-actions {
+	margin-left: auto;
+	display: flex;
+	gap: 8px;
+}
+.dgv-drill-page-actions button {
+	background: var(--rgi-bg-surface);
+	color: var(--rgi-text-secondary);
+	border: 1px solid var(--rgi-border);
+	border-radius: 3px;
+	padding: 5px 12px;
+	font-family: var(--rgi-font-sans);
+	font-size: 12px;
+	cursor: pointer;
+}
+.dgv-drill-page-actions button:hover { border-color: var(--rgi-text-primary); }
+
+.dgv-drill-page-body {
+	max-width: 1080px;
+	margin: 0 auto;
+	padding: 28px 32px;
+}
+
+.dgv-drill-page-hero {
+	background: var(--rgi-bg-surface);
+	border-radius: 6px;
+	padding: 28px 32px;
+	margin-bottom: 24px;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 32px;
+	box-shadow: 0 1px 2px rgba(27, 40, 69, 0.04);
+}
+.dgv-drill-page-hero-meta { flex: 1; min-width: 0; }
+.dgv-drill-page-hero-meta .dgv-drill-title { font-size: 26px; }
+.dgv-drill-page-hero-figure { flex-shrink: 0; text-align: right; }
+
+.dgv-drill-page-trend {
+	background: var(--rgi-bg-surface);
+	border-radius: 6px;
+	padding: 22px 32px;
+	margin-bottom: 24px;
+	box-shadow: 0 1px 2px rgba(27, 40, 69, 0.04);
+}
+
+.dgv-drill-page-tables {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 24px;
+	margin-bottom: 24px;
+}
+.dgv-drill-page-tables-card {
+	background: var(--rgi-bg-surface);
+	border-radius: 6px;
+	padding: 22px 24px;
+	box-shadow: 0 1px 2px rgba(27, 40, 69, 0.04);
+}
+
+.dgv-drill-page-actions-bar {
+	display: flex;
+	gap: 12px;
+	justify-content: flex-end;
+	padding: 0;
+	background: transparent;
+	border: none;
+}
+
+@media (max-width: 900px) {
+	.dgv-drill-page-tables { grid-template-columns: 1fr; }
+	.dgv-drill-page-hero {
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 16px;
+	}
+	.dgv-drill-page-hero-figure { text-align: left; }
+	.dgv-drill-page-body { padding: 20px 16px; }
+	.dgv-drill-page-breadcrumb { padding: 12px 16px; flex-wrap: wrap; }
+}
+
+
+/* Print styles — hide chrome, page-break-inside avoid */
+@media print {
+	.dgv-drill-page-actions,
+	.dgv-drill-page-actions-bar { display: none !important; }
+	.dgv-drill-page,
+	.dgv-drill-page-hero,
+	.dgv-drill-page-trend,
+	.dgv-drill-page-tables-card {
+		background: #FFFFFF !important;
+		box-shadow: none !important;
+		border: 1px solid #DDD;
+	}
+	.dgv-drill-page-hero,
+	.dgv-drill-page-trend,
+	.dgv-drill-page-tables { page-break-inside: avoid; }
+	.dgv-drill-page-breadcrumb {
+		border-bottom: 1px solid #DDD;
+		background: #FFFFFF !important;
+	}
+}
