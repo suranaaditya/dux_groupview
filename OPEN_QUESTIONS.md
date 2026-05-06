@@ -117,6 +117,50 @@ with pip install -e directly. Low priority — install uv on the bench
 when convenient.
 **Status:** Open
 
+### Q21 — teardown_rgi_named_data leaves tabAccount orphans (and likely others)
+**Asked by:** Side PR seed-scale-for-kvm verification
+**Blocking phase:** None directly. Cosmetic on dev; production never runs teardown.
+
+teardown_rgi_named_data calls frappe.delete_doc on Company records, but Frappe's
+Company.on_trash doesn't cascade-delete child tabAccount rows. After repeated
+teardown/reseed cycles on dev, hundreds of orphan tabAccount rows accumulate,
+with company values pointing to deleted Company records. This pollutes
+pivot.py::_lookup_group_by_stripped_name's LIMIT 1 lookup (no company filter),
+causing depth=0 root_type assertions to fail intermittently.
+
+Workaround: cleanup_orphan_accounts() utility in seed_production.py. Run after
+teardown if next reseed needs clean state.
+
+Real fix: investigate which child tables ERPNext expects to clean up via
+Company.on_trash. Likely also affects: tabCost Center, tabFiscal Year,
+tabWarehouse, tabItem Group, tabAddress, tabContact. Either extend teardown
+with explicit cascade DELETEs or file upstream Frappe issue.
+
+Decision deferred. Low priority — cosmetic on dev, not blocking any phase.
+**Status:** Open
+
+### Q20 — Periodic full-seed CI run
+**Asked by:** Side PR `fix/seed-scale-for-kvm`
+**Blocking phase:** None (low priority)
+**Question:** The dev environment now defaults to a trust-subset seed
+(~1.1M rows) so the full app test suite finishes in ~7-9 min instead
+of ~32 min on the KVM. Production-shape behaviour at 5M rows
+(query plans, scheduler refresh duration, snapshot-row count) is no
+longer exercised on every test run. Should there be a periodic CI
+tier — e.g. a weekly or pre-release run — that re-seeds at full
+scale, runs the suite, and tears back down? Or is on-demand manual
+verification (run `seed_rgi_named_data()` without `trusts=`, run
+suite, run `teardown_rgi_named_data()`) sufficient given the cadence
+of changes that touch refresh / aggregation paths?
+
+If yes, candidate trigger points: (a) before each Phase close (Phase
+4, Phase 5, etc.), (b) before any production deploy, (c) on a
+scheduled GitHub Action — though the latter would need a perf-tier
+runner since the KVM dev box is what we just decided is too slow.
+Low priority — manual on-demand is acceptable until cadence
+demands more.
+**Status:** Open
+
 ---
 
 ## Closed
