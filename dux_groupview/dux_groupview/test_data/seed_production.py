@@ -501,26 +501,58 @@ RGI_VOUCHER_PREFIX = "RGI-DEMO-"
 RGI_VOUCHER_TYPE = "DGV RGI Demo Seed"
 
 
-def seed_rgi_named_data():
-	"""Synthetic seed using real RGI company names (~30-40 min).
+def seed_rgi_named_data(trusts=None):
+	"""Synthetic seed using real RGI company names.
+
+	Args:
+		trusts: optional list of trust ids (from
+			`pivot/trust_groups.py:TRUSTS`). When None (default), seeds
+			all 59 RGI companies (~5M GL entries, ~30-40 min). When a
+			list is provided, seeds only the companies belonging to
+			those trusts -- proportionally fewer rows and time.
+
+			Trust id matching is case-insensitive. An unknown id
+			raises ValueError before any DB writes.
+
+			Example (KVM-friendly subset, ~1.1M rows, ~7 min):
+				seed_rgi_named_data(trusts=["ghremf", "cbs", "sgr"])
+
+			Example (full RGI, ~5M rows, ~30-40 min):
+				seed_rgi_named_data()
 
 	Refuses unless RGI_DEMO_SEED_CONFIRM=yes is set in the environment.
-	Companion teardown: teardown_rgi_named_data().
+	Companion teardown: teardown_rgi_named_data() (handles both modes;
+	teardown iterates the full TRUSTS list and silently skips
+	companies that were never created by the subset seed).
 	"""
+	# Resolve trust subset BEFORE the env-var gate so an invalid
+	# trust id fails fast even on a "preview" run without the gate.
+	selected_trusts = _select_trusts_to_seed(trusts)
+	estimated_companies = sum(len(t["companies"]) for t in selected_trusts)
+	estimated_rows = estimated_companies * ENTRIES_PER_COMPANY
+	estimated_minutes = max(1, round(estimated_rows / 100_000 * 0.6))
+
 	if os.environ.get("RGI_DEMO_SEED_CONFIRM", "").lower() != "yes":
+		mode_desc = (
+			f"trust subset {sorted(t['id'] for t in selected_trusts)}"
+			if trusts is not None
+			else "full RGI (all 10 trusts)"
+		)
 		print(
-			"This will create 59 RGI-named companies and ~5M GL entries.\n"
-			"Existing seeds (PROD-TEST-*, RGI-DEMO-*) will be purged.\n"
-			"Estimated 30-40 minutes.\n"
+			f"This will create {estimated_companies} RGI-named companies "
+			f"and ~{estimated_rows:,} GL entries ({mode_desc}).\n"
+			f"Existing seeds (PROD-TEST-*, RGI-DEMO-*) will be purged.\n"
+			f"Estimated ~{estimated_minutes} minutes.\n"
 			"Set RGI_DEMO_SEED_CONFIRM=yes in the environment to proceed:\n"
 			"    RGI_DEMO_SEED_CONFIRM=yes bench --site <site> execute "
 			"dux_groupview.dux_groupview.test_data.seed_production.seed_rgi_named_data\n"
+			"    (or with --kwargs '{\"trusts\": [\"ghremf\", \"cbs\", \"sgr\"]}')\n"
 		)
 		return {"status": "aborted", "reason": "RGI_DEMO_SEED_CONFIRM not set"}
 
 	t_start = time.time()
 
-	specs = _build_rgi_company_specs()
+	specs = _build_rgi_company_specs(selected_trusts)
 	companies = _ensure_rgi_companies(specs)
 	purged = _purge_synthetic_gl_entries()
 	if purged is False:
@@ -530,8 +562,52 @@ def seed_rgi_named_data():
 
 	frappe.db.commit()
 	total = time.time() - t_start
-	print(f"\nseed_rgi_named_data complete in {total / 60:.1f} min")
-	return {"status": "complete", "duration_seconds": round(total, 1)}
+	print(
+		f"\nseed_rgi_named_data complete in {total / 60:.1f} min "
+		f"({len(companies)} companies, "
+		f"{len(companies) * ENTRIES_PER_COMPANY:,} GL entries)"
+	)
+	return {
+		"status": "complete",
+		"duration_seconds": round(total, 1),
+		"companies_seeded": len(companies),
+		"trusts": sorted(t["id"] for t in selected_trusts),
+	}
+
+
+def _select_trusts_to_seed(trusts=None):
+	"""Filter the canonical TRUSTS list by the requested trust ids.
+
+	Args:
+		trusts: list of trust ids, or None for all.
+
+	Returns:
+		List of trust dicts (subset of TRUSTS) preserving original order.
+
+	Raises:
+		ValueError: if any id in `trusts` doesn't match a known trust.
+	"""
+	from dux_groupview.dux_groupview.pivot.trust_groups import TRUSTS
+
+	if trusts is None:
+		return list(TRUSTS)
+
+	if not isinstance(trusts, (list, tuple)) or not trusts:
+		raise ValueError(
+			"trusts must be a non-empty list of trust ids; "
+			"pass None to seed all trusts"
+		)
+
+	requested = {str(t).lower() for t in trusts}
+	known_ids = {t["id"].lower() for t in TRUSTS}
+	missing = requested - known_ids
+	if missing:
+		raise ValueError(
+			f"Unknown trust ids: {sorted(missing)}. "
+			f"Valid: {sorted(t['id'] for t in TRUSTS)}"
+		)
+
+	return [t for t in TRUSTS if t["id"].lower() in requested]
 
 
 def teardown_rgi_named_data():
@@ -634,18 +710,55 @@ def teardown_rgi_named_data():
 	}
 
 
+def cleanup_orphan_accounts():
+	"""One-off dev hygiene: delete tabAccount rows whose company no longer exists.
+
+	Production should never need this -- residue of repeated teardown/reseed
+	cycles on dev where Frappe's Company.on_trash doesn't cascade-delete
+	child tabAccount rows. See Q21 for proper-fix investigation.
+
+	Returns count of deleted rows.
+	"""
+	deleted = frappe.db.sql(
+		"""
+		DELETE FROM `tabAccount`
+		WHERE company NOT IN (SELECT name FROM `tabCompany`)
+		"""
+	)
+	frappe.db.commit()
+	# DELETE returns affected row count via a subsequent SELECT ROW_COUNT(),
+	# but frappe.db.sql doesn't surface that directly. Re-count via the
+	# inverse condition (now zero) -- not load-bearing for verification,
+	# the operator can also re-run and observe a zero second time.
+	remaining = frappe.db.sql(
+		"""
+		SELECT COUNT(*) FROM `tabAccount`
+		WHERE company NOT IN (SELECT name FROM `tabCompany`)
+		"""
+	)[0][0]
+	print(f"cleanup_orphan_accounts: orphan rows remaining = {remaining}")
+	return {"status": "complete", "orphan_rows_remaining": remaining}
+
+
 # ---------------------------------------------------------------------------
 # RGI seed helpers
 # ---------------------------------------------------------------------------
 
-def _build_rgi_company_specs():
-	"""Return a list of {name, abbr, trust_id} dicts for the 59 RGI companies.
+def _build_rgi_company_specs(selected_trusts=None):
+	"""Return a list of {name, abbr, trust_id} dicts for the RGI companies.
 
-	Pulls names from `dux_groupview.pivot.trust_groups.TRUSTS`. Derives a
-	unique abbr per company using the leading-uppercase-cluster scheme,
-	avoiding collisions with any existing tabCompany.abbr.
+	Args:
+		selected_trusts: optional list of trust dicts (subset of TRUSTS).
+			Pass the output of `_select_trusts_to_seed(...)`. Defaults
+			to the full TRUSTS list when None.
+
+	Pulls names from the selected trusts. Derives a unique abbr per
+	company using the leading-uppercase-cluster scheme, avoiding
+	collisions with any existing tabCompany.abbr.
 	"""
-	from dux_groupview.dux_groupview.pivot.trust_groups import TRUSTS
+	if selected_trusts is None:
+		from dux_groupview.dux_groupview.pivot.trust_groups import TRUSTS
+		selected_trusts = TRUSTS
 
 	used_abbrs = set()
 	# Pre-populate with existing tabCompany abbrs so we don't collide.
@@ -654,7 +767,7 @@ def _build_rgi_company_specs():
 			used_abbrs.add(row[0])
 
 	specs = []
-	for trust in TRUSTS:
+	for trust in selected_trusts:
 		for company_name in trust["companies"]:
 			abbr = _derive_abbr(company_name, used_abbrs)
 			specs.append({

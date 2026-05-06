@@ -517,3 +517,144 @@ Expected:
 - Both seeds are mutually exclusive: `seed_rgi_named_data` purges any pre-existing `PROD-TEST-*`, but `seed_production_data` only purges its own prefix (asymmetry documented in `_purge_synthetic_gl_entries` docstring).
 - Banner appears purely from server-side data state (`get_seed_state` queries `tabGL Entry` LIKE 'RGI-DEMO-%' LIMIT 1). No UI flag to toggle, no risk of drift.
 - Defensive teardown filter on RGI side: a company is only deleted if it has zero GL entries OUTSIDE the `RGI-DEMO-` prefix. Protects against accidental runs on a misconfigured production environment where a real RGI company exists.
+
+---
+
+## Side PR — seed scale for KVM (post-Phase-3.5, mid-Phase-4)
+
+**Branch:** `fix/seed-scale-for-kvm`
+**Status:** _to fill in on merge_
+
+**Why this exists:**
+
+Mid-Phase-4 commit 2 review surfaced that the full RGI-DEMO 5M-row seed
+saturates the dev server (Hostinger KVM1) during the test suite. Each
+`refresh_tb_snapshot` call against 5M rows takes ~50 sec; the suite
+triggers ~25 such refreshes (backfill tests, idempotency tests, sparkline
+tests), totalling ~24 min of refresh work. Combined with KVM CPU
+throttling, the suite was running 32+ min and risking concurrent-scheduler
+collisions on the today() snapshot. This PR introduces a smaller
+trust-subset seed for routine test runs while keeping the 5M shape
+available on demand.
+
+**What was added:**
+
+- **`seed_rgi_named_data(trusts: list[str] | None = None)`** — optional
+  parameter scoping the seed to a subset of trusts from `pivot/
+  trust_groups.py:TRUSTS`. Default `None` preserves the full 59-company
+  / 5M-row behaviour (no change for existing callers). When a list is
+  passed, only matching trusts' companies are seeded; per-company row
+  count (85K) is unchanged so total rows scale linearly.
+- **`_select_trusts_to_seed(trusts)`** — pure helper that filters
+  TRUSTS by id list. Case-insensitive, raises `ValueError` on unknown
+  ids before any DB writes. Pulled out so the filter logic is
+  unit-testable without touching tabCompany or tabAccount.
+- **`tests/test_seed_production.py`** — 10 tests covering the filter
+  in isolation: default-returns-all, subset-filtering, order-preservation,
+  case-insensitive matching, error messages on unknown / empty / non-list
+  inputs, single-trust path, and a pinning test that asserts the
+  `["ghremf", "cbs", "sgr"]` subset = 13 companies (so future
+  trust_groups.py changes surface here rather than silently shifting
+  the row count).
+- **`tests/test_refresh.py::test_refresh_creates_snapshot` threshold**
+  retuned from 2-tier (>1M → 60s, else 15s) to 3-tier:
+  - `>2,000,000` rows → 60s (production-scale, post Phase 3 covering
+    index)
+  - `>100,000` rows → 30s (dev/staging-scale, e.g. trust-subset
+    RGI seed)
+  - `<=100,000` rows → 15s (synthetic/CI-tiny, seed_light or unseeded)
+  The middle tier is new: a 1.1M-row trust-subset seed needs more than
+  the synthetic 15s but less than the prod-scale 60s.
+
+**Untouched:**
+
+- `seed_production_data()` — generic prod-scale seed unchanged. Both
+  the full RGI mode and seed_production_data still produce ~5M rows
+  by default.
+- `teardown_rgi_named_data()` — unchanged. Iterates the full TRUSTS
+  list and silently skips companies that were never created by a
+  subset seed (`frappe.db.exists` returns False). Tested implicitly
+  by running teardown after a subset seed in the dev verification
+  step below.
+- `_generate_gl_entries`, `_purge_synthetic_gl_entries`, `_build_rgi_company_specs`
+  internals — only the entry point and abbr-collision walk changed
+  to take pre-filtered trusts.
+
+**Trust subset chosen for dev: `["ghremf", "cbs", "sgr"]` — 13 companies, ~1.1M rows.**
+
+Rationale:
+- **GHREMF** (8 cos) — second-tier size; includes "GHR CACS Pune"
+  which has the Q4 GST Settings inconsistency. Keeping it in dev
+  means Phase 4 commit 2's `audit_group_co_name_match` (Q19) and any
+  future Q4 fix can be tested against a real edge case.
+- **CBS** (3 cos) — small mid-tier. Provides trust-row collapse
+  variety without inflating row count.
+- **SGR** (2 cos) — smallest non-singleton trust. Distinct
+  abbreviation shape ("SGR Foundation") for testing the trust-pill
+  rendering at the small end.
+
+ASS (16 cos) intentionally excluded from the dev default to keep the
+KVM CPU comfortable. Restore the full seed (run `seed_rgi_named_data()`
+without `trusts=`) when capturing demo screenshots that need the
+10-trust visual or when re-validating production-scale perf.
+
+**Dev verification (filled in at merge):** _row count, single-test
+timing, full-suite runtime to be captured during PR test run._
+
+**Performance impact (expected):**
+
+| Operation | 5M-row seed | 1.1M-row subset |
+|---|---|---|
+| `refresh_tb_snapshot` (single) | ~50s | ~10-12s |
+| `test_refresh_creates_snapshot` | ~50s | ~10s (threshold 30s) |
+| `test_backfill_creates_n_snapshots` | ~159s (3 cycles) | ~35s |
+| Full app test suite | ~32 min | ~7-9 min (estimated) |
+| RGI seed run time | ~30-40 min | ~7 min |
+
+**Why a side PR rather than a Phase 4 commit:**
+
+The change is unrelated to Phase 4's drill-API logic; it's pure
+infrastructure for the test environment. Bundling it into commit 2
+would mix concerns and bloat the diff. Separating means the test
+threshold change and seed parameter can be reviewed on their own
+merits, and Phase 4 commit 2 keeps its focused scope when it resumes.
+
+**Open follow-ups:**
+
+- Q20 added to OPEN_QUESTIONS.md — should there be a CI tier that runs
+  on the full 5M seed periodically (e.g. weekly), or is on-demand
+  manual runs sufficient? Low priority.
+- Once Phase 4 commit 2 lands, re-verify that the trust-subset seed
+  surfaces all the data shapes the spotlight cards / pivot grid /
+  drill panels exercise. The card → leaf-count table in
+  `PHASE_4_COMMIT_1_FINDINGS.md` may need a subset-specific revision.
+
+**Addendum — orphan tabAccount discovery during PR verification:**
+
+The first full-suite re-run on the trust-subset seed surfaced one
+unrelated test failure: `test_pivot_filter::test_depth_filter_works_across_all_root_types`
+hit `Depth=1 for root_type='Liability': expected at least one visible
+row, got 0`. Root cause was *not* the side PR's logic but a
+pre-existing dev-hygiene issue: `teardown_rgi_named_data` calls
+`frappe.delete_doc("Company", ...)` but Frappe's Company.on_trash does
+not cascade-delete child `tabAccount` rows, leaving 105 orphan
+companies' worth of accounts (525+ rows) over multiple
+teardown/reseed cycles. Pivot's `_lookup_group_by_stripped_name`
+(LIMIT 1, no company filter) then picked an orphan row whose
+`account_name` had a company suffix embedded in the field rather
+than the stripped form, with `root_type=''`, masking the properly-
+typed Liability roots from the response.
+
+Action taken in this PR:
+- Added `cleanup_orphan_accounts()` utility in `seed_production.py`
+  (bench-execute-only, not whitelisted) that deletes `tabAccount`
+  rows whose `company` is no longer in `tabCompany`. One-off dev
+  hygiene; production never needs it.
+- Filed Q21 in OPEN_QUESTIONS.md for proper investigation of which
+  child tables Frappe's Company.on_trash *should* cascade and
+  whether to extend teardown explicitly or file an upstream issue.
+  Likely candidates to also leak: tabCost Center, tabFiscal Year,
+  tabWarehouse, tabItem Group, tabAddress, tabContact.
+
+After running `cleanup_orphan_accounts` on dev, the full suite ran
+clean (91/91 pass; runtime documented in dev verification).

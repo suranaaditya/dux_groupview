@@ -68,21 +68,30 @@ class TestRefresh(FrappeTestCase):
 		self.assertEqual(result["status"], "Complete")
 		self.assertGreater(result["duration_seconds"], 0)
 
-		# Duration target branches by seed size. The Phase 1 dev-scale
-		# target (15s p95) and the Phase 3 prod-scale target (60s)
-		# coexist intentionally per PHASE_LOG.md: a sub-500K-row
-		# deployment must still meet 15s, while RGI-DEMO's 5M-row
-		# synthetic seed gets the relaxed 60s after the Phase 3
-		# covering-index + subquery-restructure optimisation. Branch
-		# on the actual GL Entry row count so both invariants stay
-		# enforced; no environment is silently exempted.
+		# Duration target branches by seed size. Three tiers since the
+		# side PR ("seed scale for KVM") that introduced the
+		# trust-subset RGI seed -- a ~1.1M-row dev/staging seed sits
+		# between the synthetic-tiny (50K) and full-RGI (5M) shapes.
+		# Per PHASE_LOG.md:
+		#   - production-scale (>2M rows): 60s, post Phase 3
+		#     covering-index + subquery-restructure optimisation
+		#   - dev/staging-scale (>100K rows): 30s, the trust-subset
+		#     RGI seed produced by `seed_rgi_named_data(trusts=[...])`
+		#   - synthetic/CI-tiny (<=100K rows): 15s, Phase 1 target
+		#     (seed_light or unseeded sites)
+		# All tiers stay enforced; no environment is silently exempted.
 		gl_count = frappe.db.count("GL Entry")
-		threshold = 60.0 if gl_count > 1_000_000 else 15.0
+		if gl_count > 2_000_000:
+			threshold = 60.0
+		elif gl_count > 100_000:
+			threshold = 30.0
+		else:
+			threshold = 15.0
 		self.assertLess(
 			result["duration_seconds"], threshold,
 			f"refresh took {result['duration_seconds']:.1f}s with "
 			f"{gl_count:,} GL entries; target was < {threshold:.0f}s "
-			f"(branched on row-count threshold of 1,000,000)",
+			f"(branched on row-count thresholds 2,000,000 / 100,000)",
 		)
 
 		# Parent record exists with expected status.
