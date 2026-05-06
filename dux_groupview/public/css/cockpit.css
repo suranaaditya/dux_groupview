@@ -1,1 +1,642 @@
-/* dux_groupview Phase 0 placeholder */
+/*
+ * dux_groupview cockpit — Phase 4 commit 2.5 (executive briefing)
+ *
+ * Color palette + typography expressed as CSS custom properties under
+ * :root so a future theme override commit can re-skin the cockpit
+ * without touching component selectors.
+ */
+
+:root {
+	--rgi-bg-page:        #FBF9F4;  /* warm cream page background */
+	--rgi-bg-surface:     #FFFFFF;  /* card / table / header / footer */
+	--rgi-bg-row-alt:     #FBF9F4;  /* table header row */
+	--rgi-text-primary:   #1B2845;  /* main numbers, headings, deep navy */
+	--rgi-text-secondary: #5A5147;  /* secondary text, muted body */
+	--rgi-text-tertiary:  #8B8378;  /* eyebrows, captions, italic notes */
+	--rgi-border:         #E8E2D5;  /* dividers, borders */
+	--rgi-border-light:   #D5CDB8;  /* lighter accent (secondary tier) */
+	--rgi-success:        #5A7C3D;  /* positive deltas (sage) */
+	--rgi-danger:         #A14B3C;  /* negative deltas (terracotta) */
+	--rgi-amber:          #BA7517;  /* synthetic-preview banner */
+
+	--rgi-font-serif:     Georgia, "Times New Roman", serif;
+	--rgi-font-sans:      "Geist", -apple-system, BlinkMacSystemFont,
+	                      "Segoe UI", Roboto, sans-serif;
+	--rgi-font-mono:      "Geist Mono", ui-monospace, "SF Mono",
+	                      "Cascadia Mono", "Consolas", monospace;
+}
+
+
+/* ===========================================================================
+ * Synthetic preview banner — thin amber strip above the header
+ * ======================================================================== */
+
+.dux-synthetic-banner {
+	background: var(--rgi-amber);
+	color: #FFFFFF;
+	font-family: var(--rgi-font-sans);
+	font-size: 11px;
+	font-weight: 500;
+	letter-spacing: 0.05em;
+	text-align: center;
+	padding: 5px 12px;
+	line-height: 1.3;
+}
+.dux-synthetic-banner[hidden] { display: none; }
+
+
+/* ===========================================================================
+ * Cockpit shell — overall page
+ * ======================================================================== */
+
+.dgv-cockpit-shell {
+	background: var(--rgi-bg-page);
+	color: var(--rgi-text-secondary);
+	font-family: var(--rgi-font-sans);
+	min-height: 100vh;
+}
+
+
+/* ===========================================================================
+ * Header — white card with logo + tagline (left) + date/scope (right)
+ * ======================================================================== */
+
+.rgi-header {
+	background: var(--rgi-bg-surface);
+	border-bottom: 1px solid var(--rgi-border);
+	padding: 22px 32px;
+	display: flex;
+	align-items: center;
+	gap: 20px;
+}
+
+.rgi-header-brand {
+	display: flex;
+	align-items: center;
+	gap: 18px;
+}
+
+.rgi-header-logo {
+	display: block;
+	width: auto;
+	height: 32px;
+}
+
+.rgi-header-rule {
+	width: 1px;
+	height: 36px;
+	background: var(--rgi-text-primary);
+	opacity: 0.3;
+}
+
+.rgi-header-tagline {
+	font-family: var(--rgi-font-serif);
+	font-style: italic;
+	font-size: 13px;
+	color: var(--rgi-text-secondary);
+	line-height: 1.25;
+}
+
+.rgi-header-meta {
+	margin-left: auto;
+	text-align: right;
+}
+
+.rgi-header-date {
+	font-family: var(--rgi-font-serif);
+	font-size: 16px;
+	color: var(--rgi-text-primary);
+	line-height: 1.2;
+}
+
+.rgi-header-caption {
+	font-family: var(--rgi-font-sans);
+	font-size: 11px;
+	color: var(--rgi-text-tertiary);
+	margin-top: 4px;
+	letter-spacing: 0.01em;
+}
+
+
+/* ===========================================================================
+ * Page body — wrapper around headline, spotlight, trial balance
+ * ======================================================================== */
+
+.rgi-body {
+	padding: 28px 32px;
+	max-width: 1320px;
+	margin: 0 auto;
+}
+
+
+/* ===========================================================================
+ * Header controls — trust selector, date, age pill
+ * (restyled but same component IDs as Phase 3.5)
+ * ======================================================================== */
+
+.rgi-header-controls {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	margin-left: 16px;
+}
+
+/* Restyle existing dgv-scope-pill */
+.dgv-scope-pill {
+	background: var(--rgi-bg-surface);
+	color: var(--rgi-text-secondary);
+	border: 1px solid var(--rgi-border);
+	border-radius: 3px;
+	padding: 6px 10px;
+	font-family: var(--rgi-font-sans);
+	font-size: 12px;
+	cursor: pointer;
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	transition: border-color 0.15s ease;
+}
+.dgv-scope-pill:hover { border-color: var(--rgi-text-tertiary); }
+.dgv-scope-pill[aria-expanded="true"] { border-color: var(--rgi-text-primary); }
+.dgv-scope-pill-prefix {
+	color: var(--rgi-text-tertiary);
+	font-size: 10px;
+	letter-spacing: 0.05em;
+	text-transform: uppercase;
+}
+.dgv-scope-pill-summary {
+	color: var(--rgi-text-primary);
+	font-weight: 500;
+}
+.dgv-scope-pill-caret { color: var(--rgi-text-tertiary); font-size: 10px; }
+
+.dgv-date-select {
+	background: var(--rgi-bg-surface);
+	color: var(--rgi-text-primary);
+	border: 1px solid var(--rgi-border);
+	border-radius: 3px;
+	padding: 5px 8px;
+	font-family: var(--rgi-font-sans);
+	font-size: 12px;
+	height: 30px;
+}
+
+.dgv-age-pill {
+	font-size: 10px;
+	letter-spacing: 0.05em;
+	text-transform: uppercase;
+	padding: 4px 8px;
+	border-radius: 3px;
+	font-weight: 500;
+}
+.dgv-age-pill.fresh    { background: #E8F0DA; color: var(--rgi-success); }
+.dgv-age-pill.stale    { background: #F5EBD8; color: var(--rgi-amber); }
+.dgv-age-pill.very-old { background: #F5DCDA; color: var(--rgi-danger); }
+
+
+/* ===========================================================================
+ * Headline section — eyebrow + serif sentence summarising MoM deltas
+ * ======================================================================== */
+
+.rgi-headline {
+	margin-bottom: 24px;
+	padding-bottom: 24px;
+	border-bottom: 1px solid var(--rgi-border);
+}
+
+.rgi-headline-eyebrow {
+	font-family: var(--rgi-font-sans);
+	font-size: 11px;
+	font-weight: 500;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--rgi-text-tertiary);
+	margin-bottom: 8px;
+}
+
+.rgi-headline-text {
+	font-family: var(--rgi-font-serif);
+	font-size: 22px;
+	font-weight: 400;
+	color: var(--rgi-text-primary);
+	line-height: 1.45;
+	max-width: 920px;
+}
+
+.rgi-headline[hidden] { display: none; }
+
+
+/* ===========================================================================
+ * Spotlight grid — two tiers (primary + secondary)
+ * ======================================================================== */
+
+.rgi-spotlight {
+	margin-bottom: 28px;
+	padding-bottom: 28px;
+	border-bottom: 1px solid var(--rgi-border);
+}
+
+.rgi-spotlight-tier-primary,
+.rgi-spotlight-tier-secondary {
+	display: grid;
+	grid-template-columns: repeat(3, 1fr);
+	gap: 24px;
+}
+
+.rgi-spotlight-tier-primary {
+	margin-bottom: 28px;
+}
+
+.rgi-spotlight-card {
+	background: var(--rgi-bg-surface);
+	padding: 18px 20px 18px 20px;
+	border-radius: 6px;
+	box-shadow: 0 1px 2px rgba(27, 40, 69, 0.04),
+	            0 1px 1px rgba(27, 40, 69, 0.03);
+	transition: box-shadow 0.15s ease, transform 0.15s ease,
+	            border-left-width 0.15s ease;
+	position: relative;
+	cursor: pointer;
+	min-height: 96px;
+	border-left-style: solid;
+	border-left-color: var(--rgi-text-primary);
+}
+
+.rgi-spotlight-card.rgi-tier-primary {
+	border-left-width: 2px;
+	border-left-color: var(--rgi-text-primary);
+}
+
+.rgi-spotlight-card.rgi-tier-secondary {
+	border-left-width: 1px;
+	border-left-color: var(--rgi-border-light);
+}
+
+.rgi-spotlight-card:hover {
+	box-shadow: 0 4px 12px rgba(27, 40, 69, 0.08),
+	            0 2px 4px rgba(27, 40, 69, 0.04);
+	transform: translateY(-1px);
+}
+.rgi-spotlight-card.rgi-tier-primary:hover  { border-left-width: 3px; }
+.rgi-spotlight-card.rgi-tier-secondary:hover { border-left-width: 2px; }
+
+/* Click affordance: chevron arrow in top-right, fades in on hover. */
+.rgi-card-chevron {
+	position: absolute;
+	top: 16px;
+	right: 16px;
+	width: 14px;
+	height: 14px;
+	color: var(--rgi-text-primary);
+	opacity: 0;
+	transition: opacity 0.15s ease;
+	pointer-events: none;
+}
+.rgi-spotlight-card:hover .rgi-card-chevron { opacity: 1; }
+.rgi-card-chevron svg {
+	display: block;
+	width: 100%;
+	height: 100%;
+	stroke: currentColor;
+	fill: none;
+	stroke-width: 2;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+}
+
+.rgi-spotlight-eyebrow {
+	font-family: var(--rgi-font-sans);
+	font-size: 11px;
+	font-weight: 500;
+	letter-spacing: 0.05em;
+	text-transform: uppercase;
+	color: var(--rgi-text-tertiary);
+	margin-bottom: 8px;
+}
+
+.rgi-spotlight-figure {
+	display: flex;
+	align-items: baseline;
+	gap: 4px;
+	margin-bottom: 6px;
+}
+
+.rgi-tier-primary .rgi-spotlight-figure {
+	font-family: var(--rgi-font-serif);
+	font-weight: 400;
+}
+.rgi-tier-primary .rgi-spotlight-amount {
+	font-size: 32px;
+	color: var(--rgi-text-primary);
+}
+.rgi-tier-primary .rgi-spotlight-unit {
+	font-size: 15px;
+	color: var(--rgi-text-tertiary);
+}
+
+.rgi-tier-secondary .rgi-spotlight-figure {
+	font-family: var(--rgi-font-serif);
+	font-weight: 400;
+}
+.rgi-tier-secondary .rgi-spotlight-amount {
+	font-size: 24px;
+	color: var(--rgi-text-secondary);
+}
+.rgi-tier-secondary .rgi-spotlight-unit {
+	font-size: 13px;
+	color: var(--rgi-text-tertiary);
+}
+
+/* "No activity recorded" placeholder for cards with value=0 AND delta=0 */
+.rgi-spotlight-empty {
+	font-family: var(--rgi-font-serif);
+	font-style: italic;
+	font-size: 14px;
+	color: var(--rgi-text-tertiary);
+	line-height: 1.4;
+	margin-bottom: 6px;
+}
+
+/* Delta line: italic serif. Sign drives color. */
+.rgi-spotlight-delta {
+	font-family: var(--rgi-font-serif);
+	font-style: italic;
+	font-size: 12px;
+	line-height: 1.3;
+}
+.rgi-spotlight-delta.up   { color: var(--rgi-success); }
+.rgi-spotlight-delta.down { color: var(--rgi-danger); }
+.rgi-spotlight-delta.flat { color: var(--rgi-text-tertiary); }
+
+
+/* ===========================================================================
+ * Trial balance section — heading + toolbar + table
+ * ======================================================================== */
+
+.rgi-tb {
+	background: transparent;
+}
+
+.rgi-tb-heading {
+	font-family: var(--rgi-font-serif);
+	font-size: 17px;
+	font-weight: 500;
+	color: var(--rgi-text-primary);
+	margin-bottom: 4px;
+}
+
+.rgi-tb-subtitle {
+	font-family: var(--rgi-font-serif);
+	font-style: italic;
+	font-size: 12px;
+	color: var(--rgi-text-tertiary);
+	margin-bottom: 12px;
+}
+
+
+/* Toolbar */
+
+.rgi-tb-toolbar {
+	display: flex;
+	align-items: center;
+	gap: 16px;
+	margin-bottom: 12px;
+	flex-wrap: wrap;
+}
+
+/* View buttons: Balance / Movement / Compare */
+.dgv-view-toggle {
+	display: inline-flex;
+	gap: 6px;
+}
+.dgv-view-btn {
+	background: var(--rgi-bg-surface);
+	color: var(--rgi-text-secondary);
+	border: 1px solid var(--rgi-border);
+	border-radius: 3px;
+	padding: 6px 14px;
+	font-family: var(--rgi-font-sans);
+	font-size: 12px;
+	font-weight: 500;
+	cursor: pointer;
+	transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+.dgv-view-btn:hover:not([disabled]) { border-color: var(--rgi-text-tertiary); }
+.dgv-view-btn.dgv-view-active {
+	background: var(--rgi-text-primary);
+	color: #FFFFFF;
+	border-color: var(--rgi-text-primary);
+}
+.dgv-view-btn[disabled] {
+	opacity: 0.55;
+	cursor: not-allowed;
+}
+
+/* Pill groups: Depth (1/2/3/All), Format (Cr/L/Full/Plain) */
+.dgv-depth-toggle,
+.dgv-format-toggle {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+}
+.dgv-depth-label,
+.dgv-format-label {
+	font-family: var(--rgi-font-sans);
+	font-size: 11px;
+	font-weight: 500;
+	letter-spacing: 0.05em;
+	text-transform: uppercase;
+	color: var(--rgi-text-tertiary);
+}
+.dgv-depth-toggle .dgv-depth-pill-group,
+.dgv-format-toggle .dgv-format-pill-group {
+	display: inline-flex;
+	border: 1px solid var(--rgi-border);
+	border-radius: 3px;
+	overflow: hidden;
+	background: var(--rgi-bg-surface);
+}
+.dgv-depth-btn,
+.dgv-format-btn {
+	background: transparent;
+	color: var(--rgi-text-secondary);
+	border: none;
+	padding: 0;
+	height: 26px;
+	font-family: var(--rgi-font-sans);
+	font-size: 11px;
+	font-weight: 500;
+	cursor: pointer;
+}
+.dgv-depth-btn { width: 28px; }
+.dgv-depth-btn[data-depth="all"] { width: 32px; }
+.dgv-format-btn { width: 30px; }
+.dgv-format-btn[data-format="full"],
+.dgv-format-btn[data-format="plain"] { width: 36px; }
+
+.dgv-depth-btn.active,
+.dgv-format-btn.active {
+	background: var(--rgi-text-primary);
+	color: #FFFFFF;
+}
+
+
+/* Search input — pushed to the far right */
+.dgv-pivot-search {
+	margin-left: auto;
+	width: 200px;
+	height: 30px;
+	background: var(--rgi-bg-surface);
+	color: var(--rgi-text-primary);
+	border: 1px solid var(--rgi-border);
+	border-radius: 3px;
+	padding: 0 10px;
+	font-family: var(--rgi-font-sans);
+	font-size: 12px;
+}
+.dgv-pivot-search::placeholder { color: var(--rgi-text-tertiary); }
+.dgv-pivot-search:focus {
+	outline: none;
+	border-color: var(--rgi-text-primary);
+}
+
+
+/* Table */
+
+#pivot-grid {
+	background: var(--rgi-bg-surface);
+	border: 1px solid var(--rgi-border);
+	border-radius: 3px;
+	overflow: hidden;
+}
+
+#pivot-grid table {
+	width: 100%;
+	border-collapse: collapse;
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+}
+
+#pivot-grid th {
+	background: var(--rgi-bg-row-alt);
+	color: var(--rgi-text-tertiary);
+	font-family: var(--rgi-font-sans);
+	font-size: 11px;
+	font-weight: 500;
+	letter-spacing: 0.05em;
+	text-transform: uppercase;
+	text-align: left;
+	padding: 11px 14px;
+	border-bottom: 1px solid var(--rgi-border);
+}
+#pivot-grid th.numeric { text-align: right; }
+
+#pivot-grid td {
+	padding: 8px 14px;
+	border-bottom: 1px solid var(--rgi-border);
+	color: var(--rgi-text-secondary);
+}
+#pivot-grid td.numeric {
+	font-family: var(--rgi-font-mono);
+	text-align: right;
+}
+
+#pivot-grid tr.parent-row td { color: var(--rgi-text-primary); font-weight: 500; }
+#pivot-grid tr.child-row  td { color: var(--rgi-text-secondary); font-weight: 400; }
+
+#pivot-grid th.col-account, #pivot-grid td.col-account { width: 240px; }
+#pivot-grid th.col-total,   #pivot-grid td.col-total   { width: 110px; }
+
+#pivot-grid tr:last-child td { border-bottom: none; }
+
+
+/* ===========================================================================
+ * Footer — confidentiality + provided-by Dux logo
+ * ======================================================================== */
+
+.rgi-footer {
+	background: var(--rgi-bg-surface);
+	border-top: 1px solid var(--rgi-border);
+	padding: 16px 32px;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 16px;
+}
+
+.rgi-footer-confidential {
+	font-family: var(--rgi-font-serif);
+	font-style: italic;
+	font-size: 11px;
+	color: var(--rgi-text-tertiary);
+}
+
+.rgi-footer-provider {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.rgi-footer-eyebrow {
+	font-family: var(--rgi-font-sans);
+	font-size: 10px;
+	font-weight: 500;
+	letter-spacing: 0.05em;
+	text-transform: uppercase;
+	color: var(--rgi-text-tertiary);
+}
+
+.rgi-footer-logo {
+	display: block;
+	width: auto;
+	height: 20px;
+}
+
+
+/* ===========================================================================
+ * Responsive — stack at narrow viewports
+ * ======================================================================== */
+
+@media (max-width: 900px) {
+	.rgi-header {
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 12px;
+		padding: 16px;
+	}
+	.rgi-header-meta {
+		margin-left: 0;
+		text-align: left;
+	}
+	.rgi-header-controls {
+		margin-left: 0;
+		flex-wrap: wrap;
+	}
+	.rgi-body {
+		padding: 20px 16px;
+	}
+	.rgi-spotlight-tier-primary,
+	.rgi-spotlight-tier-secondary {
+		grid-template-columns: 1fr;
+		gap: 16px;
+	}
+	.rgi-spotlight-tier-primary {
+		margin-bottom: 20px;
+	}
+	.rgi-headline-text {
+		font-size: 18px;
+	}
+	.rgi-tb-toolbar {
+		gap: 12px;
+	}
+	.dgv-pivot-search {
+		margin-left: 0;
+		width: 100%;
+	}
+	.rgi-footer {
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 12px;
+		padding: 16px;
+	}
+}
