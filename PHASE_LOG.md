@@ -658,3 +658,135 @@ Action taken in this PR:
 
 After running `cleanup_orphan_accounts` on dev, the full suite ran
 clean (91/91 pass; runtime documented in dev verification).
+
+---
+
+## Side PR — augment dev seed with AP/AR data (post-Phase-4-commit-3)
+
+**Branch:** `fix/seed-augment-ap-ar`
+**Status:** _to fill in on merge_
+
+**Why this exists:**
+
+Phase 4 commit 3 review surfaced that the dev seed has only 8 unique
+parties total across all payable accounts, all with near-zero
+balances. The synthetic seed generator (`seed_rgi_named_data`) was
+designed for snapshot/refresh load testing, not party data realism --
+`_generate_gl_entries` recycles 8-9 supplier names across many
+vouchers with legs that net to near zero. The account drill panel
+worked correctly but had nothing meaningful to display in its
+"By party" section, and commits 4 (GL drill), 5 (focus mode), 7
+(walkthrough) would hit the same problem. Fixing now as a side PR
+keeps Phase 4 commits focused on their actual deliverables.
+
+Same pattern as side PR #10 (`fix/seed-scale-for-kvm`): focused
+single-purpose change, branched off main, halt-point review, merged
+before resuming Phase 4 work.
+
+**What was added:**
+
+- `dux_groupview/test_data/seed_ap_ar.py` -- pure data templates for
+  50 suppliers + 30 customers + tier-distribution constants. No
+  Frappe imports; importable without DB.
+- `dux_groupview/test_data/seed_ap_ar_generator.py` -- whitelisted
+  `seed_ap_ar(companies=None, dry_run=False)` entry point with
+  affiliation planning (1-5 companies per party, weighted), Pareto-
+  preserving padding when a company comes up short on the weighted
+  random, and bulk GL-entry generation (5K-row chunks, same pattern
+  as `seed_production._generate_gl_entries`).
+- `dux_groupview/test_data/seed_ap_ar_teardown.py` -- whitelisted
+  `teardown_ap_ar(delete_party_docs=False)` deletes by `AP-AR-SEED-`
+  voucher prefix; defaults to keeping party docs (re-run friendly),
+  with optional party-doc cleanup that refuses to delete a party with
+  non-AP-AR-SEED transactions.
+- `dux_groupview/tests/test_seed_ap_ar.py` -- 17 pure-logic unit
+  tests: template counts, tier distribution, Pareto top-10/top-5
+  share, per-company minimums (≥5 suppliers, ≥3 customers), no
+  duplicate (party, company) pairs, balance/tx in tier ranges,
+  determinism (same seed → same plan), every template has at least
+  one affiliation.
+
+**Decisions made:**
+
+- **Pareto-preserving padding.** The weighted random for
+  per-supplier company count usually hits "every company has ≥5
+  suppliers" but not always. `_ensure_min_per_company` walks
+  templates in tier-priority order (bottom-tier first, least balance
+  impact) and pads (party, company) pairs without disturbing the
+  Pareto distribution. On the dev seed this padded 9 supplier and
+  ~25 customer affiliations.
+- **Transaction shape: 70% bills + 30% payments.** Each affiliation
+  generates `num_tx` vouchers, two-leg each. Bills are
+  `Cr Sundry Creditors / Dr Expense` (party stamped on the Cr leg
+  per ERPNext convention), payments are `Dr Sundry Creditors / Cr
+  Bank` (party on the Dr leg). Net per supplier = bill_total -
+  payment_total = target balance. Customer side mirrors with
+  invoices and receipts. Counter-leg accounts (Expense, Bank,
+  Income) carry no party stamp.
+- **Voucher prefix `AP-AR-SEED-`, voucher_type `DGV AP-AR Seed`.**
+  Distinct from existing `RGI-DEMO-` / `PROD-TEST-` / `DGV-TEST-`
+  prefixes so teardown is unambiguous and existing seeds are
+  untouched.
+- **Idempotency: refuse-on-existing rather than skip-existing.**
+  `seed_ap_ar` aborts if any `AP-AR-SEED-` GL entries exist and
+  prints a hint to run teardown first. Cleaner UX than producing
+  ambiguous skip counts on partial re-runs.
+- **Default trust subset matches side PR #10.** `_default_companies()`
+  resolves the ghremf+cbs+sgr trust list against `tabCompany` and
+  filters to existing rows. Keeps a fresh dev box without the
+  trust-subset seed from inserting orphan affiliations.
+- **Posting date weighting: 50% last 3mo / 30% mid-period / 20%
+  older.** Realistic concentration in recent months matches actual
+  AP/AR ageing patterns -- visual benefit for the trend chart.
+
+**Gotchas surfaced:**
+
+- **`bench execute --kwargs '{...}'` uses `eval()`, not
+  `json.loads()`.** Lowercase JSON `true` / `false` raises
+  `NameError`. Pass Python-style `True` / `False` instead.
+  Documented in CLAUDE.md "Frappe gotchas to remember" if not
+  already there.
+- **MariaDB `rows` is a reserved word.** A diagnostic
+  `SELECT ... AS rows` was rejected with a syntax error mid-PR.
+  Trivial; renamed to `n` and moved on.
+- **`Supplier` doc creation hits the GST Settings revalidation
+  branch even with `flags.ignore_mandatory`.** The `_suppress_gst_
+  settings_revalidation` context manager (Phase 0 Q4 workaround)
+  covers this -- wrapped supplier and customer creation calls in it
+  belt-and-braces, even though customers are not GST-impacted.
+
+**Performance / verification (dev, 13-company trust subset):**
+
+| Operation | Source / Scale | Duration |
+|---|---|---|
+| `seed_ap_ar` dry-run | data-only, no DB writes | 0.3 sec |
+| `seed_ap_ar` real run | 79 party docs + 5,678 GL rows | 2.1 sec |
+| `refresh_tb_snapshot` (post-seed) | 1.1M GL rows + new 5.7K | 12.6 sec |
+| `refresh_spotlight_cache` | 6 cards, 2,192 snapshot rows | 0.14 sec |
+| `test_seed_ap_ar` (17 tests) | pure logic | 0.004 sec |
+| Full app suite (`bench run-tests --app dux_groupview`) | 91 + 17 + 19 = 127 tests | _filled in at PR-submit_ |
+
+**Numbers after seed (verified via mariadb):**
+
+- Unique payable parties: 57 (was 8 pre-seed; 8 existed + 49 newly
+  created; 1 supplier name collision skipped)
+- Total payable balance: ₹10.84 Cr (planned ₹10.83 Cr, sub-rupee
+  rounding variance)
+- Top supplier: Sun Infotech Solutions, ₹2.48 Cr across 262 GL rows
+- Pareto: top 10 suppliers = ~75% of total AP value
+- Customers: 30 created, 0 skipped; total AR ~₹6.02 Cr
+
+**Open follow-ups:**
+
+- After this PR merges, the trust-subset dev seed remains the
+  baseline. Phase 4 commits 4-7 should run `seed_ap_ar` once on
+  dev as part of their setup if they need richer party data.
+- The supplier name collision (1 skipped) was "Gulab Hardware" --
+  pre-existing in the trust-subset seed under the same name.
+  Acceptable noise; the duplicate name shares a single tabSupplier
+  row across both seeds.
+- Production (RGI books) won't run this seed -- it's dev-only
+  augmentation. The `companies` parameter defaults to the dev
+  trust subset and the function refuses to run if those companies
+  don't exist; production would need an explicit `companies=` list
+  to run, which is unlikely.
