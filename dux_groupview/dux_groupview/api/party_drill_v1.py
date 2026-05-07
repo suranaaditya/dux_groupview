@@ -98,16 +98,36 @@ def get_party_breakdown(scope=None, accounts=None, as_of_date=None,
 		leaves, allowed, target_date,
 	)
 
-	# Total row count -- HAVING balance != 0 to drop net-zero parties
-	# (a party with balanced rows that net to zero is uninteresting).
+	# Total row count -- HAVING ABS(balance) >= 1 to drop net-zero AND
+	# sub-rupee residual parties (commit 3.1). The original threshold of
+	# `balance != 0` admitted ~Rs 0.50 rounding residuals from the
+	# augmented AP/AR seed (side PR #11) which then rendered as "Rs 0"
+	# rows in the panel. Threshold of one rupee is conservative -- it
+	# only drops what's clearly noise, never real small balances.
 	total = _count_parties(common_where, common_params, flip_ph)
 	if total == 0:
 		return _empty_party_breakdown(page, page_size)
 
 	# Page query.
+	# `balance_desc` / `balance_asc` sort by ABSOLUTE balance so a panel
+	# scoped where some parties have net-debit positions (we are owed
+	# by the supplier — advances, refunds, overpayments) still surfaces
+	# the biggest exposures first. Without ABS, raw `ORDER BY balance
+	# DESC` would put a -Rs 1,00,000 party AFTER a +Rs 100 one, which
+	# isn't what "Top N by balance" means in the panel UI.
+	#
+	# MariaDB doesn't allow ABS() applied to an aggregate alias in
+	# ORDER BY (only HAVING resolves aggregate aliases that way), so the
+	# SUM(CASE...) expression is inlined here. flip_ph is already
+	# substituted by `_common_where_clause` so the params bind once.
+	abs_balance_expr = (
+		f"ABS(SUM(CASE WHEN a.root_type IN ({flip_ph}) "
+		"THEN g.credit - g.debit "
+		"ELSE g.debit - g.credit END))"
+	)
 	sort_clause = {
-		"balance_desc": "balance DESC, g.party ASC",
-		"balance_asc":  "balance ASC, g.party ASC",
+		"balance_desc": f"{abs_balance_expr} DESC, g.party ASC",
+		"balance_asc":  f"{abs_balance_expr} ASC, g.party ASC",
 		"name_asc":     "g.party ASC, g.party_type ASC",
 	}[sort]
 	offset = (page - 1) * page_size
@@ -125,7 +145,7 @@ def get_party_breakdown(scope=None, accounts=None, as_of_date=None,
 		JOIN `tabAccount` a ON a.name = g.account
 		{common_where}
 		GROUP BY g.party_type, g.party
-		HAVING balance != 0
+		HAVING ABS(balance) >= 1
 		ORDER BY {sort_clause}
 		LIMIT %(page_size)s OFFSET %(offset)s
 		""",
@@ -395,9 +415,9 @@ def _count_parties(common_where, common_params, flip_ph):
 		  JOIN `tabAccount` a ON a.name = g.account
 		  {common_where}
 		  GROUP BY g.party_type, g.party
-		  HAVING SUM(CASE WHEN a.root_type IN ({flip_ph})
-		                  THEN g.credit - g.debit
-		                  ELSE g.debit - g.credit END) != 0
+		  HAVING ABS(SUM(CASE WHEN a.root_type IN ({flip_ph})
+		                      THEN g.credit - g.debit
+		                      ELSE g.debit - g.credit END)) >= 1
 		) AS sub
 		""",
 		common_params,

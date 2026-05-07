@@ -487,3 +487,172 @@ class TestAuditGroupCoNameMatch(FrappeTestCase):
 			frappe.db.sql_list("SELECT name FROM `tabCompany`")
 		)
 		self.assertEqual(audit_companies, all_companies)
+
+
+# ---------------------------------------------------------------------------
+# Sub-rupee filter (commit 3.1)
+# ---------------------------------------------------------------------------
+
+class TestSubRupeeFilter(_PartyDrillFixtureBase):
+	"""Pins the HAVING ABS(balance) >= 1 server filter added in commit
+	3.1.
+
+	Each test inserts an extra party-bearing voucher into the fixture
+	(method-scoped, with try/finally cleanup) so the shared
+	`_PartyDrillFixtureBase` data and the existing sign-convention
+	parity tests stay clean. The parity tests assume the snapshot and
+	GL readers agree number-for-number, which they only do when no
+	sub-rupee rows exist; isolating these inserts to the test method
+	keeps that invariant.
+	"""
+
+	# A single voucher prefix distinct from the fixture's so cleanup
+	# is unambiguous and doesn't risk affecting the shared fixture rows.
+	EXTRA_VOUCHER_PREFIX = "FIXTURE-PARTY-DRILL-SUBRUP-"
+
+	def _insert_extra_voucher(self, voucher_seq, party_name, party_type,
+	                           party_account_role, debit, credit):
+		"""Insert one 2-leg voucher: party leg (Receivable/Payable) +
+		counter Bank leg in fixture company A. Returns voucher_no so
+		the test can delete it on cleanup. Mirrors the fixture's
+		_insert_gl_entries shape."""
+		from frappe.utils import now_datetime
+
+		A = self.state["companies"][0]
+		party_account = self.state["accounts"][A][party_account_role]
+		bank_account  = self.state["accounts"][A]["bank"]
+		cc = frappe.db.get_value(
+			"Cost Center", {"company": A, "is_group": 0}, "name",
+		)
+		pd = self.state["posting_date"]
+		fy = frappe.db.get_value(
+			"Fiscal Year",
+			{"year_start_date": ["<=", pd], "year_end_date": [">=", pd]},
+			"name",
+		)
+		voucher_no = f"{self.EXTRA_VOUCHER_PREFIX}{voucher_seq}"
+		now = now_datetime()
+		ts_ms = int(now.timestamp() * 1000)
+		base = {
+			"creation": now, "modified": now,
+			"owner": "Administrator", "modified_by": "Administrator",
+			"docstatus": 1, "idx": 0,
+			"posting_date": pd, "transaction_date": pd,
+			"account_currency": "INR",
+			"against": "", "against_voucher_type": None, "against_voucher": None,
+			"voucher_type": "DGV Test Seed", "voucher_no": voucher_no,
+			"project": None, "is_cancelled": 0, "is_opening": "No",
+			"company": A, "fiscal_year": fy, "remarks": "subrup test",
+			"cost_center": cc,
+		}
+		# Party leg: receives the small debit/credit so the natural-side
+		# balance is what the test asserts.
+		party_row = dict(base, **{
+			"name": f"{voucher_no}-party-{ts_ms}",
+			"account": party_account,
+			"party_type": party_type, "party": party_name,
+			"debit": debit, "credit": credit,
+			"debit_in_account_currency": debit,
+			"credit_in_account_currency": credit,
+		})
+		# Counter Bank leg balances the voucher; no party stamp.
+		ctr_row = dict(base, **{
+			"name": f"{voucher_no}-bank-{ts_ms}",
+			"account": bank_account,
+			"party_type": None, "party": None,
+			"debit": credit, "credit": debit,
+			"debit_in_account_currency": credit,
+			"credit_in_account_currency": debit,
+		})
+		fields = list(party_row.keys())
+		frappe.db.bulk_insert(
+			"GL Entry", fields=fields,
+			values=[
+				tuple(party_row[f] for f in fields),
+				tuple(ctr_row[f] for f in fields),
+			],
+		)
+		frappe.db.commit()
+		return voucher_no
+
+	def _delete_extra_voucher(self, voucher_no):
+		frappe.db.sql(
+			"DELETE FROM `tabGL Entry` WHERE voucher_no = %s",
+			(voucher_no,),
+		)
+		frappe.db.commit()
+
+	def test_party_breakdown_excludes_sub_rupee_balances(self):
+		"""A party with raw balance Rs 0.50 (sub-rupee rounding residual)
+		must NOT appear in get_party_breakdown results."""
+		voucher_no = self._insert_extra_voucher(
+			"001", "Sub Rupee Test Party", "Customer",
+			party_account_role="receivable",
+			debit=0.50, credit=0,
+		)
+		try:
+			out = party_drill_v1.get_party_breakdown(
+				accounts=self._receivable_leaves(),
+				as_of_date=str(FIXTURE_AS_OF_DATE),
+				companies=self.state["companies"],
+				page_size=200,
+			)
+			names = {p["party"] for p in out["parties"]}
+			self.assertNotIn("Sub Rupee Test Party", names)
+		finally:
+			self._delete_extra_voucher(voucher_no)
+
+	def test_party_breakdown_includes_one_rupee_threshold(self):
+		"""A party with raw balance exactly Rs 1.00 sits on the new
+		threshold (HAVING ABS(balance) >= 1) and MUST appear."""
+		voucher_no = self._insert_extra_voucher(
+			"002", "One Rupee Test Party", "Customer",
+			party_account_role="receivable",
+			debit=1.00, credit=0,
+		)
+		try:
+			out = party_drill_v1.get_party_breakdown(
+				accounts=self._receivable_leaves(),
+				as_of_date=str(FIXTURE_AS_OF_DATE),
+				companies=self.state["companies"],
+				page_size=200,
+			)
+			names = {p["party"] for p in out["parties"]}
+			self.assertIn("One Rupee Test Party", names)
+		finally:
+			self._delete_extra_voucher(voucher_no)
+
+	def test_count_parties_matches_filter(self):
+		"""`_count_parties` (used for the "Top N of M" subtitle) must
+		apply the same ABS(balance) >= 1 filter as the row-fetch query.
+		Otherwise the count on the panel diverges from the rows shown.
+
+		Setup: insert one sub-rupee party (filtered) + one one-rupee
+		party (kept). The total returned must NOT count the sub-rupee
+		one, and must equal the row count returned by get_party_breakdown.
+		"""
+		v_filtered = self._insert_extra_voucher(
+			"003", "Subrup Filtered Party", "Customer",
+			party_account_role="receivable",
+			debit=0.50, credit=0,
+		)
+		v_kept = self._insert_extra_voucher(
+			"004", "Subrup Kept Party", "Customer",
+			party_account_role="receivable",
+			debit=1.00, credit=0,
+		)
+		try:
+			out = party_drill_v1.get_party_breakdown(
+				accounts=self._receivable_leaves(),
+				as_of_date=str(FIXTURE_AS_OF_DATE),
+				companies=self.state["companies"],
+				page_size=200,
+			)
+			self.assertEqual(out["total_parties"], len(out["parties"]),
+			                 "_count_parties result must equal len(parties)")
+			names = {p["party"] for p in out["parties"]}
+			self.assertNotIn("Subrup Filtered Party", names)
+			self.assertIn("Subrup Kept Party", names)
+		finally:
+			self._delete_extra_voucher(v_filtered)
+			self._delete_extra_voucher(v_kept)

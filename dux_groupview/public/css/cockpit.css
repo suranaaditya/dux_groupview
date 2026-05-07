@@ -1055,6 +1055,14 @@
 	color: var(--rgi-text-tertiary);
 }
 
+/* Em-dash rendering for sub-rupee balances (commit 3.1). The server's
+ * HAVING ABS(balance) >= 1 should drop these; this class is the
+ * defensive client-side fallback in formatRupeesIndian. */
+.dgv-zero-balance {
+	font-style: italic;
+	color: var(--rgi-text-tertiary);
+}
+
 
 /* Action bar */
 

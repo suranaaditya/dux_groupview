@@ -1,12 +1,17 @@
-"""Pure-logic tests for the AP/AR seed augmentation.
+"""Tests for the AP/AR seed augmentation.
 
-No DB. These check the data-shape properties (Pareto distribution,
-per-company minimums, idempotent plan building, tier counts) using
-just the templates + the plan builder. The only DB-touching path is
-the actual seed run on dev, verified manually in the cockpit.
+Mostly pure-logic (data-shape properties, Pareto distribution,
+per-company minimums, idempotent plan building). One DB-touching
+class (TestResolveAccountByType) added in commit 3.1 verifies the
+prefer_root_type fallback added to disambiguate Payable / Receivable
+leaves when account_type and root_type disagree on the chart of
+accounts (Employee Advances / Customer Deposits hazard).
 """
 
 import unittest
+
+import frappe
+from frappe.tests.utils import FrappeTestCase
 
 from dux_groupview.dux_groupview.test_data.seed_ap_ar import (
 	BALANCE_TIERS,
@@ -15,6 +20,7 @@ from dux_groupview.dux_groupview.test_data.seed_ap_ar import (
 	TRANSACTION_VOLUMES,
 )
 from dux_groupview.dux_groupview.test_data.seed_ap_ar_generator import (
+	_resolve_account_by_type,
 	build_plan_for_test,
 	SEED_RNG,
 )
@@ -210,3 +216,80 @@ class TestPartyAffiliationCounts(unittest.TestCase):
 		affiliated = set(a["party_idx"] for a in plan["customer_affiliations"])
 		self.assertEqual(affiliated, set(range(len(CUSTOMER_TEMPLATES))),
 		                 "Some customers have no affiliations")
+
+
+# ---------------------------------------------------------------------------
+# DB-touching: prefer_root_type disambiguation (commit 3.1)
+# ---------------------------------------------------------------------------
+
+class TestResolveAccountByType(FrappeTestCase):
+	"""Pins the prefer_root_type behavior added in commit 3.1.
+
+	On a standard ERPNext chart of accounts, both `Creditors`
+	(account_type=Payable, root_type=Liability) and `Employee Advances`
+	(account_type=Payable, root_type=Asset) are leaf accounts. A naive
+	`SELECT name FROM tabAccount WHERE account_type='Payable' ORDER BY
+	lft LIMIT 1` may return either, depending on which group sits
+	earlier in the COA tree -- on dev it returns Employee Advances,
+	which causes the AP seeder's transactions to render with the
+	opposite sign in the cockpit drill panel (FLIP_ROOT_TYPES).
+
+	`prefer_root_type='Liability'` disambiguates correctly. AR mirrors
+	with `prefer_root_type='Asset'`.
+	"""
+
+	def _find_company_with_payable_root_type_split(self):
+		"""Return any company that has both Liability- and Asset-rooted
+		Payable leaves, or None."""
+		rows = frappe.db.sql_list(
+			"""
+			SELECT a.company FROM `tabAccount` a
+			WHERE a.is_group = 0 AND a.account_type = 'Payable'
+			GROUP BY a.company
+			HAVING COUNT(DISTINCT a.root_type) > 1
+			LIMIT 1
+			"""
+		)
+		return rows[0] if rows else None
+
+	def test_prefer_root_type_picks_liability_for_ap(self):
+		"""When both Liability- and Asset-rooted Payable leaves exist,
+		prefer_root_type='Liability' must pick the Liability one."""
+		co = self._find_company_with_payable_root_type_split()
+		if not co:
+			self.skipTest("No company has both Liability+Asset Payable leaves")
+		picked = _resolve_account_by_type(co, "Payable",
+		                                   prefer_root_type="Liability")
+		self.assertIsNotNone(picked, "Expected a leaf to be returned")
+		root_type = frappe.db.get_value("Account", picked, "root_type")
+		self.assertEqual(root_type, "Liability",
+		                 f"Expected Liability-rooted Payable for AP path; "
+		                 f"got {picked!r} with root_type={root_type!r}")
+
+	def test_prefer_root_type_falls_back_when_no_match(self):
+		"""prefer_root_type with no matching leaf must fall back to
+		first-by-lft of any account_type match (original behaviour)."""
+		co = self._find_company_with_payable_root_type_split()
+		if not co:
+			self.skipTest("No company has Payable leaves to fall back over")
+		# 'NoSuchRoot' won't match any leaf; the resolver should still
+		# return SOMETHING (the first-by-lft Payable leaf).
+		picked = _resolve_account_by_type(co, "Payable",
+		                                   prefer_root_type="NoSuchRoot")
+		self.assertIsNotNone(picked,
+		                     "Fallback path must still return a leaf when "
+		                     "any account_type-matching leaf exists")
+		atype = frappe.db.get_value("Account", picked, "account_type")
+		self.assertEqual(atype, "Payable")
+
+	def test_no_prefer_root_type_preserves_original_behaviour(self):
+		"""Calling without prefer_root_type runs the original first-by-lft
+		query unchanged. Existing pre-3.1 callers (e.g. _resolve_bank_or_cash)
+		must continue to work."""
+		co = self._find_company_with_payable_root_type_split()
+		if not co:
+			self.skipTest("No company with Payable leaves")
+		picked = _resolve_account_by_type(co, "Payable")
+		self.assertIsNotNone(picked)
+		atype = frappe.db.get_value("Account", picked, "account_type")
+		self.assertEqual(atype, "Payable")

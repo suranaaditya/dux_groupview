@@ -35,6 +35,7 @@
 		renderPartyBreakdownTable: renderPartyBreakdownTable,
 		renderActionBar: renderActionBar,
 		formatCrore: formatCrore,
+		formatRupeesIndian: formatRupeesIndian,
 		formatMonth: formatMonth,
 		bindTrendTooltip: bindTrendTooltip,
 		stubGlDrill: stubGlDrill,
@@ -749,20 +750,36 @@
 	 */
 	function renderPartyBreakdownTable(rows, opts) {
 		opts = opts || {};
+		// Defensive client-side filter: drop sub-rupee residuals if any
+		// slip past the server's HAVING ABS(balance) >= 1 (commit 3.1).
+		// Negligible cost; protects the panel from showing "Rs 0" rows
+		// if the server filter is ever bypassed or relaxed.
+		rows = (rows || []).filter(function (r) {
+			return Math.abs(Number(r && r.balance) || 0) >= 1;
+		});
+
 		var total = opts.total || rows.length;
 		var displayed = opts.displayedCount || rows.length;
 
+		// Subtitle qualifier explains the count: N is the count of
+		// parties WITH NON-ZERO BALANCE (i.e. surviving the >=Rs 1
+		// filter), not the total number of party rows in the GL.
 		var subline = displayed >= total
-			? total + (total === 1 ? ' party' : ' parties') + ' — sorted by balance'
-			: 'Top ' + displayed + ' of ' + total + ' — sorted by balance';
+			? total + (total === 1 ? ' party' : ' parties')
+			  + ' with non-zero balance — sorted by balance'
+			: 'Top ' + displayed + ' of ' + total
+			  + ' with non-zero balance — sorted by balance';
 
 		var viewAllBtn = opts.showViewAll
 			? '<button class="dgv-drill-view-all" type="button">View all →</button>'
 			: '';
 
 		var rowsHtml = rows.map(function (row) {
-			var fig = formatCrore(row.balance);
-			var sign = (Number(row.balance) || 0) < 0 ? '−' : '';
+			// formatRupeesIndian renders the balance directly in full
+			// rupees with Indian comma grouping. Lakh-range balances
+			// (the common case for AP/AR) read clearly here in a way
+			// crore formatting (formatCrore) cropped away.
+			var balanceHtml = formatRupeesIndian(row.balance);
 			var groupBadge = row.is_group_company
 				? '<span class="dgv-drill-party-group-badge"' +
 				  ' title="Group company">Group co</span>'
@@ -775,10 +792,7 @@
 				'<td class="dgv-drill-party-name">' +
 				escapeHtml(row.party) + groupBadge + coCount +
 				'</td>' +
-				'<td class="dgv-drill-party-value">' +
-					sign + '₹' + escapeHtml(fig.amount) + ' ' +
-					'<span class="dgv-drill-party-unit">' + escapeHtml(fig.unit) + '</span>' +
-				'</td>' +
+				'<td class="dgv-drill-party-value">' + balanceHtml + '</td>' +
 				'</tr>';
 		}).join('');
 
@@ -954,6 +968,44 @@
 		// "₹0.42 Cr" don't degenerate to "₹0.4 Cr").
 		var amount = cr >= 1 ? cr.toFixed(1) : cr.toFixed(2);
 		return { amount: amount, unit: 'Cr' };
+	}
+
+	// formatRupeesIndian — render a rupee amount in full with Indian
+	// comma grouping (commit 3.1). Used by the by-party table only;
+	// hero, by-company, and trend tooltip stay on formatCrore.
+	//
+	// Returns a ready-to-insert HTML string. Sub-rupee inputs (which
+	// shouldn't reach here after the server's HAVING ABS(balance) >= 1
+	// + the renderPartyBreakdownTable client-side filter) render as a
+	// styled em-dash so the cell still renders sensibly if ever hit.
+	//
+	// Browser console smoke tests (no JS test infra in repo):
+	//   formatRupeesIndian(47250)     === '₹47,250'
+	//   formatRupeesIndian(248500)    === '₹2,48,500'
+	//   formatRupeesIndian(24842500)  === '₹2,48,42,500'
+	//   formatRupeesIndian(-47250)    === '−₹47,250'
+	//   formatRupeesIndian(150000000) === '₹15,00,00,000'
+	function formatRupeesIndian(rupees) {
+		var n = Number(rupees) || 0;
+		if (n === 0 || Math.abs(n) < 0.5) {
+			return '<span class="dgv-zero-balance">—</span>';
+		}
+		var abs = Math.abs(Math.round(n));
+		var sign = n < 0 ? '−' : '';
+		return sign + '₹' + formatIndianGrouping(abs);
+	}
+
+	function formatIndianGrouping(n) {
+		// Indian convention: rightmost 3 digits group, then groups of 2.
+		//   47250    -> "47,250"
+		//   248500   -> "2,48,500"
+		//   24842500 -> "2,48,42,500"
+		var s = String(n);
+		if (s.length <= 3) return s;
+		var last3 = s.slice(-3);
+		var rest = s.slice(0, -3);
+		var restGrouped = rest.replace(/\B(?=(\d{2})+(?!\d))/g, ',');
+		return restGrouped + ',' + last3;
 	}
 
 	function formatMonth(yyyymm) {
