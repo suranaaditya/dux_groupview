@@ -1,6 +1,6 @@
 # Phase 4 commit 4 — GL drill page + CSV export + view all parties
 
-**Status:** v0.3, finalized — HALT 1 implementation in progress
+**Status:** v0.4, finalized — HALT 2 (CSV) implementation in progress
 **Branch:** `phase-4-drills` (continuing; no new branch)
 **Estimated duration:** 1–2 working days
 **Depends on:** Phase 4 commits 1, 2, 2.5, 3, 3.1 (all on `phase-4-drills`); side PR #10 (trust-subset seed) and #11 (augmented AP/AR seed) — both merged to main.
@@ -8,6 +8,29 @@
 This spec extends the master Phase 4 spec (`specs/phase-4-drills.md`).
 Sections labelled §4.x reference the master spec; sections numbered
 without a prefix are local to this commit.
+
+**Changes from v0.3:**
+- §5.1 / §8 — default sort flipped from `posting_date_desc` to
+  `posting_date_asc`. Reason: HALT 1 visual review surfaced that
+  newest-first display reads as "jumbled" when the running balance
+  column accumulates per `(company, account)` partition in (date
+  ASC, name ASC) order — every row shows balance AFTER its
+  transaction, but scanning down the page the values move backward
+  in time and fluctuate. Every accounting ledger Aditya works
+  with (Tally, ERPNext stock TB, QuickBooks) defaults to
+  oldest-first specifically because running balance reads as a
+  natural accumulator down the column. `posting_date_desc` stays
+  available in the toolbar for "what's most recent" queries; only
+  the default changes.
+- §12 — HALT plan renumbered: HALT 2.5 (filter UI) inserted
+  between HALT 2 (CSV) and HALT 3 (View All Parties). Filter UI
+  surfaced as a real gap during HALT 1 review (in-page company /
+  account-name / date-range filters; URL-only scope was the only
+  way to narrow before). Out of scope for HALT 2 to keep that
+  diff focused on CSV; speced and built in HALT 2.5 before
+  HALT 3 begins.
+- §15 — added "filter set" as the active open question to be
+  resolved by `specs/phase-4-commit-4-filters.md` ahead of HALT 2.5.
 
 **Changes from v0.2:**
 - §5.1 — default `page_size` 50 → 100 (ergonomic for desktop with the
@@ -239,7 +262,7 @@ get_gl_entries(
   party_type=None,
   page=1,
   page_size=100,        # default 100, max 1000 (above 1000 use CSV export)
-  sort='posting_date_desc',  # one of: posting_date_desc, posting_date_asc, amount_desc, amount_asc
+  sort='posting_date_asc',  # one of: posting_date_asc (default), posting_date_desc, amount_desc, amount_asc
 )
 ```
 
@@ -322,8 +345,8 @@ running balance determinism.
 
 | `sort`                | ORDER BY                                              |
 |-----------------------|-------------------------------------------------------|
-| `posting_date_desc`   | posting_date DESC, name DESC (default)                |
-| `posting_date_asc`    | posting_date ASC, name ASC                            |
+| `posting_date_asc`    | posting_date ASC, name ASC (default — natural ledger order; running balance reads as accumulator down the column) |
+| `posting_date_desc`   | posting_date DESC, name DESC                          |
 | `amount_desc`         | ABS(signed_amount) DESC, posting_date DESC, name DESC |
 | `amount_asc`          | ABS(signed_amount) ASC, posting_date DESC, name DESC  |
 
@@ -647,7 +670,7 @@ bodies + new helpers.
 
 | Page          | Default sort         | Page sizes                  | URL params for sort/page         |
 |---------------|----------------------|------------------------------|----------------------------------|
-| `gl-drill`    | `posting_date_desc`  | 50, 100 (default), 250, 1000 | `&sort=…&page=…&page_size=…` |
+| `gl-drill`    | `posting_date_asc`   | 50, 100 (default), 250, 1000 | `&sort=…&page=…&page_size=…` |
 | `party-list`  | `balance_desc`       | 25, 50 (default), 100, 200   | `&sort=…&page=…&page_size=…` |
 
 GL drill jumps to 1000 at the upper end because the running-balance
@@ -789,17 +812,43 @@ of the rule.
 
 ## 12. Halt points
 
-Same three-halt cadence as commit 3:
+The cadence below replaces the v0.1 "three-halt" plan. HALT 2.5 was
+inserted in v0.4 after HALT 1 review surfaced an in-page filter UI
+gap that wasn't speced.
 
-1. **Spec halt** (this document) — Aditya reviews the spec and the
-   verification artifacts, sends edits.
-2. **Backend halt** — `gl_drill_v1.py`, `party_drill_v1.py` extension,
-   `account_drill_v1.export_account_breakdown_csv`, plus their tests
-   green. No JS or pages yet. Aditya reviews the API shapes against
-   the spec.
-3. **Frontend + integration halt** — pages + JS handler wiring +
-   manual verification on dev. Aditya verifies in browser. Then PHASE_LOG
-   updated and the `phase-4-drills` PR rebased.
+1. **Spec halt** — review the spec and verification artifacts; sends
+   edits. Spec re-versioned each round.
+   - v0.1 → v0.2 (5 resolutions + mode-args contract + running-balance
+     UI affordance)
+   - v0.2 → v0.3 (page-size 100/1000, posting_date_* sort keys,
+     50K cap on get_gl_entries, EXPLAIN softening)
+   - v0.3 → v0.4 (sort default flip, HALT 2.5 insertion, filters
+     open question)
+1. **HALT 1 — GL drill page + window function + pagination** —
+   `get_gl_entries`, the gl-drill page, `stubGlDrill` wiring, perf
+   measurement, EXPLAIN. Aditya verifies in browser.
+   *Status: complete; 140/140 tests green; perf accepted as a known
+   v1 limitation per HALT 1 closing decisions.*
+2. **HALT 2 — CSV export** — `export_account_breakdown_csv` (in
+   `account_drill_v1.py` per Q4), `export_gl_entries_csv` (in
+   `gl_drill_v1.py`), wire all three "Export CSV" buttons (panel,
+   account-drill page, gl-drill page). 50K hard cap on GL entries
+   CSV; raw decimal cells; ISO dates; filename
+   `<type>_<scope_id>_<as_of_date>_<timestamp>.csv`.
+3. **HALT 2.5 — Filter UI** *(new in v0.4)* — separate spec at
+   `specs/phase-4-commit-4-filters.md`. In-page filtering for the
+   gl-drill page (and possibly party-list once HALT 3 lands):
+   company multi-select, account-name multi-select, date range
+   (`from_date` / `to_date` rather than only the current `as_of`
+   upper bound), party autocomplete UI (URL `?party=` already
+   supported by HALT 1, just no input). Open questions in §15.5.
+4. **HALT 3 — View All Parties** — party-list page + extend
+   `get_party_breakdown` with `mode='page'`, wire the panel's
+   "View all parties" link.
+
+Each halt is a separate review cadence. No commit between halts;
+the bundled commit lands only after HALT 3 sign-off, and that's
+when PHASE_LOG.md gets the consolidated entry.
 
 ## 13. Known limitations
 
@@ -849,10 +898,63 @@ when the editor work begins.)
 
 ## 15. Open questions
 
-None remaining at spec finalization. Q1, Q2, Q4, Q5 from the v0.1
-draft were resolved inline (see §6.1, §6.2, §5.5, §5.4). Q3
+### 15.1 — Resolved (v0.1 → v0.2)
+
+Q1 (subtree banner), Q2 (party-list empty state), Q4 (CSV location),
+Q5 (mode naming) — all inlined into §6.1, §6.2, §5.5, §5.4. Q3
 (card-id stability) moved to §13.1 known limitations with a
 `# TODO(phase-5)` marker.
 
-If implementation surfaces a new question, it lands here and the
-spec is re-versioned to v0.3.
+### 15.2 — Resolved (v0.2 → v0.3)
+
+Page size, max page size, 50K cap behavior, sort key naming, EXPLAIN
+target — all resolved per the v0.3 change log at the top of this spec.
+
+### 15.3 — Resolved (HALT 1 closing review, v0.3 → v0.4)
+
+- **Perf on huge subtree scopes (25–90 sec)**: accepted as a known
+  v1 limitation. To revisit on real production click data in 6
+  weeks. Documented in PHASE_LOG.md at the HALT 3 commit.
+- **Index choice (`dgv_party_drill` vs `dgv_snapshot_aggregation`)**:
+  deferred to a Phase 5 perf sweep.
+- **Fanout-banner threshold**: tightened from `N_accounts > 5 OR
+  N_companies > 1` (per spec §6.1) to `N_accounts > 20 OR
+  N_companies > 5` per HALT 1 visual review — the looser threshold
+  tripped on every multi-company drill including 12-leaf 26ms
+  loads, drowning the signal. Truncation banner remains a separate
+  trigger and is unchanged.
+
+### 15.4 — Resolved (HALT 1 visual review → v0.4)
+
+- **Default sort**: flipped `posting_date_desc` → `posting_date_asc`
+  (see §5.1 sort table + this spec's v0.4 change log). Running
+  balance reads as a natural accumulator down the column in the
+  default view.
+
+### 15.5 — Active (HALT 2.5 spec round)
+
+- **Filter set on the gl-drill page** — to be specced at
+  `specs/phase-4-commit-4-filters.md` ahead of HALT 2.5
+  implementation. Open sub-questions (initial sketch; the spec
+  round will firm these up):
+  - Company multi-select: when scope spans >1 company, surface as
+    a dropdown with the resolved companies pre-selected. URL state.
+  - Account-name multi-select: when scope resolves to >1 unique
+    `account_name`, surface as a dropdown. SQL-side narrow (cheaper)
+    or client-side post-pagination (broken across pages)?
+  - Date range: separate `from_date` / `to_date` URL params.
+    Currently only `as_of_date` (upper bound). `from_date=null`
+    implies inception.
+  - Party autocomplete: URL `?party=` already supported by HALT 1
+    code (party_drill links into gl-drill that way). The UI
+    affordance to TYPE a party name doesn't exist yet.
+  - Voucher type (multi-select, in an "advanced" collapsible
+    section) — useful for accountants chasing one source-doc
+    type. Defer if it bloats the toolbar; nice-to-have not
+    must-have.
+  - URL persistence vs localStorage stickiness: shareable URLs
+    (URL) or per-user defaults (localStorage)? Current pattern
+    is URL for everything; consistency argues URL.
+
+If implementation of HALT 2 surfaces a new question, it lands here
+and the spec is re-versioned to v0.5.
