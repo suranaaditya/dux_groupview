@@ -1,6 +1,6 @@
 # Phase 4 commit 4 — GL drill page + CSV export + view all parties
 
-**Status:** v0.4, finalized — HALT 2 (CSV) implementation in progress
+**Status:** v0.5, finalized — HALT 2 (CSV) implementation in progress
 **Branch:** `phase-4-drills` (continuing; no new branch)
 **Estimated duration:** 1–2 working days
 **Depends on:** Phase 4 commits 1, 2, 2.5, 3, 3.1 (all on `phase-4-drills`); side PR #10 (trust-subset seed) and #11 (augmented AP/AR seed) — both merged to main.
@@ -8,6 +8,44 @@
 This spec extends the master Phase 4 spec (`specs/phase-4-drills.md`).
 Sections labelled §4.x reference the master spec; sections numbered
 without a prefix are local to this commit.
+
+**Changes from v0.4:**
+- §5.1 — running-balance window function is no longer partitioned
+  per `(company, account)`. New shape:
+  `SUM(signed_amount) OVER (ORDER BY posting_date ASC, name ASC ROWS
+  BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)` — scope-wide
+  cumulative in date order. Reason: HALT 1 visual review surfaced
+  that per-(company, account) partitioning is the correct model for
+  per-account-ledger view but wrong for cockpit-style scope drills.
+  When a card like `sundry_creditors` resolves to multiple accounts
+  (e.g. Sundry Creditors AND Employee Advances both `Payable`-typed),
+  the partitioned view interleaves two independent ledger curves by
+  date, which reads as nonsense. Scope-wide accumulation answers
+  the question that triggered the drill ("what's the activity behind
+  this aggregate number?") instead of imposing per-account ledgers
+  the user didn't ask for. Aligns with how every other cockpit
+  surface (pivot, cards, account-drill panel) treats a scope as one
+  aggregated thing.
+- §6.1 — group divider chips remain as visual context but no longer
+  signal a balance reset. Styling softened (no background tint,
+  single 1px border in the lighter `--rgi-border` token). The
+  `<company> • <account>` chip text stays so the user can see which
+  partition each row belongs to. The "running balance resets per
+  (account, company)" copy is gone from both the divider note and
+  the fanout banner.
+- §6.1 fanout banner copy updated: previously *"GL entries across N
+  accounts × M companies. Running balance resets per (account,
+  company)."* — now *"GL entries across N accounts × M companies.
+  Running balance is scope-wide, in date order."*
+- §13 — new known limitation §13.2 for mixed-root-type scopes
+  (e.g. `subtree:Application of Funds` spanning Asset + Bank +
+  Investments). Scope-wide running balance combines natural-side
+  amounts of different root_types, which is "scope activity over
+  time" rather than a real financial figure. The fanout banner
+  already warns; HALT 2.5 filters will let users narrow to single
+  root_type if needed.
+- §15.4 / §15.5 — partition decision recorded as resolved by HALT 1
+  visual review.
 
 **Changes from v0.3:**
 - §5.1 / §8 — default sort flipped from `posting_date_desc` to
@@ -323,11 +361,18 @@ in-band channel for a flag.
 
 ```sql
 SUM(signed_amount) OVER (
-    PARTITION BY g.company, g.account
     ORDER BY g.posting_date ASC, g.name ASC
     ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
 )
 ```
+
+**No `PARTITION BY`** — running balance accumulates scope-wide in
+date order across all rows in the result, regardless of which
+(company, account) pair they belong to. This matches the cockpit's
+overall mental model (every other surface aggregates across the
+scope) and answers the question that triggered the drill ("what is
+the activity behind this aggregate number?") rather than imposing
+a per-account ledger.
 
 `signed_amount` here is the same `CASE WHEN root_type IN
 FLIP_ROOT_TYPES THEN credit-debit ELSE debit-credit END` expression
@@ -339,7 +384,17 @@ slightly wasteful at high offsets — see §10 perf.)
 **`name` as the secondary sort key** breaks ties when multiple
 entries share `posting_date`; `tabGL Entry.name` is the integer
 auto-name and gives a stable order across queries. Required for
-running balance determinism.
+running balance determinism (without it, two consecutive same-date
+entries could swap order across requests and the cumulative sum
+would still equal the same final value but each row's running
+balance would jitter).
+
+**Per-account ledger view** (the conventional accountant interpretation
+where running balance partitions by (company, account)) is achieved
+in HALT 2.5 by filtering the scope to a single `(company, account)`
+pair via the new filter UI. Once the scope is narrowed to one
+account, scope-wide and per-partition running balance are the same
+thing.
 
 **Sort options for the *display* (outer ORDER BY):**
 
@@ -525,8 +580,10 @@ running-balance reset rule — visible to the user.
 - **Trigger:** `N_accounts > 5` OR `N_companies > 1` (either
   condition; subtree scopes commonly trip both, account scopes with
   multi-company scope trip just the second).
-- **Wording (verbatim):** `"GL entries across N accounts × M
-  companies. Running balance resets per (account, company)."`
+- **Wording (verbatim, v0.5):** `"GL entries across N accounts × M
+  companies. Running balance is scope-wide, in date order."`
+  (Was *"resets per (account, company)"* in v0.2–v0.4 when the window
+  function still partitioned per-leaf; v0.5 dropped the partition.)
   Substitute the integers; do not pluralise (`"1 accounts"` is a
   defect we accept for v1 simplicity — the banner is information
   density not prose).
@@ -539,29 +596,28 @@ running-balance reset rule — visible to the user.
   `get_gl_entries` response as `scope_fanout: {n_accounts, n_companies}`
   so the page doesn't have to call a separate endpoint.
 
-**Running-balance UI affordance (group divider).** Because the running
-balance resets at each (company, account) boundary (see §5.1), the
-table needs a visual cue at every reset or the column reads as
-"random numbers" to a user scanning rows. Implementation:
+**Group divider chips (v0.5: visual context only).** v0.4 introduced
+the dividers as the visible cue for per-(company, account) running-
+balance resets. v0.5 dropped the partition; running balance is now
+continuous, so the divider's role demoted from *signaling a balance
+reset* to *labelling which (company, account) a row belongs to*.
 
-- Insert a thin horizontal divider (`border-top: 1px solid var(--dgv-divider-strong)`) between
-  consecutive rows whose `(company, account)` tuple differs from the
-  previous row's tuple. Within a group, no divider.
-- **Group label** sits on the divider as a small left-aligned chip:
-  `"<company> • <account>"`. Same Geist-mono micro-type already used
-  for the trend axis labels (12px / 500 weight / muted color).
-- The label hides when the table is sorted by `amount_*` (group
-  boundaries lose meaning when rows aren't grouped by the partition).
-  The horizontal divider also hides in that case; running-balance
-  column reads as a per-row figure with no group context, which
-  matches the "ABS sort" mental model.
-- For `date_*` sorts the rows are NOT pre-grouped by (company,
-  account) in the SQL — the SQL `ORDER BY` is `posting_date,
-  name`. So divider/label appear at every (company, account)
-  *transition* in the displayed sequence, not at fixed group
-  blocks. This means the same (company, account) pair can produce
-  multiple labels if rows interleave by date. Acceptable; matches
-  what the user sees ("date-sorted GL with reset markers").
+- **Visual styling softened.** No background tint on the divider row;
+  single 1px border in the lighter `--rgi-border` token. Less
+  prominent than v0.4 because it no longer marks a hard
+  semantic boundary.
+- **Chip text unchanged.** `"<company> • <account>"` in
+  Geist-mono micro-type (12px / 500 weight / muted color) — same
+  as v0.4. The chip lets the user read a row and immediately know
+  which `(company, account)` it belongs to without scanning the
+  Account column.
+- **Hide rule unchanged.** Dividers hide when sort is `amount_*`
+  (group context is meaningless when rows aren't sorted by date).
+  Sort note still appears in that mode.
+- **Insertion rule unchanged.** Divider appears at every `(company,
+  account)` transition in the displayed sequence. Same
+  (company, account) pair can produce multiple chips if rows
+  interleave by date — matches what the user is seeing.
 
 **Empty / error states:**
 
@@ -886,6 +942,35 @@ deprecation table for old `(card_id, version)` pairs.
 the URL-construction helpers in `account_drill.js` so it's grep-able
 when the editor work begins.)
 
+### 13.2 Mixed-root-type scopes — running balance loses financial meaning
+
+The v0.5 scope-wide running balance computes
+`SUM(signed_amount) OVER (ORDER BY posting_date, name)` where
+`signed_amount` flips sign per `FLIP_ROOT_TYPES` (Liability, Equity,
+Income are negated). For a scope spanning a SINGLE root_type — the
+common case — the running total is a meaningful figure
+(group-wide payable exposure, group-wide cash, etc.).
+
+For a scope spanning MULTIPLE root_types (e.g. `subtree:Application
+of Funds (Assets)` mixes Asset, Bank, Investment leaves; or a
+synthetic card definition that happens to match a heterogeneous
+account set), the running total adds natural-side amounts of
+different types. The result is *"how much scope-wide activity
+happened to this point"* — not a real financial total.
+
+Mitigations in place:
+- The fanout banner already warns when `N_accounts > 20 OR N_companies > 5`,
+  which catches every realistic mixed-root-type scope.
+- HALT 2.5 filter UI will let users narrow to single root_type / single
+  account-name, at which point the running total becomes a real
+  financial figure for the narrowed view.
+
+No code-level fix planned for v1. Treat the running total as a
+"scope activity over time" metric for mixed-root scopes, and as a
+real ledger figure for single-root scopes. Documented here so a
+future maintainer doesn't try to "fix" it by re-adding the partition
+clause — that breaks the much more common single-root-type case.
+
 ## 14. Out of scope (for follow-up commits or Phase 5)
 
 - Cursor-based pagination on GL drill (only if perf data forces it).
@@ -930,6 +1015,18 @@ target — all resolved per the v0.3 change log at the top of this spec.
   (see §5.1 sort table + this spec's v0.4 change log). Running
   balance reads as a natural accumulator down the column in the
   default view.
+
+### 15.4b — Resolved (HALT 1 visual review round 2 → v0.5)
+
+- **Running-balance partition**: dropped the
+  `PARTITION BY company, account` clause. Running balance now
+  accumulates scope-wide in date order. See v0.5 change log at the
+  top of this spec, §5.1 SQL, §6.1 divider section, §13.2 known
+  limitation. Pivot drill into a single account is unaffected
+  (single partition = single accumulator either way); multi-account
+  scope drills (cards, subtrees) now read as one continuous
+  cumulative curve aligned with the cockpit's overall mental
+  model.
 
 ### 15.5 — Active (HALT 2.5 spec round)
 
