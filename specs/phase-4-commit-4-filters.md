@@ -1,6 +1,6 @@
 # Phase 4 commit 4 — Filter UI (HALT 2.5)
 
-**Status:** v0.1 draft, ready for review
+**Status:** v0.1 (with amendments — not version-bumped; clarifications only)
 **Branch:** `phase-4-drills` (continuing; no new branch)
 **Estimated duration:** 1 working day
 **Depends on:**
@@ -14,6 +14,35 @@ This spec is the contract for HALT 2.5 implementation. It extends
 the master spec with a five-filter UI + URL contract + server-side
 endpoint extensions. After HALT 2.5 ships, HALT 3 (View All Parties)
 becomes HALT 4 in the renumbered sequence per master-spec §12.
+
+**Amendments since first draft (post-Aditya review, 2026-05-08):**
+
+Four clarifications applied inline; no semantic changes worth a
+version bump. The spec history reads top-down with this note as the
+breadcrumb.
+
+- §4 Q1 — added explicit EXPLAIN-check fail criterion mirroring
+  master-spec §10: the new `account_names` + `voucher_types`
+  predicates must NOT introduce `Using temporary` or `Using
+  filesort` to the inner-JOIN plan. If HALT 2.5.3's EXPLAIN shows either,
+  halt for an index-fix conversation before shipping.
+- §5 — added explicit "filters reset on scope change" rule. Filters
+  are per-scope and not carried across; navigating from one drill
+  to another via "View GL entries" starts with fresh filter state.
+- §7.3 — pinned active-filter-chip max-width at 200px with
+  text-overflow:ellipsis and a `title` attribute for the full
+  selected value on hover. Long account names or company lists
+  would otherwise blow out the chips row.
+- §12 — halt-point numbering changed from `H1`/`H2`/`H3`/`H4` to
+  `HALT 2.5.1`/`2.5.2`/`2.5.3`/`2.5.4`. The renumbering makes the
+  insertion between master-spec HALT 2 and HALT 3 visible in the
+  git log (anyone reading later sees that filters got slotted
+  in mid-sequence rather than treated as their own commit).
+
+The two design picks Aditya called out at sign-off (§3.5 voucher-
+types ride-along on `get_gl_entries` response; §3.3 `from_date`
+unbounded below) were already the spec's positions and need no
+inline edit; sign-off recorded here for the audit trail.
 
 ---
 
@@ -196,10 +225,31 @@ recommendations.
   Adding `AND a.account_name IN (...)` is one filter on the same
   joined table — no new index needed. Optimizer happily pushes
   the predicate.
-- *EXPLAIN check at HALT 2.5 verify*: confirm the `dgv_party_drill`
-  or `dgv_snapshot_aggregation` plan from HALT 1 doesn't degrade
-  when the new clause is added. If it does, defer the filter to
-  Phase 5 with proper index work.
+- *EXPLAIN check at HALT 2.5.3 verify*: confirm the
+  `dgv_party_drill` or `dgv_snapshot_aggregation` plan from HALT 1
+  doesn't degrade when the new clauses are added.
+
+  **Fail criterion (mirrors master-spec §10).** The verification
+  fails — implementation halts for an index-fix discussion before
+  shipping — if the inner-JOIN's EXPLAIN shows either of:
+
+  1. `Using temporary` in the Extra column for the JOIN to
+     `tabAccount` or `tabGL Entry`, OR
+  2. `Using filesort` on the same.
+
+  The HALT 1 baseline (recorded in master-spec §10) is `type=ref`
+  with `key=dgv_party_drill`, `Using index condition; Using where`,
+  no temporary/filesort. The new `account_names IN (...)` and
+  `voucher_types IN (...)` predicates filter on already-joined
+  columns (`tabAccount.account_name`, `tabGL Entry.voucher_type`)
+  — no new index dimension required. Expected outcome: same plan
+  with one extra `Using where` predicate fold-in. If reality
+  diverges, it's a load-bearing surprise worth a halt.
+
+  **Fail-criterion is symmetric with HALT 1.** "Wrong index used"
+  is NOT a fail (the optimizer can pick either of the two
+  candidate `tabGL Entry` indexes). "No index used" or "filesort
+  introduced" IS a fail.
 
 ### Q2. URL-persisted vs localStorage-sticky?
 
@@ -271,6 +321,40 @@ helper omits empty params. This keeps default-state URLs short
 are NOT supported in v1 (no real-world account names or voucher
 types contain commas in ERPNext). If an edge case appears, escalate
 to JSON-encoded array param (matches `accounts=` from HALT 1).
+
+**Filters reset on scope change.** Filters are *per-scope*: when the
+user navigates from one scope to another (e.g., closes the GL drill
+page and opens a fresh one via "View GL entries" from a different
+account-drill panel), the new page boots with default filter state.
+The new URL is built by `account_drill.js`'s `buildGlDrillUrl` (HALT
+1) which only emits `scope=`, `as_of_date=`, `companies=` — none of
+the HALT 2.5 filter params. The receiving GL page parses the URL
+and finds those params absent → renders with default filters.
+
+Why reset rather than carry over:
+
+1. **Coherence.** A user filtering by `account_names=Creditors` on
+   a Sundry-Creditors-card scope, then drilling into a Cash-card
+   scope, would otherwise see "0 results" because Cash leaves never
+   match `Creditors`. Confusing failure mode.
+2. **Permission shape.** Filters resolve against the new scope's
+   resolved leaf list. Carrying old filters introduces edge cases
+   where a previously-valid `account_names` value isn't in the new
+   scope's universe and silently drops to no-op.
+3. **URL portability.** A shared filter URL is meant to be
+   re-rendered exactly as captured. Cross-scope carry-over would
+   make filter URLs context-dependent ("if you arrived from card X,
+   this filter applies; from card Y, it doesn't").
+
+The UI "active filter chip" row + Clear-filters button (§7.3) remain
+the only mechanisms for clearing filters within a scope. Cross-scope
+clearing is automatic via the URL-build path.
+
+If a future Phase 5 use case argues for carry-over (e.g., "remember
+my voucher_type preference"), that's a per-user-pref concern and
+belongs on the same `DGV User Preferences` doctype that picks up
+sticky scope from §15.5 Q2 of the master spec — not in the URL
+contract.
 
 ## 6. Server-side endpoint extensions
 
@@ -398,6 +482,40 @@ toolbar (or above the table on mobile). Each chip:
 - The "Clear filters" button (right-aligned) clears all active
   filters at once — only renders when ≥1 filter is non-default.
 
+**Chip width cap (mobile + desktop).** A single party name like
+`Sun Infotech Solutions Pvt Ltd (Mumbai Branch)` or a long
+account name selection rendering as `Accounts: Capital Work In
+Progress, Stock Received But Not Billed, Customer Advances`
+would otherwise blow the chip row off-screen — especially on
+the ≤800px bottom-sheet variant. Each chip therefore caps at
+`max-width: 200px` with text overflow handled by ellipsis. The
+full selected value lives on the chip's `title` attribute so
+hovering (desktop) or long-pressing (mobile) reveals the full
+text.
+
+CSS pattern:
+
+```css
+.dgv-gl-filter-chip {
+    max-width: 200px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    /* … existing chip styling … */
+}
+```
+
+HTML pattern:
+
+```html
+<span class="dgv-gl-filter-chip" title="Accounts: Capital Work In Progress, Stock Received But Not Billed, Customer Advances">
+    Accounts × 3
+</span>
+```
+
+The `×` clear-this-filter button stays outside the ellipsized
+inner span so it remains tappable even when text is truncated.
+
 ### 7.4 Active filter count badge
 
 The mobile `[Filters (N)]` button and the desktop "Advanced
@@ -501,7 +619,7 @@ discoveringthat the scope spans multiple.
 
 JS unit tests aren't established in this repo (HALT 1 used browser
 console smoke tests). Same pattern here. Five smoke tests for the
-URL builder to be exercised in browser console at HALT 2.5 H3:
+URL builder to be exercised in browser console at HALT 2.5.3:
 
 ```js
 // 1. No filters → existing URL shape unchanged
@@ -522,20 +640,29 @@ buildExportCsvUrl({...basicState, from_date: '2026-04-01', to_date: '2026-05-08'
 
 ## 12. Halt points
 
-1. **H1 — Filter spec** (this document) — Aditya reviews; spec
-   re-versions to v0.2 if changes needed.
-2. **H2 — Implementation** — server endpoint extensions
+Numbered `HALT 2.5.x` so the renumbering remains visible in the
+git log: filters were inserted between master-spec HALT 2 (CSV) and
+HALT 3 (View All Parties), pushing the latter to HALT 4. Anyone
+reading the commit history later sees the insertion structurally
+rather than having to reconstruct it.
+
+1. **HALT 2.5.1 — Filter spec** (this document) — Aditya reviews;
+   spec re-versions to v0.2 if changes needed.
+2. **HALT 2.5.2 — Implementation** — server endpoint extensions
    (`get_gl_entries` + `get_filter_metadata` + `export_gl_entries_csv`),
    URL contract on the page, JS state mgmt + filter UI components.
    No CSS yet beyond reused tokens.
-3. **H3 — Visual verification** at desktop and 800px viewport.
-   Browser-console URL-builder smoke tests run.
-4. **H4 — Tests** — 8 new server-side tests; full suite stays
-   green at 155+ (current 147 + 8 new).
+3. **HALT 2.5.3 — Visual verification + EXPLAIN** at desktop and
+   800px viewport. Browser-console URL-builder smoke tests run.
+   EXPLAIN against the inner JOIN with the new predicates active
+   per §4 Q1 fail criterion. Halt for index discussion if
+   `Using temporary` or `Using filesort` appears.
+4. **HALT 2.5.4 — Tests + full suite** — 8 new server-side tests;
+   full suite stays green at 155+ (current 147 + 8 new).
 
-After H4 sign-off → proceed to **HALT 4 (View All Parties)** — what
-was the original HALT 3 in master-spec, renumbered after HALT 2.5
-insertion.
+After HALT 2.5.4 sign-off → proceed to **HALT 4 (View All Parties)**
+— what was the original HALT 3 in master-spec, renumbered after
+HALT 2.5 insertion.
 
 ## 13. Out of scope (Phase 5 follow-ups)
 
