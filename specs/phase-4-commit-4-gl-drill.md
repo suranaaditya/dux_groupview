@@ -1,6 +1,6 @@
 # Phase 4 commit 4 — GL drill page + CSV export + view all parties
 
-**Status:** v0.5, finalized — HALT 2 (CSV) implementation in progress
+**Status:** v0.6, finalized — HALT 2.5 (filter UI) about to begin per `specs/phase-4-commit-4-filters.md`
 **Branch:** `phase-4-drills` (continuing; no new branch)
 **Estimated duration:** 1–2 working days
 **Depends on:** Phase 4 commits 1, 2, 2.5, 3, 3.1 (all on `phase-4-drills`); side PR #10 (trust-subset seed) and #11 (augmented AP/AR seed) — both merged to main.
@@ -8,6 +8,28 @@
 This spec extends the master Phase 4 spec (`specs/phase-4-drills.md`).
 Sections labelled §4.x reference the master spec; sections numbered
 without a prefix are local to this commit.
+
+**Changes from v0.5:**
+- §9 — account-breakdown CSV column list aligned with HALT 2
+  implementation. Previous draft (`company,value,2025-06,…,2026-05`
+  + Total row) is replaced with the per-(company, account)
+  granular shape that actually shipped:
+  `Company,Account,Balance,Currency`. Per-row balance is the
+  natural-side aggregate (sign-flipped via FLIP_ROOT_TYPES);
+  Currency is read from `tabAccount.account_currency` and renders
+  as empty string for accounts where it's NULL. `HAVING ABS(balance)
+  >= 0.01` drops sub-rupee zero rows. The sparkline + monthly
+  trend columns from the v0.4 draft are **not** in v1 — the
+  per-(company, account) view is the cockpit-coherent one (matches
+  account-drill panel's by-company section); time-series
+  visualization remains in the on-screen trend chart. Spec §9 was
+  the last v1 surface still using the old draft.
+- HALT 2.5 spec — new file at `specs/phase-4-commit-4-filters.md`
+  formalizes the filter UI gap surfaced during HALT 2 review.
+  Resolves master-spec §15.5 (Q1: SQL-narrow account_names; Q2:
+  URL-persisted; Q3: separate from_date/to_date params). v0.6
+  master-spec just references the new file; the filter contract
+  lives there.
 
 **Changes from v0.4:**
 - §5.1 — running-balance window function is no longer partitioned
@@ -759,15 +781,34 @@ posting_date,company,account,voucher_type,voucher_no,party_type,party,debit,cred
 party_type,party,balance,company_count,is_group_company
 ```
 
-### account-drill CSV columns
+### account-drill CSV columns (v0.6 — aligned with HALT 2 ship)
 
 ```
-company,value,2025-06,2025-07,…(12 months oldest→newest)…,2026-05
+Company,Account,Balance,Currency
 ```
 
-Plus a final row where `company = "Total"` and the value column
-contains the group total. Sparkline columns sum across companies for
-that month (matches the trend chart's value).
+One row per (company, account) leaf in the resolved scope at the
+target snapshot date, with non-zero balance after sign-flip
+(`FLIP_ROOT_TYPES` natural-side convention). `Balance` cells are
+raw decimals (`f"{flt(balance):.2f}"` — no Indian grouping, no
+currency symbol; locked at HALT 2). `Currency` is from
+`tabAccount.account_currency` and renders as empty string for
+accounts where the field is NULL (some GST-RCM accounts on dev
+have this — harmless).
+
+`HAVING ABS(balance) >= 0.01` drops sub-rupee residuals so the file
+matches the panel's behavior of hiding zero-balance rows.
+
+Ordering: `ORDER BY company ASC, account ASC` for stable per-run
+output (helpful when diffing exports across dates).
+
+The v0.4 draft had a `company,value, + 12 month columns + Total
+row` shape that bundled the trend chart's data into the export.
+HALT 2 instruction superseded with the per-(company, account) shape
+above — more granular, includes currency, doesn't bundle a
+visualization concern into the data file. The on-screen trend chart
+remains the place for time-series; CSV is for tabular data
+interchange.
 
 ## 10. Performance targets
 
