@@ -1,6 +1,6 @@
 # Phase 4 commit 4 — GL drill page + CSV export + view all parties
 
-**Status:** v0.2, finalized — ready for HALT 1 implementation
+**Status:** v0.3, finalized — HALT 1 implementation in progress
 **Branch:** `phase-4-drills` (continuing; no new branch)
 **Estimated duration:** 1–2 working days
 **Depends on:** Phase 4 commits 1, 2, 2.5, 3, 3.1 (all on `phase-4-drills`); side PR #10 (trust-subset seed) and #11 (augmented AP/AR seed) — both merged to main.
@@ -8,6 +8,29 @@
 This spec extends the master Phase 4 spec (`specs/phase-4-drills.md`).
 Sections labelled §4.x reference the master spec; sections numbered
 without a prefix are local to this commit.
+
+**Changes from v0.2:**
+- §5.1 — default `page_size` 50 → 100 (ergonomic for desktop with the
+  running-balance column visible). Max `page_size` 200 → 1000 (above
+  1000 the user is in CSV-export territory, not paginated browsing).
+- §5.1 — sort key names renamed `date_desc` / `date_asc` →
+  `posting_date_desc` / `posting_date_asc` to disambiguate from
+  `creation` date (ERPNext's tabGL Entry has both). `amount_*` keys
+  unchanged.
+- §5.1 — added 50K hard cap to `get_gl_entries` itself (was export-only
+  in v0.2 — that was wrong: a deep-paginated reader could land on a
+  >50K-row scope and degrade silently). New `is_truncated` boolean in
+  the response signals when truncation has occurred so the page can
+  show a banner. Export endpoint (§5.2) keeps the HTTP 400 throw
+  because a CSV download has no in-band channel for a flag.
+- §8 — pagination table updated to match new defaults (50, 100,
+  250, 1000 page sizes; default 100; new sort key names).
+- §10 — softened "Index dependency" claim. Spec no longer asserts
+  WHICH `tabGL Entry` covering index the optimizer will pick; both
+  candidates (`dgv_snapshot_aggregation` from Phase 3,
+  `dgv_party_drill` from Phase 4 commit 2) cover the access pattern.
+  EXPLAIN at perf measurement time documents the actual choice.
+  (v0.2 hand-waved this; v0.1 was silent.)
 
 **Changes from v0.1:**
 - §5.4 — added "Mode args contract (canonical)" subsection pinning the
@@ -215,19 +238,42 @@ get_gl_entries(
   party=None,           # optional (party, party_type) filter
   party_type=None,
   page=1,
-  page_size=50,         # default 50, max 200
-  sort='date_desc',     # one of: date_desc, date_asc, amount_desc, amount_asc
+  page_size=100,        # default 100, max 1000 (above 1000 use CSV export)
+  sort='posting_date_desc',  # one of: posting_date_desc, posting_date_asc, amount_desc, amount_asc
 )
 ```
+
+**50K hard cap (`is_truncated`).** `total_entries` reports the *actual*
+count of matching rows (no cap). When that count exceeds 50,000, the
+response slices the data — only the first 50,000 entries (in the
+caller's chosen sort order) are queried for the windowed read, and
+`is_truncated: true` flags the cap to the page so it can show a
+"showing first 50,000 of N — narrow scope or use CSV export" banner.
+Below the cap, `is_truncated: false` and `total_entries` is the same
+count the page paginates against.
+
+A non-cap behavior was considered (always serve the full set) but
+ruled out at v0.3: the windowed query computes running balance over
+the *entire* result before pagination slices it (see "Running balance
+computation" below). On a 200K-row scope, that's 200K window
+computations + sort + slice for every page request, even page 1. The
+cap protects every paginated reader from that cliff. Export endpoint
+(§5.2) keeps the HTTP 400 throw because a CSV download has no
+in-band channel for a flag.
 
 **Output shape:**
 
 ```
 {
-  "total_entries": <int>,
+  "total_entries": <int>,         # actual row count (no cap)
+  "is_truncated": <bool>,         # true iff total_entries > 50000
   "page": <int>,
   "page_size": <int>,
   "scope_label": <str>,
+  "scope_fanout": {               # for the §6.1 banner; computed once per request
+    "n_accounts": <int>,          # resolved leaf count
+    "n_companies": <int>,         # len(allowed) after permission intersection
+  },
   "entries": [
     {
       "name": "<gl-entry-id>",
@@ -274,12 +320,16 @@ running balance determinism.
 
 **Sort options for the *display* (outer ORDER BY):**
 
-| `sort`         | ORDER BY                                              |
-|----------------|-------------------------------------------------------|
-| `date_desc`    | posting_date DESC, name DESC (default)                |
-| `date_asc`     | posting_date ASC, name ASC                            |
-| `amount_desc`  | ABS(signed_amount) DESC, posting_date DESC, name DESC |
-| `amount_asc`   | ABS(signed_amount) ASC, posting_date DESC, name DESC  |
+| `sort`                | ORDER BY                                              |
+|-----------------------|-------------------------------------------------------|
+| `posting_date_desc`   | posting_date DESC, name DESC (default)                |
+| `posting_date_asc`    | posting_date ASC, name ASC                            |
+| `amount_desc`         | ABS(signed_amount) DESC, posting_date DESC, name DESC |
+| `amount_asc`          | ABS(signed_amount) ASC, posting_date DESC, name DESC  |
+
+The `posting_date_` prefix is verbose but disambiguates from
+`creation` date (also on `tabGL Entry`). v0.2 used `date_desc` /
+`date_asc`; v0.3 renames before any caller depends on the short form.
 
 `amount_*` sorts use `ABS()` for the same reason
 `get_party_breakdown` does in commit 3.1 (line 123): a Cr-side journal
@@ -298,10 +348,17 @@ Returns an HTTP response with:
 - `Content-Disposition: attachment; filename="gl-drill—<scope-slug>—<as-of>.csv"`
 - Body: CSV with header row + data rows.
 
-**50K row cap:** if `total_entries > 50_000`, the endpoint returns
-HTTP 400 (`frappe.throw`) with a message asking the user to narrow
-the scope. UX safety, not a technical limit; documented in the error
-message that we'll lift the cap if real users hit it.
+**50K row cap (consistent with §5.1).** If the resolved `total_entries`
+exceeds 50,000, the export endpoint throws HTTP 400 with a message:
+*"Scope spans N entries; CSV export is capped at 50,000. Narrow the
+scope (date range, fewer companies, single account) and try again."*
+
+A CSV download has no in-band channel for an `is_truncated` flag —
+unlike `get_gl_entries` which returns JSON and can include a boolean,
+the CSV body is the data and that's it. Throwing 400 is the cleanest
+UX (HTTP attachment download fails visibly, the page surfaces the
+error message) versus silently truncating to 50K and producing a CSV
+that pretends to be complete.
 
 **Cell format:**
 - Numeric columns (`debit`, `credit`, `signed_amount`,
@@ -588,10 +645,17 @@ bodies + new helpers.
 
 ## 8. Sort & pagination semantics
 
-| Page          | Default sort   | Page sizes              | URL params for sort/page         |
-|---------------|----------------|--------------------------|----------------------------------|
-| `gl-drill`    | `date_desc`    | 25, 50 (default), 100, 200 | `&sort=…&page=…&page_size=…` |
-| `party-list`  | `balance_desc` | 25, 50 (default), 100, 200 | `&sort=…&page=…&page_size=…` |
+| Page          | Default sort         | Page sizes                  | URL params for sort/page         |
+|---------------|----------------------|------------------------------|----------------------------------|
+| `gl-drill`    | `posting_date_desc`  | 50, 100 (default), 250, 1000 | `&sort=…&page=…&page_size=…` |
+| `party-list`  | `balance_desc`       | 25, 50 (default), 100, 200   | `&sort=…&page=…&page_size=…` |
+
+GL drill jumps to 1000 at the upper end because the running-balance
+column makes the table denser per row and a power user scanning a
+specific account-month wants to see the whole window without
+paginating. Party list keeps the lower 200 ceiling — party rows are
+chunky (name + balance + group badge) and 200 is already a lot to
+scan visually.
 
 Sort/page params persist in the URL so refresh and copy-link both
 preserve view state. "Export CSV" ignores `page`/`page_size` (full
@@ -640,10 +704,22 @@ that month (matches the trend chart's value).
 
 Numbers fill in at the per-halt-point verification step.
 
-**Index dependency:** the GL page query relies on the `dgv_party_drill`
-covering index added in commit 2 (`patches/add_party_drill_index.py`).
-EXPLAIN check is part of the halt-point verification: confirm
-`type=range` and `Using index` for the inner aggregation.
+**Index dependency.** Two `tabGL Entry` indexes can serve this query:
+
+- `dgv_snapshot_aggregation` `(is_cancelled, docstatus, company,
+  account, posting_date)` — Phase 3 covering index, originally added
+  for the refresh aggregation.
+- `dgv_party_drill` — Phase 4 commit 2 supplementary index, ordered
+  for `(account, company, party)` access.
+
+Either is a valid pick for `get_gl_entries`. The optimizer's choice
+depends on filter selectivity (small leaf list and small company set
+favors the party-drill ordering; broad subtree favors the snapshot
+ordering) and statistics. Spec does NOT pre-commit to one. The
+HALT 1 EXPLAIN step records which index the optimizer actually picks
+on the trust-subset seed and why; that observation lands in PHASE_LOG.
+The verification fail criterion is "neither index used" (full table
+scan) or `Using temporary; Using filesort`, NOT "wrong index used".
 
 **Window function vs. self-join for running balance:** MariaDB 10.2+
 supports `SUM() OVER`. ERPNext v16 dev runs MariaDB 10.6 (verified
