@@ -685,9 +685,32 @@
 	flex-direction: column;
 	box-shadow: -8px 0 24px rgba(27, 40, 69, 0.12);
 	transform: translateX(100%);
-	transition: transform 220ms ease-out;
+	/* Bumped from 220ms (HALT 6.3 spec): card → panel motion at 300ms
+	 * ease-out feels less abrupt and matches the cross-fade duration
+	 * paired with it (200ms fade-in for skeleton → content). */
+	transition: transform 300ms ease-out;
 }
 .dgv-drill-overlay.dgv-drill-open .dgv-drill-panel { transform: translateX(0); }
+
+/* Skeleton → content cross-fade. The host containers (.dgv-drill-hero,
+ * .dgv-drill-trend-host, .dgv-drill-company-host, .dgv-drill-party-host)
+ * get the `.dgv-fade-in` class applied right after their innerHTML is
+ * swapped from skeleton bars to real data, triggering a 200ms opacity
+ * fade-in. The class is force-reflowed off and on so re-renders within
+ * the same panel session re-trigger the animation. */
+@keyframes dgv-fade-in {
+	from { opacity: 0; }
+	to   { opacity: 1; }
+}
+.dgv-fade-in {
+	animation: dgv-fade-in 200ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.dgv-drill-panel { transition: none; }
+	.dgv-drill-backdrop { transition: none; }
+	.dgv-fade-in { animation: none; }
+}
 
 
 /* Panel header */
@@ -2262,6 +2285,205 @@
 		min-width: 600px;
 	}
 }
+
+
+/* ===========================================================================
+ * Skeletons + empty-state banners (Phase 4 commit 6)
+ *
+ * Shared primitives for loading and empty-data states across:
+ *   - cockpit spotlight cards
+ *   - drill panel (hero + by-company + by-party)
+ *   - GL drill page main table
+ *   - party-list page main table
+ *   - focus-mode tiles + accounts table
+ *
+ * Pulse animation respects `prefers-reduced-motion: reduce` per
+ * commit-6 spec category 5.d (animation polish bleeds into skeletons
+ * because both rely on the same keyframes; defining the guard here
+ * keeps both surfaces honest at HALT 6.1).
+ * ======================================================================== */
+
+@keyframes dgv-skeleton-pulse {
+	0%   { opacity: 0.55; }
+	50%  { opacity: 0.95; }
+	100% { opacity: 0.55; }
+}
+
+.dgv-skeleton-line,
+.dgv-skeleton-cell,
+.dgv-skeleton-bar {
+	display: block;
+	background: var(--rgi-border);
+	border-radius: 3px;
+	animation: dgv-skeleton-pulse 1.5s ease infinite;
+}
+
+.dgv-skeleton-line {
+	height: 12px;
+	margin: 6px 0;
+	width: 100%;
+}
+.dgv-skeleton-line.short    { width: 50%; }
+.dgv-skeleton-line.medium   { width: 75%; }
+.dgv-skeleton-line.tall     { height: 24px; }
+.dgv-skeleton-line.title    { height: 18px; width: 55%; }
+.dgv-skeleton-line.eyebrow  { height: 10px; width: 28%; }
+
+@media (prefers-reduced-motion: reduce) {
+	.dgv-skeleton-line,
+	.dgv-skeleton-cell,
+	.dgv-skeleton-bar {
+		animation: none;
+		opacity: 0.7;
+	}
+}
+
+/* Empty-state banner — block-level, consistent across surfaces. */
+.dgv-empty-banner {
+	padding: 20px 24px;
+	background: var(--rgi-bg-row-alt);
+	border: 1px solid var(--rgi-border);
+	border-radius: 6px;
+	color: var(--rgi-text-secondary);
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+	text-align: center;
+	margin: 12px 0;
+}
+
+/* Inline empty (within an existing section, e.g. by-party). */
+.dgv-empty-inline {
+	padding: 16px;
+	color: var(--rgi-text-tertiary);
+	font-family: var(--rgi-font-sans);
+	font-size: 12px;
+	font-style: italic;
+	text-align: center;
+}
+
+/* Skeleton row — table-like surfaces (GL drill, party list, drill
+ * panel by-company / by-party). */
+.dgv-skeleton-row {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	padding: 10px 16px;
+	border-bottom: 1px solid var(--rgi-border-light);
+}
+.dgv-skeleton-row:last-child { border-bottom: none; }
+
+.dgv-skeleton-cell {
+	flex: 1 1 auto;
+	height: 12px;
+}
+.dgv-skeleton-cell.narrow      { flex: 0 0 70px; }
+.dgv-skeleton-cell.wide        { flex: 0 0 200px; }
+.dgv-skeleton-cell.right-align { margin-left: auto; flex: 0 0 110px; }
+
+/* Skeleton tile — focus-mode summary tile loading state.
+ * Same dimensions as `.dgv-focus-tile` so the layout doesn't jump on
+ * fetch resolve. */
+.dgv-skeleton-tile {
+	background: var(--rgi-bg-surface);
+	border: 1px solid var(--rgi-border);
+	border-radius: 6px;
+	padding: 16px 18px;
+}
+
+/* Skeleton card — cockpit spotlight loading state.
+ * Reserve space matching `.rgi-spotlight-card`. */
+.dgv-skeleton-card {
+	background: var(--rgi-bg-surface);
+	border: 1px solid var(--rgi-border);
+	border-radius: 6px;
+	padding: 18px 20px;
+	min-height: 110px;
+}
+
+/* Hero (drill panel) skeleton */
+.dgv-drill-hero-skeleton-bars {
+	padding: 8px 0;
+}
+.dgv-drill-hero-skeleton-bars .dgv-skeleton-line { margin: 8px 0; }
+
+
+/* ===========================================================================
+ * Error tiles (Phase 4 commit 6 HALT 6.2)
+ *
+ * Four classes (network / permission / invalid / server) sharing a
+ * single visual treatment -- terracotta accent (NOT full red), a
+ * leading icon, the error message, and an optional action button
+ * ([Retry] for transient errors, [Cockpit] for invalid-scope, none
+ * for permission-denied).
+ *
+ * Error tile REPLACES the prior content host (skeleton or rendered
+ * content). Don't stack on top: the host's innerHTML is overwritten
+ * by `dgvRenderErrorTile`.
+ * ======================================================================== */
+
+.dgv-error-tile {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 12px;
+	padding: 28px 24px;
+	margin: 12px 0;
+	background: var(--rgi-bg-row-alt);
+	border: 1px solid var(--rgi-danger);
+	border-left-width: 4px;
+	border-radius: 6px;
+	color: var(--rgi-text-secondary);
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+	text-align: center;
+}
+
+.dgv-error-icon {
+	font-size: 22px;
+	color: var(--rgi-danger);
+	line-height: 1;
+}
+
+.dgv-error-message {
+	max-width: 480px;
+	color: var(--rgi-text-primary);
+	font-size: 14px;
+	line-height: 1.5;
+}
+
+.dgv-error-action {
+	margin-top: 4px;
+	padding: 7px 18px;
+	background: var(--rgi-bg-surface);
+	border: 1px solid var(--rgi-text-tertiary);
+	border-radius: 4px;
+	color: var(--rgi-text-primary);
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+	font-weight: 500;
+	cursor: pointer;
+	transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.dgv-error-action:hover {
+	background: var(--rgi-border);
+	border-color: var(--rgi-text-secondary);
+}
+
+.dgv-error-action:focus-visible {
+	outline: 2px solid var(--rgi-text-primary);
+	outline-offset: 2px;
+}
+
+/* Compact variant for narrow hosts (drill panel sections, GL drill
+ * table-wrap when the surrounding chrome already gives the user
+ * orientation). */
+.dgv-error-tile.dgv-error-compact {
+	padding: 18px 16px;
+	gap: 8px;
+}
+.dgv-error-tile.dgv-error-compact .dgv-error-icon { font-size: 18px; }
+.dgv-error-tile.dgv-error-compact .dgv-error-message { font-size: 13px; }
 
 
 /* ===========================================================================

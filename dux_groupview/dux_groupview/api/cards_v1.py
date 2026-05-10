@@ -68,8 +68,24 @@ def resolve_match_to_accounts(match, companies=None, label=None):
 		except (ValueError, TypeError):
 			companies = None
 
+	# Distinguish "valid request, empty result" from "predicate is
+	# malformed / refers to nothing". A well-formed predicate that
+	# matches zero leaves stays a 200 + empty list (legitimate today
+	# for cards like Inter-co receivable on dev seed). A predicate
+	# that's None / missing required keys is a stale-deep-link case
+	# and surfaces as 404 with malformed_scope:true so the gl-drill
+	# / party-list pages can show the targeted "this link is no
+	# longer valid" tile instead of a generic 500. (Phase 4 commit 6
+	# HALT 6.2 carryover.)
+	if not isinstance(match, dict) or not match:
+		frappe.local.response["malformed_scope"] = True
+		frappe.throw(
+			frappe._("Match predicate is missing or malformed."),
+			frappe.DoesNotExistError,
+		)
+
 	allowed = _resolve_scope(companies)
-	accounts = _resolve_match(match, allowed) if match and allowed else []
+	accounts = _resolve_match(match, allowed) if allowed else []
 	return {"accounts": sorted(accounts), "label": label or ""}
 
 

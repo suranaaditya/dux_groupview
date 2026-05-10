@@ -182,6 +182,13 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 	let focusMode = null;            // {type: 'company'|'trust', value, depthBeforeFocus}
 	let pivotHeaderObserver = null;
 
+	// Race-condition tokens (commit-6 HALT 6.3 category 4). Each fetch
+	// captures the current token; callbacks drop their result if the
+	// token has been bumped while in-flight (browser-back, scope
+	// change, focus enter / exit, rapid date toggle).
+	let cardsFetchToken = 0;
+	let focusFetchToken = 0;
+
 	bootstrap();
 	checkSyntheticPreview();
 
@@ -629,12 +636,15 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 	// -----------------------------------------------------------------
 
 	function loadCards(snapshotDate) {
-		// Skeletons in both tiers on first load; subsequent loads dim in place.
+		// Skeletons in both tiers on first load (3 primary + 3 secondary
+		// matching the actual render shape so the layout doesn't jump
+		// when real data arrives). Subsequent loads dim in place rather
+		// than re-painting skeletons -- prevents flicker on date-toggle.
 		const $primary = $('#rgi-tier-primary');
 		const $secondary = $('#rgi-tier-secondary');
 		if (!$primary.children().length) {
-			$primary.html(loadingState());
-			$secondary.empty();
+			$primary.html(skeletonCardsHtml(3));
+			$secondary.html(skeletonCardsHtml(3));
 		}
 		const isFullScope = scopeCompanies === null;
 		const method = isFullScope
@@ -642,16 +652,55 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 			: 'dux_groupview.dux_groupview.api.cockpit.get_spotlight_cards_filtered';
 		const args = { snapshot_date: snapshotDate };
 		if (!isFullScope) args.companies = JSON.stringify(scopeCompanies);
+		cardsFetchToken += 1;
+		const myToken = cardsFetchToken;
 		frappe.call({
 			method: method,
 			args: args,
 			callback: function(r) {
+				if (myToken !== cardsFetchToken) return; // stale
 				$('#rgi-tier-primary, #rgi-tier-secondary').removeClass('dgv-loading-dim');
 				if (r && r.message) {
 					renderCards(r.message);
 				}
 			},
+			error: function(r, xhr) {
+				if (myToken !== cardsFetchToken) return; // stale
+				// Both tiers collapse to a single error tile on the
+				// primary tier (spans full row via inline grid-column
+				// override); secondary cleared to avoid a half-broken
+				// look. Retry re-fires loadCards.
+				$('#rgi-tier-primary, #rgi-tier-secondary').removeClass('dgv-loading-dim');
+				$secondary.empty();
+				const host = $primary.empty()[0];
+				if (window.dgvRenderErrorTile) {
+					window.dgvRenderErrorTile(xhr, host, () => loadCards(snapshotDate));
+					// Stretch the freshly-injected tile across the
+					// 3-column tier grid so it's prominent rather than
+					// tucked into the first slot.
+					const tile = host.querySelector('.dgv-error-tile');
+					if (tile) tile.style.gridColumn = '1 / -1';
+				}
+			},
 		});
+	}
+
+	function skeletonCardsHtml(n) {
+		// Reserve layout space matching `.rgi-spotlight-card` so when
+		// real data arrives the cards don't shift the page. Three
+		// stacked lines (eyebrow + amount + delta) mirror the real
+		// card's vertical rhythm.
+		let out = '';
+		for (let i = 0; i < n; i++) {
+			out += `
+				<div class="dgv-skeleton-card">
+					<div class="dgv-skeleton-line eyebrow"></div>
+					<div class="dgv-skeleton-line tall medium"></div>
+					<div class="dgv-skeleton-line short"></div>
+				</div>
+			`;
+		}
+		return out;
 	}
 
 	function loadAge(snapshotDate) {
@@ -717,9 +766,24 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 	}
 
 	function renderCards(cards) {
-		const tiers = classifyTiers(cards);
 		const $primary = $('#rgi-tier-primary').empty();
 		const $secondary = $('#rgi-tier-secondary').empty();
+		// Defensive zero-cards empty state (commit-6 HALT 6.1
+		// category 1.a): in normal operation `get_spotlight_cards`
+		// always returns 6 cards (the constant CARDS list), so this
+		// branch only fires if the cards definition is empty -- which
+		// happens once Phase 5's cards-editor lets users disable cards
+		// or filter to an empty set. Emit a banner now so the
+		// future case doesn't render as a blank stretch of page.
+		if (!cards || !cards.length) {
+			$primary.append(`
+				<div class="dgv-empty-banner" style="grid-column: 1 / -1;">
+					No spotlight cards configured for this trust selection.
+				</div>
+			`);
+			return;
+		}
+		const tiers = classifyTiers(cards);
 		tiers.primary.forEach(c => $primary.append(renderCard(c, 'primary')));
 		tiers.secondary.forEach(c => $secondary.append(renderCard(c, 'secondary')));
 	}
@@ -973,6 +1037,12 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 	function exitFocusMode(viaPopState) {
 		if (!focusMode) return;
 		const restored = focusMode.depthBeforeFocus;
+		// Bump the focus token so any in-flight fetch (main view OR
+		// per-company strip) drops its result on arrival -- avoids
+		// late-arriving data flashing the focus view back into
+		// existence after the user has already exited (HALT 6.3
+		// category 4.b + 4.d).
+		focusFetchToken += 1;
 
 		focusMode = null;
 
@@ -1060,13 +1130,18 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 	}
 
 	function loadFocusedView(scopeType, scopeValue) {
-		// Skeleton state.
-		const $tiles = $('#dgv-focus-tiles').html(
-			'<div class="dgv-focus-loading">Loading…</div>'
-		);
+		// Skeleton state per commit-6 HALT 6.1: 5 tile placeholders +
+		// 15 row placeholders. Layout-stable -- when real data arrives
+		// the page doesn't jump. Strip stays hidden during load (its
+		// presence depends on scope_type, which we already know, but
+		// the per-company data fetches in parallel after the main
+		// fetch resolves).
+		const $tiles = $('#dgv-focus-tiles').html(skeletonFocusTilesHtml(5));
 		$('#dgv-focus-trust-strip').prop('hidden', true).empty();
-		$('#dgv-focus-accounts').empty();
+		$('#dgv-focus-accounts').html(skeletonFocusRowsHtml(15));
 
+		focusFetchToken += 1;
+		const myToken = focusFetchToken;
 		frappe.call({
 			method: 'dux_groupview.dux_groupview.api.focus_v1.get_focused_view',
 			args: {
@@ -1075,20 +1150,44 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 				as_of_date: currentDate,
 			},
 			callback: function(r) {
+				if (myToken !== focusFetchToken) return; // stale
 				if (!r || !r.message) {
-					$tiles.html(
-						'<div class="dgv-focus-error">Unable to load focused view.</div>'
-					);
+					renderFocusError(null, scopeType, scopeValue);
 					return;
 				}
 				renderFocusedView(r.message);
 			},
-			error: function() {
-				$tiles.html(
-					'<div class="dgv-focus-error">Unable to load focused view.</div>'
-				);
+			error: function(r, xhr) {
+				if (myToken !== focusFetchToken) return; // stale
+				renderFocusError(xhr, scopeType, scopeValue);
 			},
 		});
+	}
+
+	function renderFocusError(xhr, scopeType, scopeValue) {
+		// Replace the focused-view body with a single error tile.
+		// Per-company strip + accounts host clear so the user sees one
+		// error, not three. Banner area gets cleared too. Retry
+		// re-fires loadFocusedView. Scope-name label gets an explicit
+		// value so the banner doesn't read "Focusing:" with empty
+		// trailing space.
+		const $banner = $('#dgv-focus-banner-empty');
+		if ($banner.length) $banner.remove();
+		$('#dgv-focus-scope-name').text(scopeValue || '');
+		$('#dgv-focus-scope-sub').text('');
+		$('#dgv-focus-trust-strip').prop('hidden', true).empty();
+		$('#dgv-focus-accounts').empty();
+		const host = $('#dgv-focus-tiles').empty()[0];
+		if (window.dgvRenderErrorTile) {
+			window.dgvRenderErrorTile(
+				xhr,
+				host,
+				() => loadFocusedView(scopeType, scopeValue)
+			);
+			// Stretch the tile across the 5-column tiles grid.
+			const tile = host.querySelector('.dgv-error-tile');
+			if (tile) tile.style.gridColumn = '1 / -1';
+		}
 	}
 
 	function renderFocusedView(payload) {
@@ -1100,6 +1199,31 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 			? `${coCount} ${coCount === 1 ? 'company' : 'companies'} · as of ${formatDateLong(payload.as_of_date)}`
 			: `as of ${formatDateLong(payload.as_of_date)}`;
 		$('#dgv-focus-scope-sub').text(sub);
+
+		// All-zero banner per commit-6 HALT 6.1 category 1.d: keep the
+		// layout (tiles + accounts) but surface "No activity" above so
+		// the user knows this isn't a rendering bug -- it's just a
+		// freshly-onboarded company / dormant trust. Detect via the 4
+		// constituent tiles (Net Surplus is derived). Threshold is
+		// abs(tile) < 1 rupee, not strict equality, because sub-rupee
+		// residuals from seed rounding or migration imports could
+		// otherwise produce false-negative "no activity" detection
+		// (commit-6 HALT 6.1 sign-off note).
+		const t = payload.summary_tiles || {};
+		const allZero = Math.abs(Number(t.assets)      || 0) < 1
+		             && Math.abs(Number(t.liabilities) || 0) < 1
+		             && Math.abs(Number(t.income)      || 0) < 1
+		             && Math.abs(Number(t.expenses)    || 0) < 1;
+		const $banner = $('#dgv-focus-banner-empty');
+		if ($banner.length) $banner.remove();
+		if (allZero) {
+			$('#dgv-focus-tiles').before(
+				'<div class="dgv-empty-banner" id="dgv-focus-banner-empty">' +
+					'No activity recorded for this scope as of ' +
+					escape(formatDateLong(payload.as_of_date)) + '.' +
+				'</div>'
+			);
+		}
 
 		// Tiles.
 		renderFocusTiles(payload.summary_tiles);
@@ -1176,7 +1300,17 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 				enterFocusMode('company', String(co), false);
 			});
 
-		// Fetch per-company net surplus in parallel.
+		// Fetch per-company net surplus in parallel. Each call returns
+		// { company, net_surplus, ok }; an entry with `ok: false` means
+		// that company's fetch failed -- carryover from HALT 6.2 review:
+		// surface the failure as a compact strip-scoped error rather
+		// than silently rendering "₹0.00 Cr" (which masked the failure
+		// and looked indistinguishable from a real zero balance).
+		// Race-condition guard (HALT 6.3 category 4): capture the focus
+		// token at strip-render-start; if the user exits focus mode or
+		// re-enters with a different scope while the fan-out is in
+		// flight, the Promise.all handler drops its result.
+		const myStripToken = focusFetchToken;
 		const promises = companies.map(co => new Promise((resolve) => {
 			frappe.call({
 				method: 'dux_groupview.dux_groupview.api.focus_v1.get_focused_view',
@@ -1188,13 +1322,34 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 				callback: (r) => {
 					const ns = (r && r.message && r.message.summary_tiles &&
 					            r.message.summary_tiles.net_surplus) || 0;
-					resolve({ company: co, net_surplus: ns });
+					resolve({ company: co, net_surplus: ns, ok: true });
 				},
-				error: () => resolve({ company: co, net_surplus: 0 }),
+				error: (r, xhr) => resolve({
+					company: co, net_surplus: 0, ok: false, xhr: xhr,
+				}),
 			});
 		}));
 
 		Promise.all(promises).then(results => {
+			if (myStripToken !== focusFetchToken) return; // stale — focus exited
+			const failures = results.filter(r => !r.ok);
+			if (failures.length) {
+				// Compact strip-scoped error tile + retry button.
+				// Replaces the strip alone -- the rest of the focused
+				// view (banner, summary tiles, accounts) is still
+				// rendered correctly from the main get_focused_view
+				// response, no need to nuke them.
+				$strip.empty();
+				if (window.dgvRenderErrorTile) {
+					window.dgvRenderErrorTile(
+						failures[0].xhr,
+						$strip[0],
+						() => renderFocusTrustStrip(payload),
+						{ compact: true }
+					);
+				}
+				return;
+			}
 			results.forEach(({ company, net_surplus }) => {
 				const v = Number(net_surplus) || 0;
 				const klass = v > 0 ? 'dgv-focus-strip-positive'
@@ -1323,6 +1478,45 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 			return window.CSS.escape(String(s));
 		}
 		return String(s).replace(/(["\\])/g, '\\$1');
+	}
+
+	function skeletonFocusTilesHtml(n) {
+		// Reserve `.dgv-focus-tile` layout (same grid 5-col container)
+		// so the post-fetch render doesn't jump.
+		let out = '';
+		for (let i = 0; i < n; i++) {
+			out += `
+				<div class="dgv-skeleton-tile">
+					<div class="dgv-skeleton-line eyebrow"></div>
+					<div class="dgv-skeleton-line tall medium"></div>
+				</div>
+			`;
+		}
+		return out;
+	}
+
+	function skeletonFocusRowsHtml(n) {
+		// Account-table-shape skeleton inside `.dgv-focus-accounts`
+		// host. Rows alternate width to suggest hierarchy.
+		let out = '<table class="dgv-focus-table"><tbody>';
+		for (let i = 0; i < n; i++) {
+			const isShort = (i % 3) === 0;
+			out += `
+				<tr class="dgv-focus-row-leaf">
+					<td class="dgv-focus-account" style="padding-left: ${12 + (i % 4) * 12}px;">
+						<div class="dgv-skeleton-line ${isShort ? 'short' : 'medium'}"></div>
+					</td>
+					<td class="dgv-focus-type">
+						<div class="dgv-skeleton-line short"></div>
+					</td>
+					<td class="dgv-focus-balance">
+						<div class="dgv-skeleton-line short" style="margin-left: auto;"></div>
+					</td>
+				</tr>
+			`;
+		}
+		out += '</tbody></table>';
+		return out;
 	}
 
 	// ---------------------------------------------------------------------

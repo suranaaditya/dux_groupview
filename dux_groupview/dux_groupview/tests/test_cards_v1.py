@@ -104,6 +104,54 @@ class TestResolveMatchToAccounts(FrappeTestCase):
 		result = cards_v1.resolve_match_to_accounts(match, _all_companies())
 		self.assertEqual(result["accounts"], [])
 
+	def test_resolve_match_to_accounts_malformed_scope_raises(self):
+		"""Missing / empty match predicate raises DoesNotExistError
+		with `malformed_scope: true` on the response (commit-6 HALT
+		6.3 stale-deep-link path). Distinguishes "predicate is gone"
+		(404) from "predicate is well-formed but matches zero
+		leaves" (200 + empty list, exercised by
+		test_resolve_unknown_match_returns_empty above).
+		"""
+		# match=None — JSON-parse path or direct call from a page that
+		# lost its predicate state.
+		frappe.local.response = frappe._dict()
+		with self.assertRaises(frappe.DoesNotExistError):
+			cards_v1.resolve_match_to_accounts(None, _all_companies())
+		self.assertTrue(
+			frappe.local.response.get("malformed_scope"),
+			"malformed_scope flag missing on None match",
+		)
+		# match={} — empty dict, same semantics.
+		frappe.local.response = frappe._dict()
+		with self.assertRaises(frappe.DoesNotExistError):
+			cards_v1.resolve_match_to_accounts({}, _all_companies())
+		self.assertTrue(
+			frappe.local.response.get("malformed_scope"),
+			"malformed_scope flag missing on empty-dict match",
+		)
+
+	def test_get_spotlight_cards_zero_cards_returns_empty_array(self):
+		"""Defensive zero-cards empty-banner path lives in
+		groupview.js's renderCards but isn't reachable from the
+		existing endpoints today.
+
+		The CARDS constant in spotlight/cards.py is hard-coded to 6
+		entries; `get_spotlight_cards` always returns 6 cards (with
+		zero values when the predicate matches nothing in scope).
+
+		Once Phase 5's cards-editor ships, this test should exercise
+		the actual zero-cards path (e.g. user disables all cards for
+		a trust). For now the JS side has the defensive
+		`<div class="dgv-empty-banner">No spotlight cards configured
+		for this trust selection.</div>` branch in place
+		(commit-6 HALT 6.1).
+		"""
+		self.skipTest(
+			"CARDS list hard-coded to 6 entries; zero-cards path "
+			"reachable only after Phase 5 cards-editor. Defensive "
+			"JS empty-banner branch verified at HALT 6.1."
+		)
+
 	def test_resolve_empty_companies_returns_empty(self):
 		match = {"by_account_type": "Payable"}
 		# Empty list is JSON-serialised by Frappe; emulate the path.

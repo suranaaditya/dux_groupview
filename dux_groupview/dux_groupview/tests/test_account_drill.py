@@ -17,11 +17,13 @@ Run with:
         dux_groupview.dux_groupview.tests.test_account_drill
 """
 
+import json
+
 import frappe
 from frappe.tests.utils import FrappeTestCase
 from frappe.utils import flt, getdate, today
 
-from dux_groupview.dux_groupview.api import account_drill_v1
+from dux_groupview.dux_groupview.api import account_drill_v1, party_drill_v1
 from dux_groupview.dux_groupview.snapshots.refresh import refresh_tb_snapshot
 from dux_groupview.dux_groupview.snapshots.spotlight_refresh import (
 	SPARKLINE_LENGTH,
@@ -463,3 +465,32 @@ class TestExportAccountBreakdownCsv(FrappeTestCase):
 				float(balance_cell)
 			except ValueError:
 				self.fail(f"Balance cell {balance_cell!r} does not parse as a float")
+
+
+class TestZeroPartiesNotFour04(FrappeTestCase):
+	"""Counterpart to the malformed_scope test in test_cards_v1: a
+	trackable scope with no party data must return 200 + empty list,
+	NOT a 404. Distinguishes "valid request, empty result" (this
+	test) from "predicate is malformed" (the cards_v1 test).
+
+	(Commit-6 HALT 6.4 — pins the empty-vs-missing semantics on the
+	party-list endpoint so a future refactor doesn't accidentally
+	collapse them.)
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		_ensure_today_data()
+
+	def test_get_party_breakdown_zero_parties_returns_empty_array_not_404(self):
+		# A trackable scope (Sundry Debtors / Receivable) at a date
+		# in the distant past, before any GL entry exists. Snapshot
+		# rows + GL rows are empty under that filter; party breakdown
+		# should report 0 parties cleanly.
+		out = party_drill_v1.get_party_breakdown(
+			scope=json.dumps({"type": "account", "value": "Sundry Debtors"}),
+			as_of_date="1900-01-01",
+		)
+		self.assertEqual(out["parties"], [])
+		self.assertEqual(out["total_parties"], 0)

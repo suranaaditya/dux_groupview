@@ -1277,3 +1277,210 @@ surfaces, not a focus-mode that diverges from the rest.
   temp/filesort -- not warranted at current scale, but the
   threshold for "warranted" is somewhere; revisit after 6 months
   of production data on a trust with 20+ companies.
+
+
+## Phase 4 — Commit 6 — Spotlight click polish + edge cases
+
+**Status:** Done -- 2026-05-10. Branch `phase-4-drills` (single
+bundled commit covering HALT 6.1 + 6.2 + 6.3 + 6.4 of the master
+commit-6 sequence).
+
+**Goal:** Harden every cockpit surface against the four classes of
+"things that look broken but aren't bugs in the data layer":
+empty-data states, in-flight loading, fetch failure, and rapid
+user-input race conditions. Plus one polish pass on card→panel
+animation. After commit 6, every click in the cockpit produces a
+deliberate visual response — skeleton during load, classified
+error tile on failure, no flashes of stale content on rapid
+re-clicks, smooth slide-in / cross-fade transitions. The cockpit
+went from "works when everything responds" to "looks intentional
+even when something goes sideways".
+
+**Deliverables:**
+- [x] `public/css/cockpit.css` -- skeleton primitives (line / row /
+  cell / tile / card / hero variants), `dgv-empty-banner` +
+  `dgv-empty-inline`, `dgv-error-tile` + 4 category variants +
+  compact mode, panel slide-in transition (300ms ease-out),
+  skeleton→content cross-fade keyframes (200ms), and a single
+  `prefers-reduced-motion: reduce` block that zeroes pulse +
+  slide + fade. ~+224 lines.
+- [x] `public/js/account_drill.js` -- `window.dgvRenderErrorTile`
+  + `window.dgvClassifyError` exposed for cross-page use; proper
+  multi-bar skeleton in `showSkeleton`; staged by-party reveal
+  with skeleton during in-flight party fetch; section-scoped
+  compact error tile for party-fetch failure; request-token
+  pattern + same-key lock for race conditions; `fadeInHost(el)`
+  helper called on every host innerHTML swap. ~+325 lines.
+- [x] `page/groupview/groupview.js` -- skeleton cards on cockpit
+  load, defensive zero-cards empty banner, focus-mode skeleton
+  tiles + rows, all-zero `Math.abs(tile) < 1` banner, classified
+  error tiles on cards / focus / per-company strip with retry
+  semantics, focusFetchToken + cardsFetchToken for race-condition
+  guarding. ~+232 lines.
+- [x] `page/gl_drill/gl_drill.js` -- 10-row skeleton in initial
+  HTML, error-tile wiring on `get_gl_entries`, malformed-scope
+  routing for missing / invalid scope URLs, `state.fetchToken`
+  guard. ~+94 lines.
+- [x] `page/party_list/party_list.js` -- 8-row skeleton in initial
+  HTML, error-tile wiring on `get_party_breakdown`, malformed-
+  scope routing, `state.fetchToken` guard, stale-card_id error
+  tile. ~+89 lines.
+- [x] `api/cards_v1.py` -- `resolve_match_to_accounts` raises
+  `frappe.DoesNotExistError` with `frappe.local.response[
+  "malformed_scope"] = True` when the predicate is missing /
+  empty (distinguishes from "predicate well-formed, matches zero
+  leaves" which stays 200 + empty list). ~+18 lines.
+- [x] `tests/test_cards_v1.py` -- new
+  `test_resolve_match_to_accounts_malformed_scope_raises` (covers
+  `match=None` and `match={}`); new
+  `test_get_spotlight_cards_zero_cards_returns_empty_array`
+  (skipped with explanatory comment -- CARDS list hard-coded to
+  6 entries, zero-cards path reachable only after Phase 5
+  cards-editor; defensive JS empty-banner branch verified at
+  HALT 6.1).
+- [x] `tests/test_account_drill.py` -- new
+  `test_get_party_breakdown_zero_parties_returns_empty_array_not_404`
+  pinning the empty-vs-missing distinction on the party-list
+  endpoint.
+- [x] Suite at 178 / 178 green (was 175 before commit 6; +3 new,
+  1 documented skip).
+
+**Spec evolution:** none. No spec round for commit 6 -- the brief
+described five well-bounded categories; halt-points were linear
+within implementation. Spec drafting would have added overhead
+without surfacing new questions.
+
+**Halt-point cadence:**
+
+- **HALT 6.1** -- Empty states + skeletons (categories 1 + 2).
+  Cockpit zero-cards banner, drill-panel zero-parties inline
+  message, focus-mode all-zero banner, GL drill / party-list
+  zero-row paths verified. Skeleton primitives + per-surface
+  skeletons for cockpit cards, drill panel, focus mode, GL drill,
+  party list. 5 surfaces, single CSS source of truth.
+- **HALT 6.2** -- Error states (category 3). 4-category classifier
+  (`network` / `permission` / `invalid` / `server`) exposed as
+  `window.dgvClassifyError` + `window.dgvRenderErrorTile`. Each
+  surface routes its `error` callback through the helper; retry
+  re-fires the same fetch. Permission-denied tile has no retry
+  button (sticky); invalid-scope tile has [Cockpit] button
+  instead.
+- **HALT 6.3** -- Race conditions + animation polish (categories
+  4 + 5). Request-token pattern for stale-callback rejection
+  (substituted for native AbortController -- see decisions
+  below). Same-key lock prevents same-card double-click duplicate
+  fetches. Panel slide bumped 220ms→300ms; skeleton→content
+  cross-fade at 200ms; both respect `prefers-reduced-motion`.
+- **HALT 6.4** -- Tests + commit prep. 3 new server-side tests
+  (1 of which is a documented skip), PHASE_LOG entry, commit
+  message draft, push.
+
+**Architectural decisions:**
+
+- **Request-token pattern instead of native `AbortController`.**
+  Frappe's `frappe.call` returns a Promise (v15+ wraps the
+  underlying jqXHR in a Promise) rather than a directly-abortable
+  XHR. Native AbortController integration would require either
+  bypassing `frappe.call` (replacing every call with raw `fetch`
+  + manual session/CSRF headers) or unwrapping Frappe's
+  promise chain. Both are mechanical but invasive across 20+
+  call sites. The token pattern (monotonic counter; callback
+  short-circuits on `myToken !== currentToken`) delivers the
+  exact user-visible behavior the brief asked for -- no flash
+  of stale content, no setState-on-unmounted-equivalent errors --
+  without that refactor. Trade-off: late-arriving HTTP responses
+  still complete on the server (small server-side waste at
+  single-user click rates; negligible). If true network-level
+  cancellation is needed in the future, the migration is
+  mechanical: replace each `frappe.call({...})` with `fetch(...,
+  {signal: controller.signal})` plus manual auth headers.
+- **Single source of truth for error classification.**
+  `window.dgvClassifyError(xhr)` and `window.dgvRenderErrorTile(
+  xhr, hostEl, retryFn, opts)` live in `account_drill.js` (which
+  is loaded via `app_include_js` so it's available everywhere).
+  Cockpit, focus mode, drill panel, GL drill page, and party-list
+  page all route through the same classifier. Adding a new error
+  category is a single edit to `classifyError`'s switch.
+- **`malformed_scope` server flag distinguishes 404 from 200 +
+  empty.** A predicate that's well-formed but matches zero
+  leaves stays a 200 + empty list (correct -- `Inter-co
+  receivable` legitimately matches zero leaves on the dev seed).
+  A predicate that's `None` / empty dict / not-a-dict is a
+  stale-deep-link case and 404s with `malformed_scope: true` so
+  gl-drill / party-list pages can show the targeted "this link
+  is no longer valid" tile + [Cockpit] button instead of a
+  generic 500.
+- **`prefers-reduced-motion` respected end-to-end.** Both
+  skeleton pulse (HALT 6.1) and panel slide-in / fade-in (HALT
+  6.3) zero their animation under
+  `@media (prefers-reduced-motion: reduce)`. Same media query
+  block in `cockpit.css` for both, so accessibility setting
+  propagates to every surface uniformly.
+- **Drill-panel by-party section is staged.** Initial skeleton
+  hides the by-party section (we don't know yet if the scope is
+  trackable). After the breakdown returns and indicates
+  trackability, the section reveals with its own 5-row skeleton
+  while the party fetch is in flight. Section-scoped errors
+  (party fetch fails after breakdown succeeds) render a
+  *compact* error tile in the by-party host alone -- hero /
+  trend / by-company stay rendered. Panel-wide errors
+  (breakdown itself fails) replace the entire body.
+
+**Bug discoveries during implementation:**
+
+- **Trust-focus per-company strip masked failures (HALT 6.3
+  carryover 1).** Pre-fix, a failed `get_focused_view` call for a
+  per-company cell silently resolved to `{ net_surplus: 0 }`,
+  rendering as `₹0.00 Cr` -- indistinguishable from a real zero.
+  Production users would see a working-looking cockpit with a
+  silent missing-data hole. Fix: each promise resolves with `ok:
+  false` on error; if any cell fails the strip swaps to a single
+  compact error tile + retry (rest of the focused view stays
+  rendered correctly from the main fetch).
+- **`resolve_match_to_accounts` silently returned empty list for
+  missing predicates (HALT 6.3 carryover 2).** Pre-fix,
+  `match=None` after JSON parse returned 200 + empty accounts.
+  A stale deep-link to a deleted card landed on the gl-drill /
+  party-list page with no scope, hit "no data returned" code
+  path, and showed a generic message. Fix: server raises
+  `frappe.DoesNotExistError` with `malformed_scope: true`; client
+  routes through the new error tile with [Cockpit] button.
+- **MutationObserver race in commit-5 carry-forward.** Already
+  fixed in commit 5 but worth noting commit 6's skeleton wiring
+  benefits from the same `#pivot-grid` observer pattern; no new
+  surface re-introduced the race.
+- **Frappe Desk scroll quirk** (already in user memory from
+  commit 5): `window.scrollTo()` is a no-op on Desk pages.
+  Commit 6's empty-banner placement at the top of focused view
+  doesn't need scroll handling because the all-zero banner
+  inserts before tiles in the existing layout flow.
+
+**Test count:** 178 / 178 green (was 175 before commit 6; +3 new).
+Breakdown: 1 in `test_cards_v1.py` (malformed_scope raise), 1
+documented skip in `test_cards_v1.py` (zero-cards path), 1 in
+`test_account_drill.py` (zero-parties trackable scope returns
+200 + empty). Browser smoke covered the full skeleton / error /
+race-condition / animation matrix at each halt point.
+
+**Cache caveat (single mention):** MCP testing required
+cache-bust gymnastics (dynamic `fetch + eval` of `account_drill.js`,
+`?bust=` query strings on `cockpit.css`) to pick up the new code
+within the same browser session. Real users get fresh assets via
+Frappe's standard asset-versioning path on next page load -- no
+intervention required.
+
+**`tabGL Entry` audit:** none of commit 6's changes introduce new
+`tabGL Entry` reads. Architecture rule preserved.
+
+**Open follow-ups (Phase 5 candidates):**
+
+- Cards-editor backed by `DGV Cockpit Settings` doctype; will
+  unblock the documented-skip `test_get_spotlight_cards_zero_
+  cards_returns_empty_array` test.
+- Migrate `frappe.call` to native `fetch + AbortController` if /
+  when true network-level cancellation becomes a measurable
+  concern (today: invisible to users at single-user click rates).
+- Tile click → drill panel scoped to the tile's root subtree
+  (carried over from commit 5).
+- Per-company strip data inline in `get_focused_view` response
+  (carried over from commit 5).

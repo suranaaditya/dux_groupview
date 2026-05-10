@@ -129,7 +129,26 @@ frappe.pages['gl-drill'].on_page_load = function(wrapper) {
 			</div>
 
 			<section class="dgv-gl-table-wrap" id="dgv-gl-table-wrap">
-				<div class="dgv-gl-skeleton" id="dgv-gl-skeleton">Loading GL entries…</div>
+				<div class="dgv-gl-skeleton" id="dgv-gl-skeleton">
+					${(() => {
+						// 10-row skeleton (commit-6 HALT 6.1 category 2.b).
+						// Reserves the table-row visual rhythm so when
+						// real rows load the page doesn't reflow.
+						let rows = '';
+						for (let i = 0; i < 10; i++) {
+							rows += `
+								<div class="dgv-skeleton-row">
+									<div class="dgv-skeleton-cell narrow"></div>
+									<div class="dgv-skeleton-cell wide"></div>
+									<div class="dgv-skeleton-cell"></div>
+									<div class="dgv-skeleton-cell narrow"></div>
+									<div class="dgv-skeleton-cell right-align"></div>
+								</div>
+							`;
+						}
+						return rows;
+					})()}
+				</div>
 			</section>
 
 		</div>
@@ -141,10 +160,24 @@ frappe.pages['gl-drill'].on_page_load = function(wrapper) {
 
 	const state = parseAll(window.location.search);
 	if (!state.scope) {
-		showError(
-			'Missing scope parameter. Open this page from a drill panel ' +
-			'or account-drill page.'
-		);
+		// Treat as commit-6 HALT 6.2 category (c) "malformed scope" --
+		// the URL doesn't carry a valid scope. Route through the
+		// error-tile helper so the user gets a [Cockpit] button to
+		// recover, not a wall of text.
+		const wrap = document.getElementById('dgv-gl-table-wrap');
+		if (wrap && window.dgvRenderErrorTile) {
+			wrap.innerHTML = '';
+			window.dgvRenderErrorTile(
+				{ status: 404, responseJSON: { malformed_scope: true } },
+				wrap,
+				null
+			);
+		} else {
+			showError(
+				'Missing scope parameter. Open this page from a drill panel ' +
+				'or account-drill page.'
+			);
+		}
 		return;
 	}
 	state.resolvedAccounts = null;
@@ -384,7 +417,23 @@ frappe.pages['gl-drill'].on_page_load = function(wrapper) {
 					const cards = (r && r.message) || [];
 					const card = cards.find(function (c) { return c.card_id === card_id; });
 					if (!card) {
-						showError('Unknown spotlight card: ' + escape(card_id));
+						// Stale deep-link: card_id from URL doesn't
+						// match any known card (commit-6 HALT 6.3
+						// carryover from 6.2 review). Route through
+						// the shared error tile with malformed_scope
+						// so the user gets the [Cockpit] button and
+						// consistent visual treatment, not plain text.
+						const wrap = document.getElementById('dgv-gl-table-wrap');
+						if (wrap && window.dgvRenderErrorTile) {
+							wrap.innerHTML = '';
+							window.dgvRenderErrorTile(
+								{ status: 404, responseJSON: { malformed_scope: true } },
+								wrap,
+								null
+							);
+						} else {
+							showError('Unknown spotlight card: ' + escape(card_id));
+						}
 						resolve();
 						return;
 					}
@@ -925,7 +974,18 @@ frappe.pages['gl-drill'].on_page_load = function(wrapper) {
 				value: state.scope.id,
 			});
 		} else {
-			showError('Could not resolve scope.');
+			// Scope shape is unrecognised -- malformed link.
+			const wrap = document.getElementById('dgv-gl-table-wrap');
+			if (wrap && window.dgvRenderErrorTile) {
+				wrap.innerHTML = '';
+				window.dgvRenderErrorTile(
+					{ status: 404, responseJSON: { malformed_scope: true } },
+					wrap,
+					null
+				);
+			} else {
+				showError('Could not resolve scope.');
+			}
 			return;
 		}
 		if (state.as_of_date) args.as_of_date = state.as_of_date;
@@ -949,10 +1009,18 @@ frappe.pages['gl-drill'].on_page_load = function(wrapper) {
 		$('#dgv-gl-next').prop('disabled', true);
 		$('#dgv-gl-page-info').text('Loading…');
 
+		// Race-condition guard (HALT 6.3 category 4): every page-state
+		// change (sort / page-size / filter / pager) re-enters
+		// fetchAndRender. Without a token, two-quick-clicks could let
+		// the first response paint after the second is initiated.
+		state.fetchToken = (state.fetchToken || 0) + 1;
+		const myToken = state.fetchToken;
+
 		frappe.call({
 			method: 'dux_groupview.dux_groupview.api.gl_drill_v1.get_gl_entries',
 			args: args,
 			callback: function (r) {
+				if (myToken !== state.fetchToken) return; // stale
 				const data = (r && r.message) || null;
 				if (!data) {
 					showError('No data returned from server.');
@@ -960,6 +1028,18 @@ frappe.pages['gl-drill'].on_page_load = function(wrapper) {
 				}
 				state.data = data;
 				renderPage();
+			},
+			error: function (r, xhr) {
+				if (myToken !== state.fetchToken) return; // stale
+				// Replace the GL table with a classified error tile
+				// (commit-6 HALT 6.2). Retry re-fires the same fetch.
+				const wrap = document.getElementById('dgv-gl-table-wrap');
+				if (wrap && window.dgvRenderErrorTile) {
+					wrap.innerHTML = '';
+					window.dgvRenderErrorTile(xhr, wrap, () => fetchAndRender());
+				} else {
+					showError('Could not load GL entries.');
+				}
 			},
 		});
 	}

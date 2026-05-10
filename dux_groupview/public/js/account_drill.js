@@ -24,6 +24,8 @@
 	root.dgvOpenAccountDrillPanel = openPanel;
 	root.dgvCloseAccountDrillPanel = closePanel;
 	root.dgvParseAccountDrillHash = parseDrillUrlParams;
+	root.dgvRenderErrorTile = renderErrorTile;
+	root.dgvClassifyError = classifyError;
 
 	// Component render functions exported so the full page (account_drill.js
 	// inside the new Frappe page) can call them with its own opts.
@@ -53,6 +55,19 @@
 	var panelLastFocus = null;     // element to restore focus to on close
 	var currentRequest = null;     // most-recent open args (for the expand-to-full-page)
 
+	// Race-condition guards (commit-6 HALT 6.3 category 4):
+	//   panelFetchToken -- monotonic counter; every open / close /
+	//     popstate increments it. In-flight callbacks check their
+	//     captured token against the current one and drop stale
+	//     responses (so Card A's fetch can't paint after Card B is
+	//     clicked, and a fetch in progress when the panel closes
+	//     can't run setState-on-unmounted-style code).
+	//   panelInFlightKey -- the request key (card_id || scope JSON)
+	//     of the currently-loading panel. Same-target double-clicks
+	//     return early instead of firing a duplicate fetch.
+	var panelFetchToken = 0;
+	var panelInFlightKey = null;
+
 
 	// =========================================================================
 	// Open / close
@@ -72,6 +87,21 @@
 	 */
 	function openPanel(args) {
 		args = args || {};
+		// Commit-6 HALT 6.3 category 4.c: same-card double-click
+		// returns early. The lock is per-request-key, not global, so
+		// a different card click during a pending fetch DOES fire
+		// (the prior callback is invalidated by the token bump
+		// below, not by the lock).
+		var newKey = computeRequestKey(args);
+		if (panelInFlightKey !== null && panelInFlightKey === newKey) {
+			return;
+		}
+		// Different target (or no in-flight fetch). Bump token so any
+		// prior in-flight callback drops its result; capture the new
+		// key as the in-flight one.
+		panelFetchToken += 1;
+		panelInFlightKey = newKey;
+
 		currentRequest = args;
 		ensurePanelDom();
 		panelLastFocus = document.activeElement;
@@ -81,11 +111,32 @@
 		fetchAndRender(args);
 	}
 
+	function computeRequestKey(args) {
+		// Two card-clicks of the SAME card → same key (lock).
+		// Two pivot-leaf clicks for the same scope → same key.
+		// Different scope or different card → different key.
+		if (args.source === 'card' && args.card_id) {
+			return 'card:' + args.card_id;
+		}
+		if (args.source === 'pivot' && args.scope) {
+			try {
+				return 'pivot:' + JSON.stringify(args.scope);
+			} catch (e) {
+				return 'pivot:' + (args.scope && args.scope.value);
+			}
+		}
+		return 'unknown:' + Math.random();
+	}
+
 	function closePanel() {
 		if (!panelEl) return;
 		panelEl.hidden = true;
 		panelEl.classList.remove('dgv-drill-open');
 		detachKeyHandler();
+		// Bump the token so any callback in flight drops its result
+		// when it arrives (HALT 6.3 category 4.b + 4.d).
+		panelFetchToken += 1;
+		panelInFlightKey = null;
 		// Restore focus to the trigger if it's still in the DOM.
 		if (panelLastFocus && document.body.contains(panelLastFocus)) {
 			try { panelLastFocus.focus(); } catch (e) { /* ignore */ }
@@ -208,22 +259,46 @@
 		titleEl.textContent = title;
 		subEl.textContent = scopeSubLine(args);
 
-		// Reset the sections to skeleton state.
+		// Skeleton state per commit-6 HALT 6.1: real placeholder bars
+		// at the right widths so the panel reserves layout space and
+		// the user sees structured loading instead of a "…" tease.
 		bodyEl.querySelector('.dgv-drill-hero').innerHTML =
-			'<div class="dgv-drill-hero-skeleton">Loading…</div>';
+			'<div class="dgv-drill-hero-skeleton-bars">' +
+				'<div class="dgv-skeleton-line eyebrow"></div>' +
+				'<div class="dgv-skeleton-line tall medium"></div>' +
+				'<div class="dgv-skeleton-line short"></div>' +
+			'</div>';
 		bodyEl.querySelector('.dgv-drill-trend-host').innerHTML =
-			'<div class="dgv-drill-skel-line"></div>';
+			'<div class="dgv-skeleton-line tall"></div>';
 		bodyEl.querySelector('.dgv-drill-company-host').innerHTML =
-			'<div class="dgv-drill-skel-line"></div>' +
-			'<div class="dgv-drill-skel-line"></div>' +
-			'<div class="dgv-drill-skel-line"></div>';
-		// Reset section visibility to defaults (visible by-company,
-		// hidden by-party) — renderDrillData adjusts after data arrives.
+			skeletonRowsHtml(5);
+		// by-party stays hidden during the initial skeleton because we
+		// don't know yet whether the scope is party-trackable. Once
+		// the breakdown call returns, renderDrillData reveals the
+		// section + paints its skeleton if `is_party_trackable=true`,
+		// then renderPartySection swaps in real data (or the empty
+		// banner) when the party_breakdown call resolves.
 		bodyEl.querySelector('.dgv-drill-by-company').hidden = false;
 		bodyEl.querySelector('.dgv-drill-by-party').hidden = true;
 		bodyEl.querySelector('.dgv-drill-party-host').innerHTML = '';
 
 		actionsEl.innerHTML = renderActionBar({ disabled: true });
+	}
+
+	function skeletonRowsHtml(n) {
+		// Table-like rows used by drill panel by-company / by-party
+		// during fetch. Width variance gives the eye a sense of "real
+		// data" rather than a uniform grid.
+		var widths = ['wide', '', 'narrow', 'right-align'];
+		var rows = '';
+		for (var i = 0; i < n; i++) {
+			rows += '<div class="dgv-skeleton-row">';
+			for (var j = 0; j < widths.length; j++) {
+				rows += '<div class="dgv-skeleton-cell ' + widths[j] + '"></div>';
+			}
+			rows += '</div>';
+		}
+		return rows;
 	}
 
 	function scopeSubLine(args) {
@@ -252,6 +327,7 @@
 		// Path 2: pivot leaf row click. We already have a scope object;
 		// pass it to the breakdown API directly.
 		if (args.source === 'card') {
+			var myToken = panelFetchToken;
 			frappe.call({
 				method: 'dux_groupview.dux_groupview.api.cards_v1.resolve_match_to_accounts',
 				args: {
@@ -260,20 +336,43 @@
 					label: args.scope_label || '',
 				},
 				callback: function (r) {
+					if (myToken !== panelFetchToken) return; // stale
 					var accounts = (r && r.message && r.message.accounts) || [];
 					var label = (r && r.message && r.message.label) || args.scope_label || '';
 					if (!accounts.length) {
 						renderEmptyDrill(label, args);
+						panelInFlightKey = null;
 						return;
 					}
+					// Don't release the lock yet -- still fetching the
+					// breakdown. fetchBreakdownByAccounts will release
+					// on its own success / error.
 					fetchBreakdownByAccounts(accounts, label, args);
+				},
+				error: function (r, xhr) {
+					if (myToken !== panelFetchToken) return; // stale
+					panelInFlightKey = null;
+					renderPanelError(xhr, function () { fetchAndRender(args); });
 				},
 			});
 		} else if (args.source === 'pivot') {
 			fetchBreakdownByScope(args);
 		} else {
 			renderEmptyDrill(args.scope_label || '', args);
+			panelInFlightKey = null;
 		}
+	}
+
+	function renderPanelError(xhr, retryFn) {
+		// Replace the whole panel body with a single error tile -- a
+		// failed breakdown invalidates trend, by-company, by-party
+		// alike. Section-scoped errors (e.g., parties fetch only fails)
+		// route through a more targeted handler below.
+		var bodyEl  = panelEl.querySelector('#dgv-drill-body');
+		var actions = panelEl.querySelector('#dgv-drill-actions');
+		bodyEl.innerHTML = '<div id="dgv-drill-error-host"></div>';
+		root.dgvRenderErrorTile(xhr, bodyEl.firstElementChild, retryFn);
+		actions.innerHTML = renderActionBar({ disabled: true });
 	}
 
 	function fetchBreakdownByAccounts(accounts, label, args) {
@@ -284,15 +383,30 @@
 		if (args.as_of_date) apiArgs.as_of_date = args.as_of_date;
 		if (args.companies)  apiArgs.companies = JSON.stringify(args.companies);
 
+		var myToken = panelFetchToken;
 		frappe.call({
 			method: 'dux_groupview.dux_groupview.api.account_drill_v1.get_account_breakdown',
 			args: apiArgs,
 			callback: function (r) {
+				if (myToken !== panelFetchToken) return; // stale
 				var data = (r && r.message) || null;
+				// Release the same-card lock here -- the by-party
+				// follow-up call uses its own token check, but the
+				// "card is loading" affordance ends with the breakdown
+				// arriving.
+				panelInFlightKey = null;
 				renderDrillData(data, args, { accounts: accounts, label: label });
 				if (data && data.is_party_trackable) {
 					fetchPartyBreakdown({ accounts: accounts }, args);
 				}
+			},
+			error: function (r, xhr) {
+				if (myToken !== panelFetchToken) return; // stale
+				panelInFlightKey = null;
+				renderPanelError(xhr, function () {
+					showSkeleton(args);
+					fetchBreakdownByAccounts(accounts, label, args);
+				});
 			},
 		});
 	}
@@ -305,15 +419,26 @@
 		if (args.as_of_date)  apiArgs.as_of_date = args.as_of_date;
 		if (args.companies)   apiArgs.companies = JSON.stringify(args.companies);
 
+		var myToken = panelFetchToken;
 		frappe.call({
 			method: 'dux_groupview.dux_groupview.api.account_drill_v1.get_account_breakdown',
 			args: apiArgs,
 			callback: function (r) {
+				if (myToken !== panelFetchToken) return; // stale
 				var data = (r && r.message) || null;
+				panelInFlightKey = null;
 				renderDrillData(data, args, { scope: args.scope, label: args.scope_label });
 				if (data && data.is_party_trackable) {
 					fetchPartyBreakdown({ scope: args.scope }, args);
 				}
+			},
+			error: function (r, xhr) {
+				if (myToken !== panelFetchToken) return; // stale
+				panelInFlightKey = null;
+				renderPanelError(xhr, function () {
+					showSkeleton(args);
+					fetchBreakdownByScope(args);
+				});
 			},
 		});
 	}
@@ -333,12 +458,39 @@
 		if (args.as_of_date) apiArgs.as_of_date = args.as_of_date;
 		if (args.companies)  apiArgs.companies = JSON.stringify(args.companies);
 
+		var myToken = panelFetchToken;
 		frappe.call({
 			method: 'dux_groupview.dux_groupview.api.party_drill_v1.get_party_breakdown',
 			args: apiArgs,
 			callback: function (r) {
+				if (myToken !== panelFetchToken) return; // stale
 				var data = (r && r.message) || null;
 				renderPartySection(data, args);
+			},
+			error: function (r, xhr) {
+				if (myToken !== panelFetchToken) return; // stale
+				// Section-scoped error: only the by-party host carries
+				// the failure; hero / trend / by-company are already
+				// rendered. Compact tile so it sits inline in the
+				// section without dwarfing the rest of the panel.
+				var host = panelEl.querySelector('.dgv-drill-party-host');
+				var section = panelEl.querySelector('.dgv-drill-by-party');
+				if (!host) return;
+				section.hidden = false;
+				host.innerHTML =
+					'<div class="dgv-section-eyebrow">By party</div>' +
+					'<div id="dgv-drill-party-error-host"></div>';
+				root.dgvRenderErrorTile(
+					xhr,
+					host.querySelector('#dgv-drill-party-error-host'),
+					function () {
+						host.innerHTML =
+							'<div class="dgv-section-eyebrow">By party</div>' +
+							skeletonRowsHtml(5);
+						fetchPartyBreakdown(scopeOrAccounts, args);
+					},
+					{ compact: true }
+				);
 			},
 		});
 	}
@@ -404,18 +556,50 @@
 		});
 		bindActionBar(actions, ctx, args);
 
-		// Party section stays hidden until renderPartySection fills it.
-		// Avoids a brief flash of an empty "By party" header while the
-		// party_breakdown call is in flight.
-		bodyEl.querySelector('.dgv-drill-by-party').hidden = true;
+		// Skeleton → content cross-fade (HALT 6.3 category 5).
+		// Triggered after the host innerHTML is swapped from skeleton
+		// bars to real-data render. force-reflow trick: remove the
+		// class, read offsetHeight, re-add — restarts the CSS
+		// animation so re-renders within the same panel session
+		// re-trigger it.
+		fadeInHost(heroEl);
+		fadeInHost(trendHost);
+		fadeInHost(coHost);
+
+		// Party section: reveal the section + paint a 5-row skeleton
+		// when the breakdown indicates the scope is party-trackable, so
+		// the user sees structured loading during the in-flight
+		// party_breakdown fetch (commit-6 HALT 6.1). When it isn't
+		// trackable, keep the section hidden -- "By party" has no
+		// meaning for, e.g., Cash & Bank.
+		var partySection = bodyEl.querySelector('.dgv-drill-by-party');
+		var partyHost    = bodyEl.querySelector('.dgv-drill-party-host');
+		if (data.is_party_trackable) {
+			partySection.hidden = false;
+			partyHost.innerHTML =
+				'<div class="dgv-section-eyebrow">By party</div>' +
+				skeletonRowsHtml(5);
+		} else {
+			partySection.hidden = true;
+			partyHost.innerHTML = '';
+		}
 	}
 
 	function renderPartySection(data, args) {
 		var section = panelEl.querySelector('.dgv-drill-by-party');
 		var host    = panelEl.querySelector('.dgv-drill-party-host');
+		// Reaching this function implies the scope was deemed party-
+		// trackable by the breakdown call (renderDrillData only fires
+		// fetchPartyBreakdown then). So an empty parties list means
+		// "trackable but zero parties" -- a real empty state worth
+		// surfacing rather than silently hiding the section.
 		if (!data || !data.parties || !data.parties.length) {
-			section.hidden = true;
-			host.innerHTML = '';
+			section.hidden = false;
+			host.innerHTML =
+				'<div class="dgv-section-eyebrow">By party</div>' +
+				'<div class="dgv-empty-inline">' +
+					'No parties with non-zero balance for this scope.' +
+				'</div>';
 			return;
 		}
 		section.hidden = false;
@@ -426,6 +610,19 @@
 			showViewAll: (data.total_parties || 0) > data.parties.length,
 		});
 		bindPartyViewAll(host, args);
+		fadeInHost(host);
+	}
+
+	function fadeInHost(el) {
+		if (!el) return;
+		el.classList.remove('dgv-fade-in');
+		// Force reflow so the animation restarts even if the class was
+		// previously applied. `void el.offsetHeight` is the standard
+		// trick: reading layout-affecting properties forces the browser
+		// to flush style + layout before the next paint.
+		// eslint-disable-next-line no-unused-expressions
+		el.offsetHeight;
+		el.classList.add('dgv-fade-in');
 	}
 
 	function updateHeader(label, args) {
@@ -1244,5 +1441,105 @@
 	}
 
 	function escapeAttr(s) { return escapeHtml(s); }
+
+
+	// =========================================================================
+	// Error tiles (Phase 4 commit 6 HALT 6.2)
+	//
+	// Single source of truth for the four error categories the cockpit
+	// surfaces consistently across cockpit cards, focus mode, drill
+	// panel, GL drill page, and party-list page. Exposed as
+	// `window.dgvRenderErrorTile` so each surface can route its
+	// frappe.call error callback through here.
+	//
+	// Categories:
+	//   network    -- httpStatus 0 / undefined / "Network Error"
+	//   permission -- httpStatus 403
+	//   invalid    -- httpStatus 404 with malformed_scope:true in body
+	//   server     -- httpStatus 5xx (or any other non-2xx fallback)
+	// =========================================================================
+
+	function classifyError(xhrOrErr) {
+		if (!xhrOrErr) {
+			return { category: 'network' };
+		}
+		var status = (typeof xhrOrErr.status === 'number')
+			? xhrOrErr.status
+			: 0;
+		var body = xhrOrErr.responseJSON || null;
+
+		if (status === 0 || status === undefined) {
+			return { category: 'network', status: status };
+		}
+		if (status === 403) {
+			return { category: 'permission', status: status };
+		}
+		if (status === 404 && body && body.malformed_scope) {
+			return { category: 'invalid', status: status };
+		}
+		if (status >= 500) {
+			return { category: 'server', status: status };
+		}
+		// Catch-all: 4xx that isn't 403 / 404+malformed treated as
+		// server-side something-went-wrong (the user can try again).
+		return { category: 'server', status: status };
+	}
+
+	function renderErrorTile(xhrOrErr, hostEl, retryFn, opts) {
+		opts = opts || {};
+		if (!hostEl) return;
+
+		var info = classifyError(xhrOrErr);
+		var category = info.category;
+		var message, actionText, actionFn;
+
+		switch (category) {
+		case 'network':
+			message = 'Could not load this view. Check your connection and retry.';
+			actionText = 'Retry';
+			actionFn = retryFn || null;
+			break;
+		case 'permission':
+			message = "You don't have permission to view this scope. " +
+			          'Contact your administrator.';
+			actionText = null;
+			actionFn = null;
+			break;
+		case 'invalid':
+			message = 'This link is no longer valid. Return to cockpit?';
+			actionText = 'Cockpit';
+			actionFn = function () { window.location.href = '/app/groupview'; };
+			break;
+		case 'server':
+		default:
+			message = 'Something went wrong. Try again or contact support.';
+			actionText = 'Retry';
+			actionFn = retryFn || null;
+			break;
+		}
+
+		var compactClass = opts.compact ? ' dgv-error-compact' : '';
+		var actionHtml = actionText
+			? '<button class="dgv-error-action" type="button">' +
+			  escapeHtml(actionText) + '</button>'
+			: '';
+
+		hostEl.innerHTML =
+			'<div class="dgv-error-tile dgv-error-' + category + compactClass + '"' +
+			' role="alert">' +
+				'<div class="dgv-error-icon" aria-hidden="true">⚠</div>' +
+				'<div class="dgv-error-message">' + escapeHtml(message) + '</div>' +
+				actionHtml +
+			'</div>';
+
+		if (actionFn) {
+			var btn = hostEl.querySelector('.dgv-error-action');
+			if (btn) {
+				btn.addEventListener('click', function () {
+					try { actionFn(); } catch (e) { /* swallow */ }
+				});
+			}
+		}
+	}
 
 })(window);

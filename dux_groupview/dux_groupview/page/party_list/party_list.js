@@ -87,7 +87,23 @@ frappe.pages['party-list'].on_page_load = function(wrapper) {
 			</section>
 
 			<section class="dgv-pl-table-wrap" id="dgv-pl-table-wrap">
-				<div class="dgv-pl-skeleton" id="dgv-pl-skeleton">Loading parties…</div>
+				<div class="dgv-pl-skeleton" id="dgv-pl-skeleton">
+					${(() => {
+						// 8-row skeleton (commit-6 HALT 6.1 category 2.d).
+						let rows = '';
+						for (let i = 0; i < 8; i++) {
+							rows += `
+								<div class="dgv-skeleton-row">
+									<div class="dgv-skeleton-cell wide"></div>
+									<div class="dgv-skeleton-cell narrow"></div>
+									<div class="dgv-skeleton-cell"></div>
+									<div class="dgv-skeleton-cell right-align"></div>
+								</div>
+							`;
+						}
+						return rows;
+					})()}
+				</div>
 			</section>
 
 		</div>
@@ -99,10 +115,23 @@ frappe.pages['party-list'].on_page_load = function(wrapper) {
 
 	const state = parseAll(window.location.search);
 	if (!state.scope) {
-		showError(
-			'Missing scope parameter. Open this page from a drill panel ' +
-			'or account-drill page.'
-		);
+		// commit-6 HALT 6.2 category (c) -- malformed scope; route
+		// through the shared error tile so the user gets a [Cockpit]
+		// button rather than a wall of text.
+		const wrap = document.getElementById('dgv-pl-table-wrap');
+		if (wrap && window.dgvRenderErrorTile) {
+			wrap.innerHTML = '';
+			window.dgvRenderErrorTile(
+				{ status: 404, responseJSON: { malformed_scope: true } },
+				wrap,
+				null
+			);
+		} else {
+			showError(
+				'Missing scope parameter. Open this page from a drill panel ' +
+				'or account-drill page.'
+			);
+		}
 		return;
 	}
 	state.resolvedAccounts = null;
@@ -243,7 +272,21 @@ frappe.pages['party-list'].on_page_load = function(wrapper) {
 					const cards = (r && r.message) || [];
 					const card = cards.find(function (c) { return c.card_id === card_id; });
 					if (!card) {
-						showError('Unknown spotlight card: ' + escape(card_id));
+						// Stale deep-link to a non-existent card --
+						// route through the shared error tile with
+						// malformed_scope so the user gets a [Cockpit]
+						// button (commit-6 HALT 6.3 carryover).
+						const wrap = document.getElementById('dgv-pl-table-wrap');
+						if (wrap && window.dgvRenderErrorTile) {
+							wrap.innerHTML = '';
+							window.dgvRenderErrorTile(
+								{ status: 404, responseJSON: { malformed_scope: true } },
+								wrap,
+								null
+							);
+						} else {
+							showError('Unknown spotlight card: ' + escape(card_id));
+						}
 						resolve();
 						return;
 					}
@@ -282,7 +325,19 @@ frappe.pages['party-list'].on_page_load = function(wrapper) {
 				value: state.scope.id,
 			});
 		} else {
-			showError('Could not resolve scope.');
+			// Malformed scope shape -- route through the shared error
+			// tile so the [Cockpit] button is consistent across pages.
+			const wrap = document.getElementById('dgv-pl-table-wrap');
+			if (wrap && window.dgvRenderErrorTile) {
+				wrap.innerHTML = '';
+				window.dgvRenderErrorTile(
+					{ status: 404, responseJSON: { malformed_scope: true } },
+					wrap,
+					null
+				);
+			} else {
+				showError('Could not resolve scope.');
+			}
 			return;
 		}
 		if (state.as_of_date) args.as_of_date = state.as_of_date;
@@ -292,10 +347,17 @@ frappe.pages['party-list'].on_page_load = function(wrapper) {
 		$('#dgv-pl-next').prop('disabled', true);
 		$('#dgv-pl-page-info').text('Loading…');
 
+		// Race-condition guard (HALT 6.3 category 4): same pattern as
+		// gl_drill. Sort / page-size / pager re-enters fire fresh
+		// fetches; stale responses get dropped on token mismatch.
+		state.fetchToken = (state.fetchToken || 0) + 1;
+		const myToken = state.fetchToken;
+
 		frappe.call({
 			method: 'dux_groupview.dux_groupview.api.party_drill_v1.get_party_breakdown',
 			args: args,
 			callback: function (r) {
+				if (myToken !== state.fetchToken) return; // stale
 				const data = (r && r.message) || null;
 				if (!data) {
 					showError('No data returned from server.');
@@ -303,6 +365,19 @@ frappe.pages['party-list'].on_page_load = function(wrapper) {
 				}
 				state.data = data;
 				renderPage();
+			},
+			error: function (r, xhr) {
+				if (myToken !== state.fetchToken) return; // stale
+				// Replace the party-list table with a classified error
+				// tile (commit-6 HALT 6.2). Retry re-fires the same
+				// fetch.
+				const wrap = document.getElementById('dgv-pl-table-wrap');
+				if (wrap && window.dgvRenderErrorTile) {
+					wrap.innerHTML = '';
+					window.dgvRenderErrorTile(xhr, wrap, () => fetchAndRender());
+				} else {
+					showError('Could not load parties.');
+				}
 			},
 		});
 	}
