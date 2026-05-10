@@ -322,8 +322,9 @@
 }
 
 .rgi-tier-primary .rgi-spotlight-figure {
-	font-family: var(--rgi-font-serif);
-	font-weight: 400;
+	font-family: var(--rgi-font-sans);
+	font-variant-numeric: tabular-nums lining-nums;
+	font-weight: 500;
 }
 .rgi-tier-primary .rgi-spotlight-amount {
 	font-size: 32px;
@@ -335,8 +336,9 @@
 }
 
 .rgi-tier-secondary .rgi-spotlight-figure {
-	font-family: var(--rgi-font-serif);
-	font-weight: 400;
+	font-family: var(--rgi-font-sans);
+	font-variant-numeric: tabular-nums lining-nums;
+	font-weight: 500;
 }
 .rgi-tier-secondary .rgi-spotlight-amount {
 	font-size: 24px;
@@ -809,15 +811,16 @@
 }
 
 .dgv-drill-hero-amount {
-	font-family: var(--rgi-font-serif);
+	font-family: var(--rgi-font-sans);
+	font-variant-numeric: tabular-nums lining-nums;
 	font-size: 36px;
-	font-weight: 400;
+	font-weight: 500;
 	color: var(--rgi-text-primary);
 	line-height: 1;
 }
 
 .dgv-drill-hero-unit {
-	font-family: var(--rgi-font-serif);
+	font-family: var(--rgi-font-sans);
 	font-size: 16px;
 	color: var(--rgi-text-tertiary);
 }
@@ -826,8 +829,8 @@
 .dgv-drill-hero-page .dgv-drill-hero-unit   { font-size: 18px; }
 
 .dgv-drill-hero-delta {
-	font-family: var(--rgi-font-serif);
-	font-style: italic;
+	font-family: var(--rgi-font-sans);
+	font-variant-numeric: tabular-nums lining-nums;
 	font-size: 13px;
 	line-height: 1.3;
 }
@@ -1287,7 +1290,9 @@
 	gap: 4px;
 }
 .dgv-gl-totals-num {
-	font-family: var(--rgi-font-serif);
+	font-family: var(--rgi-font-sans);
+	font-variant-numeric: tabular-nums lining-nums;
+	font-weight: 500;
 	font-size: 32px;
 	font-weight: 600;
 	color: var(--rgi-text-primary);
@@ -2047,7 +2052,8 @@
 	gap: 4px;
 }
 .dgv-pl-totals-num {
-	font-family: var(--rgi-font-serif);
+	font-family: var(--rgi-font-sans);
+	font-variant-numeric: tabular-nums lining-nums;
 	font-size: 32px;
 	font-weight: 600;
 	color: var(--rgi-text-primary);
@@ -2254,6 +2260,431 @@
 	}
 	.dgv-pl-table {
 		min-width: 600px;
+	}
+}
+
+
+/* ===========================================================================
+ * Focus mode (Phase 4 commit 5)
+ *
+ * Single-scope vertical view of the cockpit data. Replaces the pivot grid
+ * + spotlight + headline sections while focus is active; the page header
+ * (logo, scope pill, date, age) is preserved unchanged so the user keeps
+ * orientation. See specs/phase-4-commit-5-focus-mode.md.
+ * ======================================================================== */
+
+.rgi-focus {
+	max-width: 1200px;
+	margin: 0 auto;
+	padding: 24px 32px 48px;
+	font-family: var(--rgi-font-sans);
+	color: var(--rgi-text-primary);
+}
+
+/* --- Banner ---------------------------------------------------------- */
+
+.dgv-focus-header {
+	display: flex;
+	align-items: center;
+	gap: 24px;
+	padding: 16px 0 20px;
+	border-bottom: 1px solid var(--rgi-border);
+	margin-bottom: 24px;
+}
+
+.dgv-focus-exit {
+	background: transparent;
+	border: 1px solid var(--rgi-border);
+	color: var(--rgi-text-primary);
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+	padding: 8px 14px;
+	border-radius: 4px;
+	cursor: pointer;
+	white-space: nowrap;
+	transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.dgv-focus-exit:hover {
+	background: var(--rgi-bg-row-alt);
+	border-color: var(--rgi-text-tertiary);
+}
+
+.dgv-focus-scope {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.dgv-focus-scope-title {
+	font-size: 18px;
+	font-weight: 600;
+}
+
+.dgv-focus-scope-prefix {
+	color: var(--rgi-text-tertiary);
+	font-weight: 400;
+	margin-right: 8px;
+}
+
+.dgv-focus-scope-name {
+	color: var(--rgi-text-primary);
+}
+
+.dgv-focus-scope-sub {
+	font-size: 12px;
+	color: var(--rgi-text-secondary);
+	margin-top: 2px;
+}
+
+.dgv-focus-toolbar {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+}
+
+.dgv-focus-export {
+	background: transparent;
+	border: 1px solid var(--rgi-border);
+	color: var(--rgi-text-primary);
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+	padding: 8px 14px;
+	border-radius: 4px;
+	cursor: pointer;
+}
+
+.dgv-focus-export:hover:not(:disabled) {
+	background: var(--rgi-bg-row-alt);
+}
+
+.dgv-focus-export:disabled {
+	opacity: 0.45;
+	cursor: not-allowed;
+}
+
+.dgv-focus-close {
+	background: transparent;
+	border: 1px solid var(--rgi-border);
+	color: var(--rgi-text-secondary);
+	font-size: 22px;
+	line-height: 1;
+	width: 32px;
+	height: 32px;
+	border-radius: 4px;
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+
+.dgv-focus-close:hover {
+	background: var(--rgi-bg-row-alt);
+	color: var(--rgi-text-primary);
+}
+
+/* --- Summary tiles --------------------------------------------------- */
+
+.dgv-focus-tiles {
+	display: grid;
+	grid-template-columns: repeat(5, 1fr);
+	gap: 16px;
+	margin-bottom: 24px;
+}
+
+.dgv-focus-tile {
+	background: var(--rgi-bg-surface);
+	border: 1px solid var(--rgi-border);
+	border-radius: 6px;
+	padding: 16px 18px;
+}
+
+.dgv-focus-tile-label {
+	font-size: 11px;
+	font-weight: 600;
+	letter-spacing: 0.06em;
+	color: var(--rgi-text-tertiary);
+	margin-bottom: 8px;
+}
+
+.dgv-focus-tile-value {
+	font-family: var(--rgi-font-sans);
+	font-variant-numeric: tabular-nums lining-nums;
+	font-size: 22px;
+	font-weight: 500;
+}
+
+.dgv-focus-tile-positive .dgv-focus-tile-value {
+	color: var(--rgi-text-primary);
+}
+
+.dgv-focus-tile-negative .dgv-focus-tile-value {
+	color: var(--rgi-danger);
+}
+
+.dgv-focus-tile-zero .dgv-focus-tile-value {
+	color: var(--rgi-text-tertiary);
+}
+
+/* --- Per-company strip (trust focus) --------------------------------- */
+
+.dgv-focus-trust-strip {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	padding: 12px;
+	background: var(--rgi-bg-row-alt);
+	border: 1px solid var(--rgi-border);
+	border-radius: 6px;
+	margin-bottom: 24px;
+}
+
+.dgv-focus-strip-cell {
+	flex: 0 0 auto;
+	min-width: 140px;
+	padding: 8px 12px;
+	background: var(--rgi-bg-surface);
+	border: 1px solid var(--rgi-border-light);
+	border-radius: 4px;
+	cursor: pointer;
+	transition: border-color 0.12s ease, transform 0.05s ease;
+}
+
+.dgv-focus-strip-cell:hover {
+	border-color: var(--rgi-text-tertiary);
+	transform: translateY(-1px);
+}
+
+.dgv-focus-strip-name {
+	font-size: 11px;
+	color: var(--rgi-text-secondary);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	max-width: 200px;
+}
+
+.dgv-focus-strip-value {
+	font-family: var(--rgi-font-sans);
+	font-variant-numeric: tabular-nums lining-nums;
+	font-size: 15px;
+	font-weight: 500;
+	margin-top: 2px;
+}
+
+.dgv-focus-strip-positive .dgv-focus-strip-value { color: var(--rgi-text-primary); }
+.dgv-focus-strip-negative .dgv-focus-strip-value { color: var(--rgi-danger); }
+.dgv-focus-strip-zero     .dgv-focus-strip-value { color: var(--rgi-text-tertiary); }
+
+/* --- Account hierarchy table ----------------------------------------- */
+
+.dgv-focus-accounts {
+	background: var(--rgi-bg-surface);
+	border: 1px solid var(--rgi-border);
+	border-radius: 6px;
+	overflow: hidden;
+}
+
+.dgv-focus-table {
+	width: 100%;
+	border-collapse: collapse;
+	font-size: 13px;
+}
+
+.dgv-focus-table thead th {
+	background: var(--rgi-bg-row-alt);
+	border-bottom: 1px solid var(--rgi-border);
+	color: var(--rgi-text-tertiary);
+	font-size: 11px;
+	font-weight: 600;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	padding: 10px 16px;
+	text-align: left;
+}
+
+.dgv-focus-th-balance {
+	text-align: right !important;
+}
+
+.dgv-focus-table tbody tr {
+	border-bottom: 1px solid var(--rgi-border-light);
+}
+
+.dgv-focus-table tbody tr:last-child {
+	border-bottom: none;
+}
+
+.dgv-focus-table td {
+	padding: 8px 16px;
+	color: var(--rgi-text-primary);
+}
+
+.dgv-focus-row-group td {
+	font-weight: 600;
+	color: var(--rgi-text-primary);
+	background: var(--rgi-bg-row-alt);
+}
+
+.dgv-focus-row-leaf td {
+	font-weight: 400;
+}
+
+.dgv-focus-row-leaf {
+	cursor: pointer;
+	transition: background 0.08s ease;
+}
+
+.dgv-focus-row-leaf:hover {
+	background: var(--rgi-bg-row-alt);
+}
+
+.dgv-focus-account {
+	display: table-cell;
+}
+
+.dgv-focus-chevron,
+.dgv-focus-chevron-spacer {
+	display: inline-block;
+	width: 16px;
+	color: var(--rgi-text-tertiary);
+	font-size: 10px;
+	margin-right: 4px;
+}
+
+.dgv-focus-account-name {
+	color: var(--rgi-text-primary);
+}
+
+.dgv-focus-type {
+	color: var(--rgi-text-secondary);
+	font-size: 12px;
+}
+
+.dgv-focus-balance {
+	text-align: right;
+	font-family: var(--rgi-font-mono);
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+}
+
+.dgv-focus-negative {
+	color: var(--rgi-danger);
+}
+
+.dgv-focus-empty,
+.dgv-focus-loading,
+.dgv-focus-error {
+	padding: 32px;
+	text-align: center;
+	color: var(--rgi-text-secondary);
+	font-size: 14px;
+}
+
+.dgv-focus-error {
+	color: var(--rgi-danger);
+}
+
+/* --- "Focus →" trigger button injected on pivot column headers ------ */
+
+.dgv-focus-trigger {
+	display: inline-block;
+	margin-left: 8px;
+	padding: 2px 8px;
+	font-size: 10px;
+	line-height: 1.3;
+	font-weight: 500;
+	font-family: var(--rgi-font-sans);
+	color: var(--rgi-text-secondary);
+	background: var(--rgi-bg-surface);
+	border: 1px solid var(--rgi-border);
+	border-radius: 3px;
+	cursor: pointer;
+	opacity: 0.7;
+	transition: opacity 0.12s ease, background 0.12s ease, border-color 0.12s ease;
+	white-space: nowrap;
+	vertical-align: middle;
+}
+
+/* Brighten on header hover and on direct focus. */
+.pivot-trust-head:hover .dgv-focus-trigger,
+.pivot-company-head:hover .dgv-focus-trigger,
+.dgv-focus-trigger:focus,
+.dgv-focus-trigger:hover {
+	opacity: 1;
+}
+
+.dgv-focus-trigger:hover {
+	background: var(--rgi-bg-row-alt);
+	border-color: var(--rgi-text-tertiary);
+	color: var(--rgi-text-primary);
+}
+
+/* Trust Focus button: inherits the default `.dgv-focus-trigger`
+ * dark-text-on-light styling. Originally over-styled white-on-trust-
+ * colour expecting the trust band to be a deep coloured background;
+ * the band is actually cream (--rgi-bg-row-alt) so white-on-white
+ * was nearly invisible. The badge to the left (`.pivot-trust-abbr`)
+ * is the colour-coded element; the Focus button stays neutral. */
+
+/* Company columns are narrow (~120px) and their names typically
+ * truncate already -- an inline button beside the name would push
+ * the name off-screen. Stack the trigger below the name on a fresh
+ * line, centred in the column. */
+.dgv-focus-trigger-company {
+	display: block;
+	margin: 4px auto 0;
+	font-size: 9px;
+	padding: 1px 6px;
+}
+
+/* Trust selector locked state (during trust focus). */
+.dgv-scope-pill.dgv-locked {
+	opacity: 0.55;
+	cursor: not-allowed;
+	pointer-events: none;
+}
+
+/* When focus mode is active on the body, prevent accidental clicks on
+ * cockpit elements that may not be visible but still capture pointer
+ * events at edge cases (e.g. transition lag). */
+body.dgv-focus-active .rgi-tb,
+body.dgv-focus-active .rgi-spotlight,
+body.dgv-focus-active .rgi-headline {
+	pointer-events: none;
+}
+
+/* --- Responsive: stack tiles vertically at narrow viewport ----------- */
+
+@media (max-width: 800px) {
+	.rgi-focus {
+		padding: 16px 16px 32px;
+	}
+	.dgv-focus-header {
+		flex-wrap: wrap;
+		gap: 12px;
+	}
+	.dgv-focus-toolbar {
+		flex: 1 1 100%;
+		justify-content: flex-end;
+	}
+	.dgv-focus-tiles {
+		grid-template-columns: 1fr;
+		gap: 8px;
+	}
+	.dgv-focus-tile-value {
+		font-size: 18px;
+	}
+	.dgv-focus-trust-strip {
+		flex-direction: column;
+	}
+	.dgv-focus-strip-cell {
+		min-width: 100%;
+	}
+	.dgv-focus-accounts {
+		overflow-x: auto;
+	}
+	.dgv-focus-table {
+		min-width: 480px;
 	}
 }
 

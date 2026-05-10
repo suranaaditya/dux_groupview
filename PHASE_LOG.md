@@ -1041,3 +1041,239 @@ read snapshot tables only. Architecture rule preserved.
   `N_accounts > 20 OR N_companies > 5`).
 - The unrelated `vehicle_no` migrate block on dev -- fix separately
   before next prod rollout.
+
+
+## Phase 4 — Commit 5 — Focus mode (company + trust)
+
+**Status:** Done -- 2026-05-10. Branch `phase-4-drills` (single
+bundled commit covering HALT 5.1 spec + 5.2 endpoint + 5.3 UI +
+5.4 CSV export of the master commit-5 sequence).
+
+**Goal:** Give the cockpit a single-scope vertical view that answers
+"show me everything inside this one company / trust at full account
+depth" -- distinct from the cockpit pivot's wide cross-company view.
+Click a `Focus →` button on a company column header or trust group
+header in the pivot; the cockpit reflows into a banner + 5 summary
+tiles + (for trust focus) a per-company strip + an indented account
+hierarchy. Read-only reflow of existing snapshot data; no new
+doctypes, no schema changes.
+
+**Deliverables:**
+- [x] `api/focus_v1.py` -- new whitelisted `get_focused_view(scope_type,
+  scope_value, as_of_date)` and `export_focused_view_csv(...)`. Reads
+  `tabDGV TB Snapshot Row` joined to `tabAccount` only -- no
+  `tabGL Entry` access, per spec §4.5 / CLAUDE.md hard rule 1.
+- [x] `tests/test_focus.py` -- new file, 12 tests across 7 classes
+  (shape, ordering, depth, trust resolution, trust aggregation,
+  validation, sign convention, tile invariants, CSV columns + raw
+  decimals + sub-rupee filter).
+- [x] `page/groupview/groupview.js` -- ~620 new lines: focus banner +
+  tile rendering + per-company strip + account hierarchy table +
+  drill-panel integration + URL handling + popstate + pivot-header
+  `Focus →` button injection (via MutationObserver on `#pivot-grid`).
+  Trust-selector behaviour amended for focus mode (lock during trust
+  focus, auto-exit on change during company focus).
+- [x] `public/css/cockpit.css` -- ~420 new lines for focus mode UI:
+  banner, 5-tile grid, per-company strip, account table with
+  depth-padded rows, `Focus →` triggers (always-visible at idle
+  opacity 0.7/0.85, fully visible on hover; company triggers
+  stacked below name to fit narrow columns), responsive breakpoint
+  at ≤800px.
+- [x] `specs/phase-4-commit-5-focus-mode.md` (v0.1 + asymmetry
+  amendment). Already committed at `3f884c3` and `5e6b75a` in the
+  spec-evolution sequence preserved on the branch.
+- [x] Suite at 175 / 175 green (was 163 before commit 5; +12 new).
+
+**Spec evolution (visible in git log):**
+
+| Version | Commit  | Driver |
+|---------|---------|--------|
+| v0.1    | 3f884c3 | Initial draft + 6 questions resolved (5 from brief + Q6 emerged at drafting) |
+| v0.1.1  | 5e6b75a | EXPLAIN-criterion amendment: aggregation-query carve-out + stock-table asymmetry note |
+
+**Halt-point cadence (visible in commit hashes between halts):**
+
+- HALT 5.1 -- Spec sign-off. v0.1 + 6 resolved questions. Trigger
+  mechanism (explicit `Focus →` button, not single-click); trust
+  visual model (aggregated body + per-company strip); always-full
+  depth (depth control hidden during focus); 5 fixed tiles; snapshot-
+  only reads with empirical EXPLAIN check; drill panel from leaf row.
+- HALT 5.2 -- Server endpoint + tests + EXPLAIN. `get_focused_view`
+  returns scope, summary tiles, accounts list ordered by lft.
+  Sign-flip via `FLIP_ROOT_TYPES` from `api/utils.py` (single source
+  of truth). Trust resolution via `pivot.trust_groups.TRUSTS`.
+  9 server tests passing.
+- HALT 5.3 -- Page implementation + UI + browser verification.
+  Both flavours render correctly; drill panel inherits focused
+  scope; auto-exit on trust-selector change during company focus
+  works; trust selector locks during trust focus.
+- HALT 5.4 -- CSV export + final tests + commit prep. CSV columns:
+  Account, Root Type, Depth, Balance. Sub-rupee leaf filter. 3 new
+  tests for shape, raw decimals, sub-rupee. Total +12 tests.
+
+**Architectural decisions:**
+
+- **Snapshot-only reads** -- no `tabGL Entry` access in focus_v1.
+  The cockpit pivot already serves this data shape via
+  `get_pivot_data`; focus mode is a reflow at request time, not a
+  deeper read. Sidesteps the GL-drill partition discussion entirely
+  (CLAUDE.md hard rule 1 unmodified).
+- **Dedicated endpoint, not pivot reuse.** Master spec §4.4 sketched
+  reusing `get_pivot_data` with `companies=[<one>]`; v0.1 instead
+  introduces `get_focused_view`. Cleaner separation, lets tile
+  aggregation happen server-side in one round-trip rather than
+  client computing tiles from a pivot payload.
+- **URL query params, not hash.** Master spec §4.4 said hash
+  (`#focus_company=`); v0.1 picks `?focus=` / `?focus_trust=`.
+  Matches cockpit's existing URL state, copy-paste shareable, server
+  can read them on direct-URL entry.
+- **5 fixed tiles, not configurable.** Master spec §4.4 listed 4
+  (Assets, Liabilities, Net surplus, Cash & bank); v0.1 uses 5
+  symmetric P&L+BS top-lines (Assets, Liabilities, Income, Expenses,
+  Net Surplus). Cash & bank dropped because it's already a
+  spotlight card -- duplicating felt redundant. Configurability
+  deferred to Phase 5 alongside the spotlight-card editor.
+- **CSV columns: Account, Root Type, Depth, Balance.** The brief's
+  initial column list included Currency; dropped in spec drafting
+  because every snapshot row in scope is INR for RGI -- column
+  adds noise without info. Replaced with Depth (int) which enables
+  Excel outline grouping. Balance is raw decimal (no Indian
+  grouping) consistent with commit 4 CSV exports.
+- **EXPLAIN criterion: aggregation-query carve-out.** Spec
+  amendment `5e6b75a` after empirical measurement at HALT 5.2.
+  Tile query (4-row aggregation by root_type) trips
+  `Using temporary; Using filesort` against `tabDGV TB Snapshot Row`
+  but cost is microseconds at production scale (~9K rows × 4
+  groups). Adding a composite index `(snapshot_date, company,
+  root_type)` would eliminate it but add write cost to every
+  snapshot refresh -- bad trade. Accepted per spec §9.2 amendment.
+  Also: criterion applies only to our own snapshot table;
+  `tabAccount`-side temp/filesort on the accounts query is
+  accepted (CLAUDE.md hard rule 2 forbids index changes there).
+- **Sub-rupee filter on CSV leaves only.** Commit 3.1 convention
+  applied: leaves with `abs(balance) < 1` dropped. Group rows
+  pass through regardless because they aggregate subtree balances
+  (their own row may legitimately be zero even when the subtree
+  has activity). Pinned by
+  `test_export_focused_view_csv_excludes_subrupee_leaf_rows`.
+- **Trust-selector behaviour split** (spec §8.5). Trust focus
+  locks the selector; company focus leaves it live but auto-exits
+  focus mode when the selector changes. Reasoning: trust selector
+  is cockpit-level state; if a user changes it while focused on a
+  company that may not even belong to the new trust, the on-screen
+  state would be incoherent. Auto-exit keeps the interaction model
+  clean.
+
+**Bugs caught + fixed during implementation:**
+
+- **`has_children` wrong for trust focus.** Initial implementation
+  computed `has_children` from `MAX(rgt) - MIN(lft) > 1`. For trust
+  focus across N companies, each company's nested-set has its own
+  (lft, rgt) range -- `MAX(rgt) - MIN(lft)` straddles unrelated
+  ranges and falsely returns True even on true leaves. Surfaced via
+  HALT 5.2 smoke testing on Trust=GHREMF showing `Debtors` with
+  `is_group=False, has_children=True`. Fixed by computing
+  `has_children` from the response's own `parent_account` graph (a
+  row is a parent iff some other row names it). Pinned by
+  `test_get_focused_view_trust_has_children_only_for_groups`.
+- **MutationObserver missed initial pivot render.** Observer first
+  attached to `#pivot-head`, but pivot grid lazily creates its
+  `<thead>` only after the first `frappe.call` returns -- so
+  `wireFocusModeChrome` ran before `pivot-head` existed and the
+  observer was never attached. Fixed by watching the always-present
+  `#pivot-grid` container's subtree.
+- **Drill panel scope value mismatch.** Initial leaf-row click
+  passed the full company-suffixed name (`Debtors - GHRPSP`); the
+  pivot drill convention is the stripped form (`Debtors`). Fixed
+  to match the existing pivot-drill contract.
+- **`Focus →` button discoverability.** v0.1 had `opacity: 0` at
+  idle and `opacity: 1` on hover -- effectively invisible. User
+  feedback during HALT 5.3 review: "where is the focus button?".
+  Bumped to `opacity: 0.7` / `0.85` at idle, fully opaque on hover.
+  Company triggers stacked below the name (display:block) because
+  inline placement next to truncated company names didn't fit.
+- **Frappe Desk scroll quirk.** `window.scrollTo()` is a no-op on
+  Desk pages -- the actual scroll container is internal to the
+  desk chrome, not `window`/`documentElement`. Fixed by switching
+  to `Element.scrollIntoView({block: 'start'})` which walks up the
+  DOM to find whichever ancestor is the actual scroller. Captured
+  in user memory for future sessions.
+- **Tile aggregation EXPLAIN regression.** First version of the
+  summary-tile query JOINed `tabAccount` for `root_type`; the
+  EXPLAIN tripped on the JOIN side. Rewrote to read `r.root_type`
+  directly from the snapshot row (already populated at refresh
+  time). Filesort/temporary still appears (no index covers the
+  GROUP BY column) but cost is microseconds; accepted per the
+  amendment above.
+
+**Test count:** 175 / 175 green (108 + 67 across the two test
+categories). +12 from the 163 baseline at end of commit 4: 8 from
+the brief's planned test list + 1 regression test for the
+`has_children` bug + 3 CSV tests at HALT 5.4.
+
+**`tabGL Entry` audit:** `grep -rn "tabGL Entry" focus_v1.py
+test_focus.py` returns zero matches. Architecture rule preserved.
+
+**Synthetic seed artefact note:** RGI-DEMO seed produces a
+non-realistic balance sheet shape. Trust focus on GHREMF shows
+Net Surplus = -₹500.68 Cr (Income ₹222 Cr - Expenses ₹723 Cr); a
+real audited TB would not have this signature. Surfaced during
+browser verification; **not a focus-mode bug**, just a property of
+the augmented synthetic data. Production data on
+`ghraisoni.frappe.cloud` will show realistic shapes.
+
+**Polish round during commit 5 review (bundled into this commit):**
+
+Surfaced during browser verification, addressed before push so the
+final commit ships a coherent visual language across all card
+surfaces, not a focus-mode that diverges from the rest.
+
+- **Card figure typography across the dashboard.** The cockpit's
+  numeric values were rendering in Georgia oldstyle figures
+  (text figures with descending `4`/`7`/`9` and short `1`) --
+  editorial typography that read as informal in a financial cockpit.
+  Switched the figure-rendering selectors to `var(--rgi-font-sans)`
+  (Geist) with `font-variant-numeric: tabular-nums lining-nums`.
+  Selectors changed (CSS-only, no test impact):
+    - `.rgi-tier-primary .rgi-spotlight-figure` (Phase 2)
+    - `.rgi-tier-secondary .rgi-spotlight-figure` (Phase 2)
+    - `.dgv-drill-hero-amount` / `.dgv-drill-hero-unit` /
+      `.dgv-drill-hero-delta` (Phase 4 commit 3)
+    - `.dgv-gl-totals-num` (Phase 4 commit 4)
+    - `.dgv-pl-totals-num` (Phase 4 commit 4)
+    - `.dgv-focus-tile-value` / `.dgv-focus-strip-value` (commit 5)
+  Editorial elements (taglines, headline prose, "First reported
+  this month", trial-balance heading + subtitle, footer
+  confidential notice) deliberately keep the serif -- those are
+  prose, not figures.
+- **Trust `Focus →` button visibility fix.** Initial styling
+  assumed the trust band background was navy and used white-on-
+  trust-colour. The band is actually cream
+  (`var(--rgi-bg-row-alt)`), so the button rendered white-on-
+  white -- nearly invisible. Aditya called this out: "i get the
+  focus view of one company but how to get this view"
+  (referring to trust focus). Dropped the trust-specific override
+  so the trust button inherits the same neutral dark-text-on-light
+  styling as the per-company buttons. Trust focus entry is now
+  discoverable at a glance.
+
+**Open follow-ups (Phase 5 candidates):**
+
+- Per-company strip data inline in `get_focused_view` response
+  (currently fanned out client-side via parallel `frappe.call`
+  per company; works for ≤13-company trusts but a future trust
+  with many more companies should serve the data inline).
+- Configurable summary tiles backed by a doctype editor (bundled
+  with the spotlight-card editor planned for Phase 5).
+- Tile click → drill panel scoped to the tile's root subtree
+  (out of scope for v1 per spec §2 non-goals).
+- Period comparison column ("vs last quarter" / "vs last year")
+  on rows + tiles.
+- Sticky last-focus across page reloads (per-user pref).
+- "Wide" CSV export for trust focus that includes per-company
+  columns alongside the aggregated balance.
+- A composite index `(snapshot_date, company, root_type)` on
+  `tabDGV TB Snapshot Row` would eliminate the tile query's
+  temp/filesort -- not warranted at current scale, but the
+  threshold for "warranted" is somewhere; revisit after 6 months
+  of production data on a trust with 20+ companies.

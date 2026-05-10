@@ -15,6 +15,39 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 			Synthetic preview data — not for distribution
 		</div>
 
+		<section class="rgi-focus" id="rgi-focus" hidden aria-label="Focused view">
+			<header class="dgv-focus-header">
+				<button type="button" class="dgv-focus-exit"
+				        id="dgv-focus-exit"
+				        aria-label="Back to cockpit">
+					← Back to cockpit
+				</button>
+				<div class="dgv-focus-scope">
+					<div class="dgv-focus-scope-title">
+						<span class="dgv-focus-scope-prefix">Focusing:</span>
+						<span class="dgv-focus-scope-name" id="dgv-focus-scope-name"></span>
+					</div>
+					<div class="dgv-focus-scope-sub" id="dgv-focus-scope-sub"></div>
+				</div>
+				<div class="dgv-focus-toolbar">
+					<button type="button" class="dgv-focus-export"
+					        id="dgv-focus-export"
+					        title="Download the focused view as CSV">
+						Export CSV
+					</button>
+					<button type="button" class="dgv-focus-close"
+					        id="dgv-focus-close"
+					        aria-label="Exit focus mode">
+						×
+					</button>
+				</div>
+			</header>
+
+			<div class="dgv-focus-tiles" id="dgv-focus-tiles"></div>
+			<div class="dgv-focus-trust-strip" id="dgv-focus-trust-strip" hidden></div>
+			<div class="dgv-focus-accounts" id="dgv-focus-accounts"></div>
+		</section>
+
 		<div class="dgv-cockpit-shell" id="dgv-cockpit-shell">
 
 			<header class="rgi-header" role="banner">
@@ -141,6 +174,14 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 	let scopeTrustAbbrs = [];        // abbreviations of the trusts in scope (for caption)
 	let trustList = [];              // cached trust definitions from get_scope_options
 
+	// Focus mode (Phase 4 commit 5). null = cockpit pivot view; an
+	// object means focus mode is active. depthBeforeFocus stashes the
+	// pre-entry depth so exit restores it (per spec §4.3 / §7.1).
+	// pivotHeaderObserver re-injects "Focus →" buttons when pivot
+	// re-renders headers (e.g. on trust collapse/expand or depth change).
+	let focusMode = null;            // {type: 'company'|'trust', value, depthBeforeFocus}
+	let pivotHeaderObserver = null;
+
 	bootstrap();
 	checkSyntheticPreview();
 
@@ -202,6 +243,15 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 			loadHeadline(currentDate);
 			loadPivot(currentDate);
 			wirePivotControls();
+			wireFocusModeChrome();
+
+			// Direct-URL entry: a /app/groupview?focus=GHRCE link boots
+			// straight into focus mode after the cockpit's normal load
+			// (so the underlying state is intact for exit). Per spec §3.3.
+			const focusFromUrl = parseFocusFromUrl();
+			if (focusFromUrl) {
+				enterFocusMode(focusFromUrl.type, focusFromUrl.value, true);
+			}
 
 			if (agePollHandle) clearInterval(agePollHandle);
 			agePollHandle = setInterval(() => loadAge(currentDate), 30000);
@@ -225,6 +275,14 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 				scopeCompanies = isAll ? null : selected;
 				saveScopeToStorage(scopeCompanies);
 				updateScopeCaption(trustList);
+				// Spec §8.5: trust selector during company focus auto-
+				// exits focus mode (the focused company may no longer be
+				// in the new trust scope, leaving the focus banner
+				// incoherent). Trust focus is locked, so this branch
+				// never fires for trust focus.
+				if (focusMode && focusMode.type === 'company') {
+					exitFocusMode(false);
+				}
 				dimAffectedSections(true);
 				loadCards(currentDate);
 				loadHeadline(currentDate);
@@ -232,6 +290,7 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 			},
 			onCancel: function() { /* selector handles state */ },
 		});
+		applyFocusModeToTrustSelector();
 	}
 
 	function dimAffectedSections(on) {
@@ -814,5 +873,569 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 	function escape(s) {
 		if (s === null || s === undefined) return '';
 		return frappe.utils.escape_html(String(s));
+	}
+
+	// =====================================================================
+	// Focus mode (Phase 4 commit 5)
+	// =====================================================================
+	//
+	// Triggered by:
+	//   - "Focus →" button on a company column header → company focus
+	//   - "Focus →" button on a trust group header     → trust focus
+	//   - Direct URL with ?focus=<co> or ?focus_trust=<trust>
+	//
+	// Reads from the new api.focus_v1.get_focused_view endpoint (snapshot
+	// only, no GL Entry access). Renders 5 summary tiles, an account
+	// hierarchy at full depth, and (for trust focus) a per-company strip.
+	// Account-row clicks open the existing drill panel.
+	//
+	// State: `focusMode` is null (cockpit) or {type, value, depthBeforeFocus}.
+	// Pre-focus depth is restored on exit.
+
+	function parseFocusFromUrl() {
+		try {
+			const params = new URLSearchParams(window.location.search);
+			const focusTrust = params.get('focus_trust');
+			const focus = params.get('focus');
+			// Mutually exclusive per spec §5; prefer trust on conflict.
+			if (focusTrust && focus) {
+				console.warn('[dux_groupview] focus and focus_trust both present; using focus_trust');
+				return { type: 'trust', value: focusTrust };
+			}
+			if (focusTrust) return { type: 'trust', value: focusTrust };
+			if (focus) return { type: 'company', value: focus };
+		} catch (e) { /* IE-no-URLSearchParams; surface nothing */ }
+		return null;
+	}
+
+	function buildFocusUrl(type, value) {
+		const params = new URLSearchParams(window.location.search);
+		params.delete('focus');
+		params.delete('focus_trust');
+		if (type === 'trust') params.set('focus_trust', value);
+		else if (type === 'company') params.set('focus', value);
+		const qs = params.toString();
+		return window.location.pathname + (qs ? '?' + qs : '');
+	}
+
+	function buildExitUrl() {
+		const params = new URLSearchParams(window.location.search);
+		params.delete('focus');
+		params.delete('focus_trust');
+		const qs = params.toString();
+		return window.location.pathname + (qs ? '?' + qs : '');
+	}
+
+	function buildFocusedViewCsvUrl(scopeType, scopeValue, asOfDate) {
+		const base = '/api/method/dux_groupview.dux_groupview.api.focus_v1.export_focused_view_csv';
+		const params = new URLSearchParams({
+			scope_type: scopeType,
+			scope_value: scopeValue,
+			as_of_date: asOfDate,
+		});
+		return `${base}?${params.toString()}`;
+	}
+
+	function enterFocusMode(scopeType, scopeValue, fromUrl) {
+		focusMode = {
+			type: scopeType,
+			value: scopeValue,
+			depthBeforeFocus: depthSetting,
+		};
+
+		// pushState only when the entry was user-initiated (a button
+		// click). Direct-URL entry: the URL already matches; skip
+		// pushState so back-button doesn't bounce to a phantom
+		// pre-cockpit state.
+		if (!fromUrl) {
+			try {
+				history.pushState(
+					{ focus: { type: scopeType, value: scopeValue } },
+					'',
+					buildFocusUrl(scopeType, scopeValue)
+				);
+			} catch (e) { /* swallow */ }
+		}
+
+		applyFocusModeToCockpit(true);
+		applyFocusModeToTrustSelector();
+		loadFocusedView(scopeType, scopeValue);
+
+		// Scroll to the top of the focused view. Frappe Desk pages
+		// scroll inside an internal container -- not window/documentElement
+		// -- so window.scrollTo(0, 0) is a no-op here. scrollIntoView
+		// walks up the DOM to find whichever ancestor is the actual
+		// scroller, so it works regardless of the desk's chrome.
+		const focusEl = document.getElementById('rgi-focus');
+		if (focusEl) focusEl.scrollIntoView({ block: 'start', behavior: 'auto' });
+	}
+
+	function exitFocusMode(viaPopState) {
+		if (!focusMode) return;
+		const restored = focusMode.depthBeforeFocus;
+
+		focusMode = null;
+
+		if (!viaPopState) {
+			// User clicked × or back-to-cockpit. Drop focus params from
+			// URL via replaceState so we don't add a redundant history
+			// entry. (pushState would mean the next back-button press
+			// re-enters focus mode -- confusing.)
+			try {
+				history.replaceState(
+					{},
+					'',
+					buildExitUrl()
+				);
+			} catch (e) { /* swallow */ }
+		}
+
+		// Restore the pre-focus depth (per spec §4.3 / §7.1).
+		depthSetting = restored;
+		saveDepthToStorage(depthSetting);
+		syncDepthButtons();
+		if (pivotGrid) pivotGrid.setDepth(depthSetting);
+
+		applyFocusModeToCockpit(false);
+		applyFocusModeToTrustSelector();
+
+		// Drop the user back at the trial balance section so they land
+		// near where they came from (the pivot column they clicked
+		// Focus on). Exact-pixel restoration would require capturing
+		// the desk's internal scroll container's scrollTop on entry --
+		// out of scope; scrollIntoView on rgi-tb is close enough for v1.
+		// requestAnimationFrame defers until rgi-tb has laid out.
+		window.requestAnimationFrame(() => {
+			const tb = document.querySelector('.rgi-tb');
+			if (tb) tb.scrollIntoView({ block: 'start', behavior: 'auto' });
+		});
+	}
+
+	function applyFocusModeToCockpit(focused) {
+		// Hide cockpit body sections during focus; show focus container.
+		// Header (logo + scope pill + date + age) stays visible always
+		// per spec §7.1.
+		const $headline = $('#rgi-headline');
+		const $spotlight = $('#rgi-spotlight');
+		const $tb = $('.rgi-tb');
+		const $focus = $('#rgi-focus');
+
+		if (focused) {
+			$headline.attr('data-was-hidden', $headline.prop('hidden') ? '1' : '0');
+			$headline.prop('hidden', true);
+			$spotlight.prop('hidden', true);
+			$tb.prop('hidden', true);
+			$focus.prop('hidden', false);
+			$('body').addClass('dgv-focus-active');
+		} else {
+			// Restore: headline only un-hides if it was visible before.
+			const headlineWasHidden = $headline.attr('data-was-hidden') === '1';
+			$headline.prop('hidden', !!headlineWasHidden);
+			$headline.removeAttr('data-was-hidden');
+			$spotlight.prop('hidden', false);
+			$tb.prop('hidden', false);
+			$focus.prop('hidden', true);
+			$('body').removeClass('dgv-focus-active');
+		}
+	}
+
+	function applyFocusModeToTrustSelector() {
+		// Spec §8.5:
+		//   trust focus -> selector LOCKED (greyed, tooltip)
+		//   company focus -> selector LIVE (auto-exit on change handled
+		//                    in mountTrustSelector callback)
+		//   no focus -> selector LIVE
+		const $pill = $('#dgv-scope-pill');
+		if (focusMode && focusMode.type === 'trust') {
+			$pill.prop('disabled', true)
+			     .attr('aria-disabled', 'true')
+			     .attr('title', 'Trust selector locked in focus mode')
+			     .addClass('dgv-locked');
+		} else {
+			$pill.prop('disabled', false)
+			     .removeAttr('aria-disabled')
+			     .removeAttr('title')
+			     .removeClass('dgv-locked');
+		}
+	}
+
+	function loadFocusedView(scopeType, scopeValue) {
+		// Skeleton state.
+		const $tiles = $('#dgv-focus-tiles').html(
+			'<div class="dgv-focus-loading">Loading…</div>'
+		);
+		$('#dgv-focus-trust-strip').prop('hidden', true).empty();
+		$('#dgv-focus-accounts').empty();
+
+		frappe.call({
+			method: 'dux_groupview.dux_groupview.api.focus_v1.get_focused_view',
+			args: {
+				scope_type: scopeType,
+				scope_value: scopeValue,
+				as_of_date: currentDate,
+			},
+			callback: function(r) {
+				if (!r || !r.message) {
+					$tiles.html(
+						'<div class="dgv-focus-error">Unable to load focused view.</div>'
+					);
+					return;
+				}
+				renderFocusedView(r.message);
+			},
+			error: function() {
+				$tiles.html(
+					'<div class="dgv-focus-error">Unable to load focused view.</div>'
+				);
+			},
+		});
+	}
+
+	function renderFocusedView(payload) {
+		// Update banner labels.
+		const isTrust = payload.scope.type === 'trust';
+		$('#dgv-focus-scope-name').text(payload.scope.value);
+		const coCount = (payload.scope.companies || []).length;
+		const sub = isTrust
+			? `${coCount} ${coCount === 1 ? 'company' : 'companies'} · as of ${formatDateLong(payload.as_of_date)}`
+			: `as of ${formatDateLong(payload.as_of_date)}`;
+		$('#dgv-focus-scope-sub').text(sub);
+
+		// Tiles.
+		renderFocusTiles(payload.summary_tiles);
+
+		// Per-company strip (trust focus only).
+		if (isTrust) {
+			renderFocusTrustStrip(payload);
+			$('#dgv-focus-trust-strip').prop('hidden', false);
+		} else {
+			$('#dgv-focus-trust-strip').prop('hidden', true).empty();
+		}
+
+		// Accounts table.
+		renderFocusAccounts(payload.accounts || [], payload.scope.companies);
+	}
+
+	function renderFocusTiles(tiles) {
+		const order = [
+			['ASSETS',      'assets',      tiles.assets],
+			['LIABILITIES', 'liabilities', tiles.liabilities],
+			['INCOME',      'income',      tiles.income],
+			['EXPENSES',    'expenses',    tiles.expenses],
+			['NET SURPLUS', 'net_surplus', tiles.net_surplus],
+		];
+		const $row = $('#dgv-focus-tiles').empty();
+		order.forEach(([label, key, value]) => {
+			const v = Number(value) || 0;
+			const klass = v > 0 ? 'dgv-focus-tile-positive'
+			           : v < 0 ? 'dgv-focus-tile-negative'
+			           : 'dgv-focus-tile-zero';
+			$row.append(`
+				<div class="dgv-focus-tile ${klass}" data-tile-key="${escape(key)}">
+					<div class="dgv-focus-tile-label">${escape(label)}</div>
+					<div class="dgv-focus-tile-value">${escape(formatTileValue(v))}</div>
+				</div>
+			`);
+		});
+	}
+
+	function renderFocusTrustStrip(payload) {
+		// HALT 5.2's get_focused_view does not yet return per-company
+		// breakdowns inline (per the brief: "Companies list returned in
+		// response so UI can render the per-company strip"). For HALT
+		// 5.3 we render company-name pills for each company in the
+		// trust; per-company balance is fetched in HALT 5.4 along with
+		// CSV export, OR resolved lazily here via per-company calls.
+		//
+		// To stay within HALT 5.3's scope and avoid blocking on a HALT
+		// 5.2 response-shape change, we kick off one
+		// get_focused_view(company) call per company in the trust and
+		// render the Net Surplus contribution per company. Cost is
+		// bounded (≤13 companies × <400ms = <5s end-to-end, parallelised
+		// via Promise.all so wall-clock is one round-trip).
+		const $strip = $('#dgv-focus-trust-strip').empty();
+		const companies = payload.scope.companies || [];
+		if (!companies.length) return;
+
+		// Loading placeholders so the strip occupies space immediately.
+		companies.forEach(co => {
+			$strip.append(`
+				<div class="dgv-focus-strip-cell" data-company="${escape(co)}">
+					<div class="dgv-focus-strip-name">${escape(co)}</div>
+					<div class="dgv-focus-strip-value">…</div>
+				</div>
+			`);
+		});
+
+		// Click handler to swap to per-company focus.
+		$strip.off('click.dgv-focus').on('click.dgv-focus',
+			'.dgv-focus-strip-cell', function() {
+				const co = $(this).data('company');
+				if (!co) return;
+				exitFocusMode(false);
+				enterFocusMode('company', String(co), false);
+			});
+
+		// Fetch per-company net surplus in parallel.
+		const promises = companies.map(co => new Promise((resolve) => {
+			frappe.call({
+				method: 'dux_groupview.dux_groupview.api.focus_v1.get_focused_view',
+				args: {
+					scope_type: 'company',
+					scope_value: co,
+					as_of_date: currentDate,
+				},
+				callback: (r) => {
+					const ns = (r && r.message && r.message.summary_tiles &&
+					            r.message.summary_tiles.net_surplus) || 0;
+					resolve({ company: co, net_surplus: ns });
+				},
+				error: () => resolve({ company: co, net_surplus: 0 }),
+			});
+		}));
+
+		Promise.all(promises).then(results => {
+			results.forEach(({ company, net_surplus }) => {
+				const v = Number(net_surplus) || 0;
+				const klass = v > 0 ? 'dgv-focus-strip-positive'
+				           : v < 0 ? 'dgv-focus-strip-negative'
+				           : 'dgv-focus-strip-zero';
+				const $cell = $strip.find(
+					`.dgv-focus-strip-cell[data-company="${cssEscape(company)}"]`
+				);
+				$cell.addClass(klass);
+				$cell.find('.dgv-focus-strip-value').text(formatTileValue(v));
+			});
+		});
+	}
+
+	function renderFocusAccounts(accounts, companies) {
+		const $body = $('#dgv-focus-accounts').empty();
+		if (!accounts.length) {
+			$body.append(`
+				<div class="dgv-focus-empty">
+					No data for this date.
+				</div>
+			`);
+			return;
+		}
+		const $table = $(`
+			<table class="dgv-focus-table">
+				<thead>
+					<tr>
+						<th class="dgv-focus-th-account">Account</th>
+						<th class="dgv-focus-th-type">Type</th>
+						<th class="dgv-focus-th-balance">Balance</th>
+					</tr>
+				</thead>
+				<tbody></tbody>
+			</table>
+		`);
+		const $tbody = $table.find('tbody');
+		accounts.forEach(a => {
+			const depth = Math.max(0, Number(a.depth) || 0);
+			const padPx = 12 + depth * 12;
+			const isGroup = !!a.is_group;
+			const value = Number(a.balance) || 0;
+			const klass = isGroup ? 'dgv-focus-row-group' : 'dgv-focus-row-leaf';
+			const balanceCell = isGroup
+				? '<td class="dgv-focus-balance"></td>'
+				: `<td class="dgv-focus-balance ${value < 0 ? 'dgv-focus-negative' : ''}">${escape(formatRupeesIndianLocal(value))}</td>`;
+			const $row = $(`
+				<tr class="${klass}"
+				    data-account-name="${escape(a.account_name)}"
+				    data-full-name="${escape(a.name)}">
+					<td class="dgv-focus-account" style="padding-left: ${padPx}px;">
+						${a.has_children ? '<span class="dgv-focus-chevron">▾</span>' : '<span class="dgv-focus-chevron-spacer"></span>'}
+						<span class="dgv-focus-account-name">${escape(a.account_name)}</span>
+					</td>
+					<td class="dgv-focus-type">${escape(a.root_type || '')}</td>
+					${balanceCell}
+				</tr>
+			`);
+			$tbody.append($row);
+		});
+		$body.append($table);
+
+		// Wire leaf-row click → drill panel. The drill panel's
+		// `scope.value` is the stripped `account_name` form (matches
+		// the pivot's existing drill-from-row contract); the
+		// `_resolve_scope_to_leaves` helper resolves it back to full
+		// company-suffixed names via JOIN against tabAccount.
+		$body.off('click.dgv-focus-drill').on('click.dgv-focus-drill',
+			'tr.dgv-focus-row-leaf', function() {
+				const acctName = $(this).data('account-name');
+				if (!acctName) return;
+				if (!window.dgvOpenAccountDrillPanel) return;
+				window.dgvOpenAccountDrillPanel({
+					source: 'pivot',
+					scope: { type: 'account', value: acctName },
+					scope_label: acctName,
+					as_of_date: currentDate,
+					companies: companies,
+				});
+			});
+	}
+
+	function formatTileValue(rupees) {
+		// Respects the cockpit's current format setting. Crore (default),
+		// Lakh, Full (Indian-grouped raw), Plain (Indian-grouped raw -
+		// same shape as Full at this level). Negatives render with a
+		// leading Unicode minus sign; the terracotta tile colour
+		// reinforces the sign visually.
+		const v = Number(rupees) || 0;
+		const sign = v < 0 ? '−' : '';
+		const abs = Math.abs(v);
+		if (formatSetting === 'crore') {
+			return `₹${sign}${(abs / 10000000).toFixed(2)} Cr`;
+		}
+		if (formatSetting === 'lakh') {
+			return `₹${sign}${(abs / 100000).toFixed(2)} L`;
+		}
+		// 'full' or 'plain' -> Indian grouping
+		return `₹${sign}${formatRupeesIndianLocal(abs)}`;
+	}
+
+	function formatRupeesIndianLocal(value) {
+		// Mirrors pivot_grid.js's formatIndian (Indian thousands grouping
+		// with 2 decimal places). Inlined here so the focus rendering
+		// has zero coupling to the pivot's internals.
+		const v = Number(value) || 0;
+		if (v === 0) return '0.00';
+		const abs = Math.abs(v).toFixed(2);
+		const [whole, decimal] = abs.split('.');
+		const lastThree = whole.slice(-3);
+		const rest = whole.slice(0, -3);
+		const restWithCommas = rest
+			? rest.replace(/\B(?=(\d{2})+(?!\d))/g, ',')
+			: '';
+		const formatted = restWithCommas
+			? `${restWithCommas},${lastThree}.${decimal}`
+			: `${lastThree}.${decimal}`;
+		return v < 0 ? `(${formatted})` : formatted;
+	}
+
+	function cssEscape(s) {
+		// CSS.escape isn't in older browsers; fall back to a basic
+		// quoting for attribute selectors. Conservative: only quote a
+		// minimal character set used in company / trust names.
+		if (window.CSS && typeof window.CSS.escape === 'function') {
+			return window.CSS.escape(String(s));
+		}
+		return String(s).replace(/(["\\])/g, '\\$1');
+	}
+
+	// ---------------------------------------------------------------------
+	// Focus-mode chrome wiring (banner buttons, popstate, header injection)
+	// ---------------------------------------------------------------------
+
+	function wireFocusModeChrome() {
+		// Exit affordances.
+		$('#dgv-focus-exit, #dgv-focus-close').off('click.dgv-focus-exit')
+			.on('click.dgv-focus-exit', function() { exitFocusMode(false); });
+
+		// CSV export. Browser-level navigation triggers the download
+		// directly because the endpoint sets type=binary +
+		// content-disposition (see _set_csv_response).
+		$('#dgv-focus-export').off('click.dgv-focus-export')
+			.on('click.dgv-focus-export', function() {
+				if (!focusMode) return;
+				window.location.href = buildFocusedViewCsvUrl(
+					focusMode.type, focusMode.value, currentDate
+				);
+			});
+
+		// Browser back: if the prior entry was the cockpit, popstate
+		// arrives with state===null (or our own pre-focus snapshot).
+		// Either way, we want to drop into cockpit view. We also want
+		// pushState/forward to re-enter focus.
+		window.addEventListener('popstate', function() {
+			const fromUrl = parseFocusFromUrl();
+			if (fromUrl && !focusMode) {
+				enterFocusMode(fromUrl.type, fromUrl.value, true);
+			} else if (!fromUrl && focusMode) {
+				exitFocusMode(true);
+			} else if (fromUrl && focusMode &&
+			           (fromUrl.type !== focusMode.type ||
+			            fromUrl.value !== focusMode.value)) {
+				// Forward/back across two different focus URLs.
+				exitFocusMode(true);
+				enterFocusMode(fromUrl.type, fromUrl.value, true);
+			}
+		});
+
+		// Watch the pivot container for re-renders so we can re-inject
+		// "Focus →" buttons. The pivot grid lazily creates its <thead>
+		// only after the first frappe.call returns, so attaching to
+		// #pivot-head directly would race the initial render. Watching
+		// the always-present #pivot-grid container's subtree catches
+		// the initial mount AND every subsequent re-render (trust
+		// collapse/expand, depth change, full refresh).
+		const containerEl = document.getElementById('pivot-grid');
+		if (containerEl && window.MutationObserver) {
+			if (pivotHeaderObserver) pivotHeaderObserver.disconnect();
+			pivotHeaderObserver = new MutationObserver(() => injectFocusButtons());
+			pivotHeaderObserver.observe(containerEl, {
+				childList: true,
+				subtree: true,
+			});
+		}
+		// Initial inject (covers the case where the pivot is already
+		// rendered before this wiring runs).
+		injectFocusButtons();
+	}
+
+	function injectFocusButtons() {
+		// Idempotent: skip a th that already has a button.
+		const headEl = document.getElementById('pivot-head');
+		if (!headEl) return;
+
+		// Trust headers: only when the trust is expanded (colspan > 1).
+		// Collapsed trusts show as a 1-col abbr badge -- not enough
+		// space for the Focus button, and the user typically expands
+		// before focusing.
+		headEl.querySelectorAll('.pivot-trust-head').forEach(el => {
+			if (el.querySelector('.dgv-focus-trigger')) return;
+			const colspan = parseInt(el.getAttribute('colspan') || '1', 10);
+			if (colspan <= 1) return;
+			const trustId = el.getAttribute('data-trust-id') || '';
+			const trust = (trustList || []).find(
+				t => String(t.id) === String(trustId)
+			);
+			if (!trust) return;
+			const btn = document.createElement('button');
+			btn.type = 'button';
+			btn.className = 'dgv-focus-trigger dgv-focus-trigger-trust';
+			btn.textContent = 'Focus →';
+			btn.title = 'View this trust at full depth';
+			btn.setAttribute('data-focus-type', 'trust');
+			btn.setAttribute('data-focus-value', trust.name || trust.id);
+			btn.addEventListener('click', function(e) {
+				e.stopPropagation();
+				enterFocusMode('trust', trust.name || trust.id, false);
+			});
+			el.appendChild(btn);
+		});
+
+		// Company headers: simpler. The company name is in the title
+		// attribute (set by pivot_grid._renderHeader at line ~278).
+		headEl.querySelectorAll('.pivot-company-head').forEach(el => {
+			if (el.classList.contains('pivot-collapsed-cell')) return;
+			if (el.querySelector('.dgv-focus-trigger')) return;
+			const company = el.getAttribute('title') || el.textContent.trim();
+			if (!company) return;
+			const btn = document.createElement('button');
+			btn.type = 'button';
+			btn.className = 'dgv-focus-trigger dgv-focus-trigger-company';
+			btn.textContent = 'Focus →';
+			btn.title = 'View this company at full depth';
+			btn.setAttribute('data-focus-type', 'company');
+			btn.setAttribute('data-focus-value', company);
+			btn.addEventListener('click', function(e) {
+				e.stopPropagation();
+				enterFocusMode('company', company, false);
+			});
+			el.appendChild(btn);
+		});
 	}
 };
