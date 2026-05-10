@@ -590,6 +590,24 @@ table, same indexed columns, narrower predicate (one company or one
 trust's companies vs the cockpit's all-allowed list). Expected
 outcome: same plan, same index. If reality diverges, halt.
 
+**Asymmetry note** (added at HALT 5.2 sign-off, after empirical
+EXPLAIN measurement). This strict criterion applies to ROW-FETCH
+queries where filesort cost scales with result size. For AGGREGATION
+queries that reduce N rows to a small fixed number of group rows
+(e.g., the 4-row tile summary by `root_type`), the criterion is
+empirical: pass if cost is sub-ms at production scale. The tile
+query for trust focus passes empirically (~9K rows × 4 groups =
+microseconds; no measurable user-visible impact). Adding a composite
+index `(snapshot_date, company, root_type)` to `tabDGV TB Snapshot
+Row` would eliminate the temp/filesort but add write cost to every
+snapshot refresh — bad trade for a non-problem.
+
+Additionally: this criterion applies only to `tabDGV TB Snapshot
+Row` (which we own). Stock ERPNext tables (`tabAccount` in
+particular) are out of scope for index changes per CLAUDE.md hard
+rule 2. `tabAccount`-side temp/filesort on the accounts query is
+accepted.
+
 ## 10. Tests
 
 ### 10.1 Server-side (new file `tests/test_focused_view.py`)
