@@ -831,31 +831,213 @@
 
 
 	// =========================================================================
-	// Stubs (commit 4 will wire these for real)
+	// Action handlers (commit 4 wired these from stubs)
 	// =========================================================================
+	// Function names retained so the window.dgvDrill exports + bindActionBar/
+	// bindPartyViewAll wirings keep working without renames. stubExportCsv
+	// and stubViewAllParties stay stubbed -- HALT 2 wires CSV; HALT 3 wires
+	// the party-list page.
 
 	function stubGlDrill(ctx, args) {
-		console.log('[dux_groupview] View GL entries clicked', { ctx: ctx, args: args });
-		frappe.show_alert({
-			message: 'GL drill coming in commit 4.',
-			indicator: 'blue',
-		}, 4);
+		// Both call sites land here:
+		//   - Panel:    args = currentRequest shape (source/card_id/
+		//               scope-as-{type,value}/companies/as_of_date)
+		//   - Page:     args = page state shape (scope:{kind,id}/
+		//               companies/as_of_date)
+		// buildGlDrillUrl handles both shapes.
+		var url = buildGlDrillUrl(args);
+		window.location.href = url;
 	}
 
 	function stubExportCsv(ctx, args) {
-		console.log('[dux_groupview] Export CSV clicked', { ctx: ctx, args: args });
-		frappe.show_alert({
-			message: 'CSV export coming in commit 4.',
-			indicator: 'blue',
-		}, 4);
+		// HALT 2 wired: navigate to the export endpoint, browser
+		// handles the file download via Content-Disposition: attachment.
+		// `ctx.accounts` (when present, from card-resolved scopes) and
+		// `currentRequest`/page-state args together carry the scope
+		// info; buildAccountBreakdownCsvUrl normalizes both shapes.
+		var url = buildAccountBreakdownCsvUrl(ctx, args);
+		if (!url) {
+			frappe.show_alert({
+				message: 'Could not build export URL — scope is unresolvable.',
+				indicator: 'red',
+			}, 4);
+			return;
+		}
+		window.location.href = url;
 	}
 
 	function stubViewAllParties(args) {
-		console.log('[dux_groupview] View all parties clicked', { args: args });
-		frappe.show_alert({
-			message: 'Full party list coming in commit 4.',
-			indicator: 'blue',
-		}, 4);
+		// HALT 4 wired: navigate to /app/party-list with the same
+		// scope shape as the panel/page is currently viewing. Click
+		// happens from either the panel's "View all parties" link
+		// (via bindPartyViewAll) or the account-drill full page's
+		// matching link -- both pass the page-state-shaped args
+		// object that buildPartyListUrl handles below.
+		var url = buildPartyListUrl(args);
+		if (!url) {
+			frappe.show_alert({
+				message: 'Could not build party-list URL — scope is unresolvable.',
+				indicator: 'red',
+			}, 4);
+			return;
+		}
+		window.location.href = url;
+	}
+
+	/**
+	 * Build /app/party-list?scope=...&as_of=...&companies=...
+	 *
+	 * Per HALT 4 spec: cross-scope navigation, so NO filter params
+	 * carry over (party-list page doesn't have HALT 2.5-style
+	 * filters yet anyway; future Phase 5 may add).
+	 *
+	 * Two arg shapes (mirror of buildGlDrillUrl):
+	 *   - Panel:    args = currentRequest with {source, card_id,
+	 *               scope:{type,value}, scope_label, as_of_date,
+	 *               companies}
+	 *   - Page:     args = page state with {scope:{kind,id},
+	 *               as_of_date, companies, resolvedAccounts}
+	 */
+	function buildPartyListUrl(args) {
+		var params = [];
+		if (args.source === 'card' && args.card_id) {
+			params.push('scope=' + encodeURIComponent(args.card_id));
+		} else if (args.source === 'pivot' && args.scope &&
+		           args.scope.value) {
+			var prefix = (args.scope.type === 'subtree')
+				? 'subtree:' : 'account:';
+			params.push('scope=' + encodeURIComponent(prefix + args.scope.value));
+		} else if (args.scope && args.scope.kind && args.scope.id) {
+			if (args.scope.kind === 'card') {
+				params.push('scope=' + encodeURIComponent(args.scope.id));
+			} else {
+				params.push('scope=' + encodeURIComponent(
+					args.scope.kind + ':' + args.scope.id));
+			}
+		} else {
+			return null;
+		}
+		if (args.as_of_date) {
+			params.push('as_of=' + encodeURIComponent(args.as_of_date));
+		}
+		if (args.companies && args.companies.length) {
+			params.push('companies=' + encodeURIComponent(args.companies.join(',')));
+		}
+		return '/app/party-list' + (params.length ? '?' + params.join('&') : '');
+	}
+
+	/**
+	 * Build /app/gl-drill?scope=...&as_of=...&companies=... from either
+	 * a panel-args object (source/card_id/scope-as-{type,value}) or a
+	 * page-state object (scope:{kind,id}). Mirrors the URL contract
+	 * the page reads via window.dgvParseAccountDrillHash.
+	 *
+	 * No page/page_size/sort emitted -- the GL page chooses defaults
+	 * from its own toolbar on first load and pushes its own URL state
+	 * thereafter. Linking with a forced sort/page would surprise the
+	 * user (their toolbar would show that state on every visit from
+	 * this entry point).
+	 *
+	 * **HALT 2.5 — DO NOT emit filter params here.** This helper is
+	 * called from cross-scope navigation paths (panel → GL page,
+	 * account-drill page → GL page). Per filter spec §5 amendment 3,
+	 * filters are per-scope and reset on cross-scope navigation.
+	 * The receiving GL page parses the URL, finds no filter params,
+	 * and renders with default (empty) filter state. If a future
+	 * call site needs to carry filters across scopes, it should NOT
+	 * be added to this helper -- it should use a different entry
+	 * point with explicit naming so the cross-scope-reset semantic
+	 * stays visible in the URL contract.
+	 */
+	function buildGlDrillUrl(args) {
+		var params = [];
+		// Panel shape: source + card_id (card path) OR
+		// source + scope-as-{type,value} (pivot path).
+		if (args.source === 'card' && args.card_id) {
+			params.push('scope=' + encodeURIComponent(args.card_id));
+		} else if (args.source === 'pivot' && args.scope &&
+		           args.scope.value) {
+			var prefix = (args.scope.type === 'subtree')
+				? 'subtree:' : 'account:';
+			params.push('scope=' + encodeURIComponent(prefix + args.scope.value));
+		}
+		// Page-state shape: scope:{kind,id}.
+		else if (args.scope && args.scope.kind && args.scope.id) {
+			if (args.scope.kind === 'card') {
+				params.push('scope=' + encodeURIComponent(args.scope.id));
+			} else {
+				params.push('scope=' + encodeURIComponent(
+					args.scope.kind + ':' + args.scope.id));
+			}
+		}
+		if (args.as_of_date) {
+			params.push('as_of=' + encodeURIComponent(args.as_of_date));
+		}
+		if (args.companies && args.companies.length) {
+			params.push('companies=' + encodeURIComponent(args.companies.join(',')));
+		}
+		return '/app/gl-drill' + (params.length ? '?' + params.join('&') : '');
+	}
+
+	/**
+	 * Build the URL that downloads the account-breakdown CSV. Targets
+	 * the whitelisted endpoint directly; browser handles the download
+	 * via Content-Disposition: attachment from the server response.
+	 *
+	 * Two arg shapes (matching how stubExportCsv is called):
+	 *   - Panel: ctx = { scope?, label?, accounts? } from
+	 *            renderDrillData; args = currentRequest with
+	 *            { source, card_id, scope, scope_label, as_of_date,
+	 *              companies }.
+	 *   - Page:  ctx = { label }; args = page state with
+	 *            { scope: {kind, id}, as_of_date, companies,
+	 *              resolvedAccounts } (the page resolves card scopes
+	 *            to leaves before binding the export button).
+	 *
+	 * Prefer pre-resolved `accounts` over `scope` when available --
+	 * cheaper for the server (no card-resolution round-trip) and lets
+	 * card-driven exports work even if the card definition changes
+	 * mid-session (URL captures a frozen leaf list).
+	 */
+	function buildAccountBreakdownCsvUrl(ctx, args) {
+		var qs = [];
+		// Prefer resolved accounts list -- ctx.accounts (panel)
+		// or args.resolvedAccounts (page).
+		var resolved = (ctx && ctx.accounts)
+			|| (args && args.resolvedAccounts)
+			|| null;
+		if (Array.isArray(resolved) && resolved.length) {
+			qs.push('accounts=' + encodeURIComponent(JSON.stringify(resolved)));
+			var label = (ctx && ctx.label) || (args && args.scope_label)
+				|| (args && args.scope && args.scope.value)
+				|| (args && args.scope && args.scope.id) || '';
+			if (label) qs.push('scope_label=' + encodeURIComponent(label));
+		}
+		// Otherwise fall back to ScopeSpec dict for {account, subtree} kinds.
+		else if (args && args.scope && args.scope.value) {
+			qs.push('scope=' + encodeURIComponent(JSON.stringify({
+				type: args.scope.type, value: args.scope.value,
+			})));
+			if (args.scope_label) {
+				qs.push('scope_label=' + encodeURIComponent(args.scope_label));
+			}
+		} else if (args && args.scope && args.scope.kind && args.scope.id
+		           && args.scope.kind !== 'card') {
+			qs.push('scope=' + encodeURIComponent(JSON.stringify({
+				type: args.scope.kind, value: args.scope.id,
+			})));
+		} else {
+			// No usable scope info -- caller should have shown an alert.
+			return null;
+		}
+		if (args && args.as_of_date) {
+			qs.push('as_of_date=' + encodeURIComponent(args.as_of_date));
+		}
+		if (args && args.companies && args.companies.length) {
+			qs.push('companies=' + encodeURIComponent(JSON.stringify(args.companies)));
+		}
+		return '/api/method/dux_groupview.dux_groupview.api.account_drill_v1.export_account_breakdown_csv?'
+			+ qs.join('&');
 	}
 
 

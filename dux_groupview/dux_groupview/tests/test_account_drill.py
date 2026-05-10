@@ -364,3 +364,102 @@ class TestAccountDrillFixtureBalances(FrappeTestCase):
 		)
 		summed = round(sum(r["value"] for r in out["by_company"]), 2)
 		self.assertAlmostEqual(out["group_total"], summed, places=2)
+
+
+# ---------------------------------------------------------------------------
+# CSV export -- export_account_breakdown_csv (HALT 2)
+# ---------------------------------------------------------------------------
+
+class TestExportAccountBreakdownCsv(FrappeTestCase):
+	"""HALT 2: per-(company, account) breakdown CSV export.
+
+	The endpoint sets `frappe.local.response` and returns None. Tests
+	read the response back and parse the CSV body.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		cls.state = setup_fixture()
+
+	@classmethod
+	def tearDownClass(cls):
+		teardown_fixture()
+		super().tearDownClass()
+
+	def _payable_leaves(self):
+		return [
+			self.state["accounts"][c]["payable"]
+			for c in self.state["companies"]
+		]
+
+	def _invoke_export(self):
+		"""Call the endpoint and return the captured CSV body string.
+
+		Resets `frappe.local.response` before / after so other tests
+		aren't polluted.
+		"""
+		# Snapshot prior response state (the fixture-base class doesn't
+		# touch it but other tests in the suite may).
+		original = dict(getattr(frappe.local, "response", {}))
+		try:
+			frappe.local.response = frappe._dict()
+			account_drill_v1.export_account_breakdown_csv(
+				accounts=self._payable_leaves(),
+				scope_label="FXT Payable",
+				as_of_date=str(FIXTURE_AS_OF_DATE),
+				companies=self.state["companies"],
+			)
+			content = frappe.local.response.get("filecontent") or b""
+			filename = frappe.local.response.get("filename") or ""
+			rtype = frappe.local.response.get("type") or ""
+			body = content.decode("utf-8") if isinstance(content, bytes) else str(content)
+			return body, filename, rtype
+		finally:
+			frappe.local.response = frappe._dict(original)
+
+	def test_export_account_breakdown_csv_columns(self):
+		"""Header row matches the HALT 2 spec: Company, Account, Balance, Currency."""
+		body, filename, rtype = self._invoke_export()
+		self.assertEqual(rtype, "binary")
+		# Filename pattern: account_breakdown_<slug>_<as_of>_<HHMMSS>.csv
+		self.assertTrue(filename.startswith("account_breakdown_"),
+		                msg=f"unexpected filename: {filename}")
+		self.assertTrue(filename.endswith(".csv"),
+		                msg=f"unexpected filename: {filename}")
+		# First non-empty line is the header.
+		lines = [ln for ln in body.splitlines() if ln]
+		self.assertTrue(lines, msg="CSV body unexpectedly empty")
+		self.assertEqual(lines[0], "Company,Account,Balance,Currency")
+		# Body has at least one data row -- fixture has 3 payable
+		# accounts with non-zero balance.
+		self.assertGreaterEqual(len(lines), 2, msg="expected >= 1 data row")
+
+	def test_export_account_breakdown_csv_raw_decimals_NOT_indian_grouped(self):
+		"""Balance cells contain raw decimals like '500000.00', NOT
+		Indian-grouped strings like '5,00,000.00' or '5,00,000'.
+
+		The locked spec position: CSV is data-interchange; presentation
+		formatting (Indian grouping, currency symbols) belongs in the
+		rendered UI, not in cells. Spreadsheet apps numerically-type
+		raw decimal cells; pre-formatted strings would import as text
+		and break sum/filter/pivot.
+		"""
+		import csv as _csv
+		import io as _io
+		body, _, _ = self._invoke_export()
+		reader = _csv.reader(_io.StringIO(body))
+		rows = list(reader)
+		# Skip header
+		data_rows = rows[1:]
+		self.assertTrue(data_rows, msg="expected at least one data row")
+		for row in data_rows:
+			balance_cell = row[2]
+			# Raw decimal: parses as float without commas
+			self.assertNotIn(",", balance_cell,
+				msg=f"Balance cell {balance_cell!r} contains a comma -- looks Indian-grouped")
+			# Must parse as float
+			try:
+				float(balance_cell)
+			except ValueError:
+				self.fail(f"Balance cell {balance_cell!r} does not parse as a float")

@@ -1263,3 +1263,997 @@
 		background: #FFFFFF !important;
 	}
 }
+
+
+/* ===========================================================================
+ * GL drill page — Phase 4 commit 4 HALT 1
+ * Reuses the .dgv-drill-page-breadcrumb and .dgv-drill-page-hero classes
+ * from account-drill page. New CSS below scopes everything else under
+ * .dgv-gl-page.
+ * ======================================================================== */
+
+.dgv-gl-page {
+	background: var(--rgi-bg-page);
+	color: var(--rgi-text-secondary);
+	font-family: var(--rgi-font-sans);
+	min-height: 100vh;
+	padding-bottom: 48px;
+}
+
+.dgv-gl-totals {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-end;
+	gap: 4px;
+}
+.dgv-gl-totals-num {
+	font-family: var(--rgi-font-serif);
+	font-size: 32px;
+	font-weight: 600;
+	color: var(--rgi-text-primary);
+	line-height: 1;
+}
+.dgv-gl-totals-label {
+	font-family: var(--rgi-font-sans);
+	font-size: 11px;
+	letter-spacing: 0.05em;
+	text-transform: uppercase;
+	color: var(--rgi-text-tertiary);
+}
+.dgv-gl-party-chip {
+	margin-top: 6px;
+	background: #EAE3D2;
+	color: var(--rgi-text-primary);
+	font-family: var(--rgi-font-sans);
+	font-size: 12px;
+	padding: 4px 8px 4px 10px;
+	border-radius: 12px;
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+}
+.dgv-gl-party-clear {
+	background: transparent;
+	border: none;
+	color: var(--rgi-text-secondary);
+	font-size: 14px;
+	line-height: 1;
+	cursor: pointer;
+	padding: 0 2px;
+}
+.dgv-gl-party-clear:hover { color: var(--rgi-danger); }
+
+
+/* Banners (fanout + truncation) ----------------------------------------- */
+
+.dgv-gl-banner {
+	margin: 0 32px 12px;
+	padding: 10px 14px;
+	border-radius: 4px;
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+	background: #F5EBD8;
+	color: var(--rgi-text-primary);
+	border-left: 3px solid var(--rgi-amber);
+}
+.dgv-gl-banner-truncated {
+	background: #F5DCDA;
+	border-left-color: var(--rgi-danger);
+}
+.dgv-gl-banner[hidden] { display: none; }
+
+
+/* Toolbar --------------------------------------------------------------- */
+
+.dgv-gl-toolbar {
+	margin: 0 32px 12px;
+	padding: 12px 14px;
+	background: var(--rgi-bg-surface);
+	border: 1px solid var(--rgi-border);
+	border-radius: 4px;
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	gap: 16px;
+	flex-wrap: wrap;
+}
+.dgv-gl-toolbar-left,
+.dgv-gl-toolbar-right {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+}
+.dgv-gl-toolbar-field {
+	display: inline-flex;
+	flex-direction: column;
+	gap: 3px;
+	font-family: var(--rgi-font-sans);
+	font-size: 11px;
+	color: var(--rgi-text-tertiary);
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+}
+.dgv-gl-toolbar-field select {
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+	color: var(--rgi-text-primary);
+	background: var(--rgi-bg-surface);
+	border: 1px solid var(--rgi-border);
+	border-radius: 3px;
+	padding: 5px 8px;
+	min-width: 130px;
+}
+.dgv-gl-page-info {
+	font-family: var(--rgi-font-mono);
+	font-size: 12px;
+	color: var(--rgi-text-secondary);
+	min-width: 200px;
+	text-align: right;
+}
+.dgv-gl-pager-btn {
+	background: var(--rgi-bg-surface);
+	color: var(--rgi-text-primary);
+	border: 1px solid var(--rgi-border);
+	border-radius: 3px;
+	padding: 6px 12px;
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+	cursor: pointer;
+}
+.dgv-gl-pager-btn:hover:not(:disabled) {
+	background: var(--rgi-bg-row-alt);
+	border-color: var(--rgi-border-light);
+}
+.dgv-gl-pager-btn:disabled {
+	opacity: 0.4;
+	cursor: not-allowed;
+}
+
+.dgv-gl-export-btn {
+	background: var(--rgi-text-primary);
+	color: var(--rgi-bg-surface);
+	border: 1px solid var(--rgi-text-primary);
+	border-radius: 3px;
+	padding: 6px 12px;
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+	font-weight: 500;
+	cursor: pointer;
+	margin-right: 12px;
+}
+.dgv-gl-export-btn:hover {
+	background: var(--rgi-text-secondary);
+	border-color: var(--rgi-text-secondary);
+}
+
+
+/* Table ----------------------------------------------------------------- */
+
+.dgv-gl-table-wrap {
+	margin: 0 32px;
+	background: var(--rgi-bg-surface);
+	border: 1px solid var(--rgi-border);
+	border-radius: 4px;
+	overflow-x: auto;
+}
+.dgv-gl-skeleton,
+.dgv-gl-empty {
+	padding: 32px;
+	text-align: center;
+	color: var(--rgi-text-tertiary);
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+}
+.dgv-gl-error { color: var(--rgi-danger); }
+
+.dgv-gl-sort-note {
+	padding: 8px 14px;
+	background: var(--rgi-bg-row-alt);
+	border-bottom: 1px solid var(--rgi-border);
+	color: var(--rgi-text-tertiary);
+	font-family: var(--rgi-font-sans);
+	font-size: 12px;
+	font-style: italic;
+}
+
+.dgv-gl-table {
+	width: 100%;
+	border-collapse: collapse;
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+}
+.dgv-gl-table thead tr {
+	background: var(--rgi-bg-row-alt);
+	border-bottom: 1px solid var(--rgi-border);
+}
+.dgv-gl-table th {
+	font-weight: 500;
+	font-size: 11px;
+	letter-spacing: 0.05em;
+	text-transform: uppercase;
+	color: var(--rgi-text-tertiary);
+	text-align: left;
+	padding: 10px 12px;
+	white-space: nowrap;
+}
+.dgv-gl-table th.dgv-gl-th-amount,
+.dgv-gl-table th.dgv-gl-th-running {
+	text-align: right;
+}
+.dgv-gl-table tbody tr {
+	border-bottom: 1px solid var(--rgi-border);
+}
+.dgv-gl-table tbody tr:last-child { border-bottom: none; }
+.dgv-gl-table td {
+	padding: 8px 12px;
+	color: var(--rgi-text-primary);
+	vertical-align: top;
+}
+
+.dgv-gl-cell-date {
+	font-family: var(--rgi-font-mono);
+	font-size: 12px;
+	color: var(--rgi-text-secondary);
+	white-space: nowrap;
+}
+.dgv-gl-cell-voucher a {
+	font-family: var(--rgi-font-mono);
+	font-size: 12px;
+	color: var(--rgi-text-primary);
+	text-decoration: none;
+	border-bottom: 1px dotted var(--rgi-border-light);
+}
+.dgv-gl-cell-voucher a:hover {
+	border-bottom-style: solid;
+	color: var(--rgi-success);
+}
+.dgv-gl-voucher-type {
+	display: block;
+	font-size: 10px;
+	color: var(--rgi-text-tertiary);
+	margin-top: 2px;
+}
+.dgv-gl-cell-party {
+	font-size: 13px;
+	color: var(--rgi-text-primary);
+}
+.dgv-gl-party-type {
+	display: block;
+	font-size: 10px;
+	color: var(--rgi-text-tertiary);
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	margin-top: 1px;
+}
+.dgv-gl-empty-cell { color: var(--rgi-text-tertiary); }
+.dgv-gl-cell-amount,
+.dgv-gl-cell-running {
+	font-family: var(--rgi-font-mono);
+	font-size: 13px;
+	text-align: right;
+	white-space: nowrap;
+	color: var(--rgi-text-primary);
+}
+.dgv-gl-cell-amount[data-sign="neg"],
+.dgv-gl-cell-running[data-sign="neg"] {
+	color: var(--rgi-danger);
+}
+.dgv-gl-cell-remarks {
+	font-size: 12px;
+	color: var(--rgi-text-secondary);
+	max-width: 320px;
+}
+.dgv-gl-remarks {
+	display: -webkit-box;
+	-webkit-line-clamp: 2;
+	-webkit-box-orient: vertical;
+	overflow: hidden;
+	line-height: 1.4;
+}
+
+
+/* Group divider + chip --------------------------------------------------
+ * v0.5: visual context only -- chips label which (company, account)
+ * each row belongs to but no longer denote a balance reset (running
+ * balance now accumulates scope-wide). Styling softened: no
+ * background tint, single light border. The chip stays readable but
+ * doesn't shout "section break".
+ * ------------------------------------------------------------------- */
+
+.dgv-gl-group-divider td {
+	background: transparent;
+	border-top: 1px solid var(--rgi-border) !important;
+	border-bottom: none !important;
+	padding: 4px 12px 2px !important;
+}
+.dgv-gl-group-chip {
+	font-family: var(--rgi-font-mono);
+	font-size: 10px;
+	font-weight: 400;
+	color: var(--rgi-text-tertiary);
+	letter-spacing: 0.02em;
+}
+
+
+/* Responsive (≤ 800 px) ------------------------------------------------- */
+
+@media (max-width: 800px) {
+	.dgv-gl-banner,
+	.dgv-gl-toolbar,
+	.dgv-gl-table-wrap {
+		margin-left: 16px;
+		margin-right: 16px;
+	}
+	.dgv-gl-toolbar {
+		flex-direction: column;
+		align-items: stretch;
+	}
+	.dgv-gl-toolbar-left,
+	.dgv-gl-toolbar-right {
+		justify-content: space-between;
+		flex-wrap: wrap;
+	}
+	.dgv-gl-page-info {
+		min-width: auto;
+		text-align: left;
+	}
+	/* Table scrolls horizontally on narrow viewports rather than
+	   collapsing — accountants need every column visible. */
+	.dgv-gl-table {
+		min-width: 720px;
+	}
+	.dgv-gl-cell-remarks {
+		max-width: 200px;
+	}
+}
+
+
+/* ===========================================================================
+ * HALT 2.5 — Filter UI (gl-drill page)
+ * ======================================================================== */
+
+/* Filter row: inline at desktop, hidden in favor of mobile trigger ≤800px */
+.dgv-gl-filter-row {
+	margin: 0 32px 12px;
+	padding: 12px 14px;
+	background: var(--rgi-bg-surface);
+	border: 1px solid var(--rgi-border);
+	border-radius: 4px;
+	display: flex;
+	align-items: flex-end;
+	gap: 12px;
+	flex-wrap: wrap;
+}
+.dgv-gl-filter-row[hidden] { display: none; }
+.dgv-gl-filter-row-inline {
+	display: flex;
+	/* `flex-end` aligns inputs at the bottom so the labels-above
+	   pattern lines up cleanly across fields with different label
+	   heights (single-line "DATE RANGE" vs "ACCOUNTS"). */
+	align-items: flex-end;
+	gap: 16px;
+	flex-wrap: wrap;
+	flex: 1 1 auto;
+}
+.dgv-gl-filter-mobile-trigger {
+	display: none;  /* hidden at desktop, shown at ≤800px */
+	background: var(--rgi-bg-surface);
+	color: var(--rgi-text-primary);
+	border: 1px solid var(--rgi-border);
+	border-radius: 3px;
+	padding: 8px 14px;
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+	cursor: pointer;
+	gap: 8px;
+	align-items: center;
+}
+.dgv-gl-filter-mobile-badge {
+	background: var(--rgi-text-primary);
+	color: var(--rgi-bg-surface);
+	font-size: 11px;
+	font-weight: 600;
+	padding: 1px 6px;
+	border-radius: 10px;
+	margin-left: 6px;
+}
+
+/* Individual filter field (label + input) */
+.dgv-gl-filter-field {
+	display: inline-flex;
+	flex-direction: column;
+	gap: 3px;
+	font-family: var(--rgi-font-sans);
+}
+.dgv-gl-filter-field-label {
+	font-size: 11px;
+	color: var(--rgi-text-tertiary);
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+}
+
+/* Date range field */
+.dgv-gl-filter-daterange-inputs {
+	display: inline-flex;
+	gap: 6px;
+	align-items: center;
+}
+.dgv-gl-filter-from,
+.dgv-gl-filter-to {
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+	border: 1px solid var(--rgi-border);
+	border-radius: 3px;
+	padding: 4px 6px;
+	background: var(--rgi-bg-surface);
+	color: var(--rgi-text-primary);
+	width: 130px;
+	/* Native date inputs render taller in Chrome than custom
+	   dropdowns due to internal calendar-icon padding. Pin total
+	   height + box-sizing so the bottom edge aligns with the
+	   multi-select triggers and the party input across the row. */
+	height: 30px;
+	box-sizing: border-box;
+}
+.dgv-gl-filter-daterange-sep {
+	color: var(--rgi-text-tertiary);
+	font-size: 12px;
+}
+
+/* Party autocomplete input */
+.dgv-gl-filter-party-input {
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+	border: 1px solid var(--rgi-border);
+	border-radius: 3px;
+	padding: 4px 8px;
+	background: var(--rgi-bg-surface);
+	color: var(--rgi-text-primary);
+	width: 180px;
+	height: 30px;
+	box-sizing: border-box;
+}
+
+/* Multi-select dropdown */
+.dgv-gl-multiselect {
+	position: relative;
+}
+.dgv-gl-multiselect-trigger {
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+	background: var(--rgi-bg-surface);
+	color: var(--rgi-text-primary);
+	border: 1px solid var(--rgi-border);
+	border-radius: 3px;
+	padding: 4px 8px;
+	/* Uniform 180px matches the party-input width so the filter row
+	   reads as 4 equal-weight fields (Companies, Accounts, Party,
+	   Voucher type) plus the wider Date Range pair. */
+	width: 180px;
+	height: 30px;
+	box-sizing: border-box;
+	cursor: pointer;
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	justify-content: space-between;
+}
+.dgv-gl-multiselect-label {
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	min-width: 0;
+}
+.dgv-gl-multiselect-trigger:hover {
+	border-color: var(--rgi-border-light);
+}
+.dgv-gl-multiselect-caret {
+	font-size: 10px;
+	color: var(--rgi-text-tertiary);
+}
+.dgv-gl-multiselect-popup {
+	position: absolute;
+	top: 100%;
+	left: 0;
+	margin-top: 4px;
+	background: var(--rgi-bg-surface);
+	border: 1px solid var(--rgi-border);
+	border-radius: 4px;
+	box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+	z-index: 100;
+	/* `width: max-content` sizes the popup to its widest option
+	   (rather than fixed at trigger width). Bounded by min/max so
+	   short option lists still feel substantial and very-long ones
+	   don't blow off the right edge. 600px fits the longest RGI
+	   company name on dev (52 chars) on one line. */
+	width: max-content;
+	min-width: 240px;
+	max-width: 720px;
+	max-height: 360px;
+	display: flex;
+	flex-direction: column;
+}
+.dgv-gl-multiselect-popup[hidden] { display: none; }
+.dgv-gl-multiselect-popup-options {
+	overflow-y: auto;
+	padding: 8px 0;
+	flex: 1 1 auto;
+}
+.dgv-gl-multiselect-option {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 12px;
+	font-size: 13px;
+	color: var(--rgi-text-primary);
+	cursor: pointer;
+	line-height: 1.4;
+}
+.dgv-gl-multiselect-option input {
+	margin: 0;
+	flex-shrink: 0;
+}
+.dgv-gl-multiselect-option > span {
+	/* Force option text to a single line. Combined with
+	   `width: max-content` on the popup container, this makes the
+	   popup grow horizontally to fit the longest option's full
+	   name -- no mid-name wrapping for "Chaitanya Bahuudeshiya
+	   Sanstha Society" or "GH Raisoni College Of Business
+	   Management Khaparkheda". The popup's max-width caps the
+	   growth at 720px so a pathologically long name doesn't blow
+	   off the right edge of the page. */
+	white-space: nowrap;
+}
+.dgv-gl-multiselect-option:hover {
+	background: var(--rgi-bg-row-alt);
+}
+.dgv-gl-multiselect-option input { margin: 0; }
+.dgv-gl-multiselect-popup-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 6px;
+	padding: 8px 12px;
+	border-top: 1px solid var(--rgi-border);
+}
+.dgv-gl-multiselect-popup-actions button {
+	font-family: var(--rgi-font-sans);
+	font-size: 12px;
+	padding: 4px 10px;
+	border-radius: 3px;
+	cursor: pointer;
+	border: 1px solid var(--rgi-border);
+	background: var(--rgi-bg-surface);
+	color: var(--rgi-text-primary);
+}
+.dgv-gl-multiselect-apply {
+	background: var(--rgi-text-primary) !important;
+	color: var(--rgi-bg-surface) !important;
+	border-color: var(--rgi-text-primary) !important;
+}
+
+/* Advanced filters disclosure
+ * `flex-basis: 100%` forces it to its own line below the inline
+ * filter row -- per HALT 2.5 review: it was wrapping awkwardly on
+ * the right of the row when the toolbar got narrow. Always-on-its-
+ * own-line is cleaner. */
+.dgv-gl-filter-advanced {
+	flex: 0 0 100%;
+	display: block;
+	margin-top: 4px;
+}
+.dgv-gl-filter-advanced summary {
+	font-family: var(--rgi-font-sans);
+	font-size: 12px;
+	color: var(--rgi-text-tertiary);
+	cursor: pointer;
+	padding: 4px 0;
+	list-style: none;
+}
+.dgv-gl-filter-advanced summary::-webkit-details-marker { display: none; }
+.dgv-gl-filter-advanced summary::before {
+	content: '▸ ';
+	color: var(--rgi-text-tertiary);
+}
+.dgv-gl-filter-advanced[open] summary::before {
+	content: '▾ ';
+}
+.dgv-gl-filter-advanced[open] {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+/* Active filter chips row */
+.dgv-gl-filter-chips {
+	margin: 0 32px 12px;
+	display: flex;
+	gap: 8px;
+	align-items: center;
+	flex-wrap: wrap;
+}
+.dgv-gl-filter-chips[hidden] { display: none; }
+.dgv-gl-filter-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	background: #EAE3D2;
+	color: var(--rgi-text-primary);
+	font-family: var(--rgi-font-sans);
+	font-size: 12px;
+	padding: 4px 6px 4px 10px;
+	border-radius: 12px;
+	/* Spec amendment 2: 200px max-width + ellipsize. Tooltip on
+	   hover via the title attribute lets the user see the full
+	   selected value when it overflows. */
+	max-width: 200px;
+}
+.dgv-gl-filter-chip-label {
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	min-width: 0;
+}
+.dgv-gl-filter-chip-clear {
+	background: transparent;
+	border: none;
+	color: var(--rgi-text-secondary);
+	font-size: 14px;
+	line-height: 1;
+	cursor: pointer;
+	padding: 0 2px;
+	flex-shrink: 0;  /* keep × tappable even when label ellipsizes */
+}
+.dgv-gl-filter-chip-clear:hover { color: var(--rgi-danger); }
+.dgv-gl-filter-clear-all {
+	margin-left: auto;
+	background: transparent;
+	border: 1px solid var(--rgi-border);
+	color: var(--rgi-text-secondary);
+	font-family: var(--rgi-font-sans);
+	font-size: 12px;
+	padding: 4px 10px;
+	border-radius: 3px;
+	cursor: pointer;
+}
+.dgv-gl-filter-clear-all:hover {
+	background: var(--rgi-bg-row-alt);
+	border-color: var(--rgi-border-light);
+	color: var(--rgi-text-primary);
+}
+
+/* Bottom sheet (≤800px viewport, hidden by default) */
+.dgv-gl-bottom-sheet {
+	position: fixed;
+	inset: 0;
+	z-index: 1000;
+	display: flex;
+	align-items: flex-end;
+}
+.dgv-gl-bottom-sheet[hidden] { display: none; }
+.dgv-gl-bottom-sheet-backdrop {
+	position: absolute;
+	inset: 0;
+	background: rgba(0, 0, 0, 0.4);
+}
+.dgv-gl-bottom-sheet-panel {
+	position: relative;
+	width: 100%;
+	max-height: 85vh;
+	background: var(--rgi-bg-surface);
+	border-top-left-radius: 12px;
+	border-top-right-radius: 12px;
+	display: flex;
+	flex-direction: column;
+}
+.dgv-gl-bottom-sheet-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 14px 18px;
+	border-bottom: 1px solid var(--rgi-border);
+}
+.dgv-gl-bottom-sheet-head h3 {
+	margin: 0;
+	font-family: var(--rgi-font-serif);
+	font-size: 18px;
+	color: var(--rgi-text-primary);
+}
+.dgv-gl-bottom-sheet-close {
+	background: transparent;
+	border: none;
+	color: var(--rgi-text-secondary);
+	font-size: 24px;
+	line-height: 1;
+	cursor: pointer;
+	padding: 0 4px;
+}
+.dgv-gl-bottom-sheet-body {
+	overflow-y: auto;
+	padding: 18px;
+	display: flex;
+	flex-direction: column;
+	gap: 16px;
+}
+.dgv-gl-bottom-sheet-body .dgv-gl-filter-field {
+	width: 100%;
+}
+.dgv-gl-bottom-sheet-body .dgv-gl-multiselect-trigger {
+	width: 100%;
+}
+.dgv-gl-bottom-sheet-foot {
+	display: flex;
+	justify-content: space-between;
+	gap: 8px;
+	padding: 12px 18px;
+	border-top: 1px solid var(--rgi-border);
+}
+.dgv-gl-bottom-sheet-clear,
+.dgv-gl-bottom-sheet-apply {
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+	padding: 8px 16px;
+	border-radius: 3px;
+	cursor: pointer;
+}
+.dgv-gl-bottom-sheet-clear {
+	background: transparent;
+	color: var(--rgi-text-secondary);
+	border: 1px solid var(--rgi-border);
+}
+.dgv-gl-bottom-sheet-apply {
+	background: var(--rgi-text-primary);
+	color: var(--rgi-bg-surface);
+	border: 1px solid var(--rgi-text-primary);
+}
+
+/* ≤800px viewport: switch to mobile-trigger + bottom-sheet model */
+@media (max-width: 800px) {
+	.dgv-gl-filter-row {
+		margin-left: 16px;
+		margin-right: 16px;
+		padding: 12px 14px;
+	}
+	.dgv-gl-filter-row-inline {
+		display: none;  /* hide inline filters; bottom sheet takes over */
+	}
+	.dgv-gl-filter-mobile-trigger {
+		display: inline-flex;
+	}
+	.dgv-gl-filter-chips {
+		margin-left: 16px;
+		margin-right: 16px;
+	}
+}
+
+
+/* ===========================================================================
+ * HALT 4 — Party list page (/app/party-list)
+ * Mirrors the GL drill page chrome (toolbar, pager, table-wrap) but
+ * with party-row click-to-drill semantics + a slimmer column set.
+ * ======================================================================== */
+
+.dgv-pl-page {
+	background: var(--rgi-bg-page);
+	color: var(--rgi-text-secondary);
+	font-family: var(--rgi-font-sans);
+	min-height: 100vh;
+	padding-bottom: 48px;
+}
+
+.dgv-pl-totals {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-end;
+	gap: 4px;
+}
+.dgv-pl-totals-num {
+	font-family: var(--rgi-font-serif);
+	font-size: 32px;
+	font-weight: 600;
+	color: var(--rgi-text-primary);
+	line-height: 1;
+}
+.dgv-pl-totals-label {
+	font-family: var(--rgi-font-sans);
+	font-size: 11px;
+	letter-spacing: 0.05em;
+	text-transform: uppercase;
+	color: var(--rgi-text-tertiary);
+}
+
+/* Toolbar -- same shape as GL drill toolbar, separate selectors so
+ * future divergence (party-list-only filters in Phase 5) doesn't
+ * pollute GL drill styles.
+ */
+.dgv-pl-toolbar {
+	margin: 0 32px 12px;
+	padding: 12px 14px;
+	background: var(--rgi-bg-surface);
+	border: 1px solid var(--rgi-border);
+	border-radius: 4px;
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	gap: 16px;
+	flex-wrap: wrap;
+}
+.dgv-pl-toolbar-left,
+.dgv-pl-toolbar-right {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+}
+.dgv-pl-toolbar-field {
+	display: inline-flex;
+	flex-direction: column;
+	gap: 3px;
+	font-family: var(--rgi-font-sans);
+	font-size: 11px;
+	color: var(--rgi-text-tertiary);
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+}
+.dgv-pl-toolbar-field select {
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+	color: var(--rgi-text-primary);
+	background: var(--rgi-bg-surface);
+	border: 1px solid var(--rgi-border);
+	border-radius: 3px;
+	padding: 5px 8px;
+	min-width: 160px;
+	height: 30px;
+	box-sizing: border-box;
+}
+.dgv-pl-page-info {
+	font-family: var(--rgi-font-mono);
+	font-size: 12px;
+	color: var(--rgi-text-secondary);
+	min-width: 280px;
+	text-align: right;
+}
+.dgv-pl-pager-btn {
+	background: var(--rgi-bg-surface);
+	color: var(--rgi-text-primary);
+	border: 1px solid var(--rgi-border);
+	border-radius: 3px;
+	padding: 6px 12px;
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+	cursor: pointer;
+}
+.dgv-pl-pager-btn:hover:not(:disabled) {
+	background: var(--rgi-bg-row-alt);
+	border-color: var(--rgi-border-light);
+}
+.dgv-pl-pager-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.dgv-pl-export-btn {
+	background: var(--rgi-text-primary);
+	color: var(--rgi-bg-surface);
+	border: 1px solid var(--rgi-text-primary);
+	border-radius: 3px;
+	padding: 6px 12px;
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+	font-weight: 500;
+	cursor: pointer;
+	margin-right: 12px;
+}
+.dgv-pl-export-btn:hover {
+	background: var(--rgi-text-secondary);
+	border-color: var(--rgi-text-secondary);
+}
+
+/* Table */
+.dgv-pl-table-wrap {
+	margin: 0 32px;
+	background: var(--rgi-bg-surface);
+	border: 1px solid var(--rgi-border);
+	border-radius: 4px;
+	overflow-x: auto;
+}
+.dgv-pl-skeleton,
+.dgv-pl-empty {
+	padding: 32px;
+	text-align: center;
+	color: var(--rgi-text-tertiary);
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+}
+.dgv-pl-error { color: var(--rgi-danger); }
+.dgv-pl-table {
+	width: 100%;
+	border-collapse: collapse;
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+}
+.dgv-pl-table thead tr {
+	background: var(--rgi-bg-row-alt);
+	border-bottom: 1px solid var(--rgi-border);
+}
+.dgv-pl-table th {
+	font-weight: 500;
+	font-size: 11px;
+	letter-spacing: 0.05em;
+	text-transform: uppercase;
+	color: var(--rgi-text-tertiary);
+	text-align: left;
+	padding: 10px 12px;
+	white-space: nowrap;
+}
+.dgv-pl-table th.dgv-pl-th-balance { text-align: right; }
+.dgv-pl-table th.dgv-pl-th-cos { text-align: right; }
+.dgv-pl-table tbody tr {
+	border-bottom: 1px solid var(--rgi-border);
+	cursor: pointer;
+}
+.dgv-pl-table tbody tr:last-child { border-bottom: none; }
+.dgv-pl-table tbody tr:hover {
+	background: var(--rgi-bg-row-alt);
+}
+.dgv-pl-table td {
+	padding: 10px 12px;
+	color: var(--rgi-text-primary);
+	vertical-align: middle;
+}
+.dgv-pl-cell-party {
+	font-weight: 500;
+}
+.dgv-pl-group-badge {
+	display: inline-block;
+	margin-left: 8px;
+	padding: 1px 6px;
+	font-size: 10px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	background: #EAE3D2;
+	color: var(--rgi-text-secondary);
+	border-radius: 8px;
+	vertical-align: middle;
+}
+.dgv-pl-cell-party-type {
+	font-size: 12px;
+	color: var(--rgi-text-tertiary);
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+}
+.dgv-pl-cell-balance {
+	font-family: var(--rgi-font-mono);
+	font-size: 13px;
+	text-align: right;
+	white-space: nowrap;
+}
+.dgv-pl-cell-balance[data-sign="neg"] { color: var(--rgi-danger); }
+.dgv-pl-cell-cos {
+	text-align: right;
+	font-size: 12px;
+	color: var(--rgi-text-secondary);
+	white-space: nowrap;
+}
+
+/* Responsive (≤ 800 px) */
+@media (max-width: 800px) {
+	.dgv-pl-toolbar,
+	.dgv-pl-table-wrap {
+		margin-left: 16px;
+		margin-right: 16px;
+	}
+	.dgv-pl-toolbar {
+		flex-direction: column;
+		align-items: stretch;
+	}
+	.dgv-pl-toolbar-left,
+	.dgv-pl-toolbar-right {
+		justify-content: space-between;
+		flex-wrap: wrap;
+	}
+	.dgv-pl-page-info {
+		min-width: auto;
+		text-align: left;
+	}
+	.dgv-pl-table {
+		min-width: 600px;
+	}
+}
+

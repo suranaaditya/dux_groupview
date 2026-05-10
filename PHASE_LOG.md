@@ -790,3 +790,254 @@ before resuming Phase 4 work.
   trust subset and the function refuses to run if those companies
   don't exist; production would need an explicit `companies=` list
   to run, which is unlikely.
+
+---
+
+## Phase 4 — Commit 4 — GL drill page + CSV export + filter UI + view all parties
+
+**Status:** Done -- 2026-05-09. Branch `phase-4-drills` (single
+bundled commit covering HALT 1 + HALT 2 + HALT 2.5 + HALT 4 of the
+master commit-4 sequence).
+
+**Goal:** Wire the three stub buttons left over from commit 3 into
+real functionality. After commit 4, every "→" or "View all" affordance
+in the account drill panel and full page produces a working
+destination: a paginated GL drill page, downloadable CSVs of
+account-breakdown / GL-entries / party-list shapes, in-page filter
+UI on the GL drill page, and a paginated party list page with
+click-row-to-drill into GL filtered by party.
+
+**Deliverables:**
+- [x] `api/gl_drill_v1.py` -- new whitelisted `get_gl_entries`
+  (paginated GL entries with SQL window function for running balance,
+  50K hard cap with `is_truncated` flag), `get_filter_metadata`
+  (HALT 2.5 dropdown population), `export_gl_entries_csv` (50K cap,
+  raw decimal cells, ISO dates, `_filtered` filename infix when
+  HALT 2.5 filters active)
+- [x] `page/gl_drill/` -- new Frappe page at `/app/gl-drill?scope=...`,
+  toolbar with sort/page-size/Export-CSV/pager, table with party
+  cells + voucher links + running-balance column, scope-fanout +
+  truncation banners, filter row (Companies / Accounts / Date Range
+  / Party / Voucher type) + chips + bottom-sheet on ≤800px
+- [x] `api/account_drill_v1.py` -- new `export_account_breakdown_csv`
+  (per-(company, account) shape with currency)
+- [x] `api/party_drill_v1.py` -- extended `get_party_breakdown` with
+  `mode='card'` (default, byte-identical to HALT 1+2 wire shape) and
+  new `mode='page'` (max page_size 500, adds `name_desc` sort,
+  `total_pages` + scope echo); new `export_party_list_csv` (50K cap)
+- [x] `page/party_list/` -- new Frappe page at `/app/party-list?scope=...`,
+  paginated party table with click-row-to-drill into GL filtered
+  by party (uses the `?party=&party_type=` URL params HALT 1's
+  gl-drill page already supports)
+- [x] `public/js/account_drill.js` -- all three commit-3 stubs
+  (`stubGlDrill`, `stubExportCsv`, `stubViewAllParties`) wired with
+  three new URL builders (`buildGlDrillUrl`, `buildAccountBreakdownCsvUrl`,
+  `buildPartyListUrl`); each handles both panel-args and page-state
+  arg shapes
+- [x] `public/css/cockpit.css` -- ~1,850 new lines covering the
+  GL drill page chrome, HALT 2.5 filter UI (multi-select + chips +
+  bottom sheet), and party-list page chrome
+- [x] 30 new tests across `test_gl_drill.py` (new file, 25 tests)
+  + `test_account_drill.py` (+2 CSV tests) + `test_party_drill.py`
+  (+8 HALT 4 tests). Suite at 163 / 163 green (1 pre-existing skip).
+- [x] `specs/phase-4-commit-4-gl-drill.md` (v0.1 → v0.6) +
+  `specs/phase-4-commit-4-filters.md` (HALT 2.5 spec). Already
+  committed in the spec-evolution sequence preserved on the branch.
+
+**Spec evolution (visible in git log):**
+
+| Version | Commit  | Driver |
+|---------|---------|--------|
+| v0.1    | (in-chat only, not committed) | Initial draft surfaced at spec halt |
+| v0.2    | 4d2bd11 | 5 Q's resolved + 2 mode-args contracts (commit subject doesn't include version; subsequent commits adopted "v0.X" naming) |
+| v0.3    | 5ad7f50 | Page-size 100/1000, posting_date_* sort keys, 50K cap on get_gl_entries, EXPLAIN softening |
+| v0.4    | 282a226 | Sort default flip (asc), HALT 2.5 insertion, filters open question |
+| v0.5    | 016b8bf | Drop running balance partition (scope-wide accumulation) |
+| v0.6    | 2f5bca7 | Filter UI spec + account-breakdown CSV column alignment |
+| v0.6.1  | 860de01 | Filter spec amendments (EXPLAIN criterion + chip max-width + reset on scope change) |
+
+**Halt-point cadence (visible in commit hashes between halts):**
+
+- HALT 1 -- GL drill page + window function + pagination. Perf: 32-90s
+  on huge subtree-of-root scopes (203K-431K rows); accepted as a known
+  v1 limitation per the closing decisions (real users drill into
+  specific accounts; the fanout banner warns).
+- HALT 2 -- CSV export. Three new endpoints, three "Export CSV"
+  buttons wired, raw-decimal cell format, slugified filenames.
+- HALT 2.5 -- Filter UI (gl-drill page only). Five filters: Companies
+  multi-select, Account-name multi-select, Date range, Party
+  autocomplete, Voucher type (collapsed under "Advanced"). Filter
+  state persists in URL; resets on cross-scope navigation.
+- HALT 4 (renumbered from HALT 3 after HALT 2.5 insertion) --
+  View All Parties. mode='page' on get_party_breakdown +
+  /app/party-list page + export_party_list_csv. stubViewAllParties
+  wired in account_drill.js.
+
+**Architectural decisions:**
+
+- **Running balance is scope-wide, not per-(company, account).**
+  v0.5 dropped the `PARTITION BY company, account` clause from the
+  window function. Reason: every other cockpit surface (pivot, cards,
+  account-drill panel) treats a scope as one aggregated thing.
+  Per-account-ledger view interleaves curves by date and reads as
+  jumble. Per-account ledger is achievable in HALT 2.5 by filtering
+  the scope to a single account_name. Mixed-root-type scopes get a
+  scope-activity figure rather than a real financial total --
+  documented in spec §13.2 known limitation.
+- **CSV cells are raw decimals, not Indian-grouped strings.** Locked
+  at HALT 2 across all three CSV endpoints. Reason: CSV is data-
+  interchange; Indian-grouping forces visual interpretation onto
+  every importer and breaks numerical typing in spreadsheet apps.
+  Indian grouping stays in the rendered UI surfaces only.
+- **Filters reset on cross-scope navigation.** Per spec §5
+  amendment 3: filters are per-scope. `account_drill.js`'s
+  `buildGlDrillUrl` deliberately doesn't emit any filter params
+  even when called from a context that has filter state. A future
+  Phase 5 sticky-pref doctype could opt back into carry-over;
+  v1 keeps the URL contract simple.
+- **`?scope=<scope_id>` URL contract for `/app/party-list`.** HALT 4
+  instruction proposed `?account=<id>` but the implementation uses
+  `?scope=<scope_id>` to (a) handle card-resolved scopes that span
+  multiple accounts cleanly, and (b) reuse the gl-drill page's URL
+  parser (`window.dgvParseAccountDrillHash`). Approved on review.
+- **`mode='page'` as a parameter extension to `get_party_breakdown`,
+  not a new function.** Per spec v0.6 §5.4. card mode (default)
+  stays byte-identical for the panel + account-drill page; page
+  mode adds the new knobs needed by `/app/party-list`. Pinned by
+  the regression test `test_get_party_breakdown_mode_card_defaults_unchanged`.
+- **Filter UI: SQL-narrow over client-side post-filter** (spec §4
+  Q1). Reason: client-side filter would break pagination math
+  (`total_entries` reported by server vs displayed by client) and
+  running-balance cumulative semantics. Server-side WHERE folded
+  cleanly into the existing JOIN -- HALT 2.5.3 EXPLAIN check
+  confirmed no `Using temporary` / `Using filesort` regression
+  vs HALT 1 baseline.
+- **Filter UI: URL-persisted, not localStorage-sticky** (spec §4
+  Q2). Shareability + refresh-safety > stickiness. Phase 5 may
+  layer localStorage on top via `DGV User Preferences` doctype.
+
+**Stub wiring (commit 3 → commit 4):**
+
+| Stub | Wired to | URL builder |
+|---|---|---|
+| `stubGlDrill` | `/app/gl-drill?scope=...` | `buildGlDrillUrl` |
+| `stubExportCsv` | `/api/method/...export_account_breakdown_csv` | `buildAccountBreakdownCsvUrl` |
+| `stubViewAllParties` | `/app/party-list?scope=...` | `buildPartyListUrl` |
+
+The function NAMES (`stub*`) were retained -- they're consumed by
+`window.dgvDrill` exports + `bindActionBar` / `bindPartyViewAll`
+wirings + the account-drill page's own click handlers. Renaming
+would have rippled with no test gain. Comment block at the top of
+the section documents the transition for future maintainers.
+
+**Tests (163 total, 1 pre-existing skip):**
+
+- `test_gl_drill.py` (new) -- 25 tests:
+  - 5 pagination + truncation: offset, total_count, truncation cap
+  - 2 running balance: correctness on single-account scope, continuous
+    across (company, account) partitions (gold-standard for v0.5
+    partition removal)
+  - 1 sort options: posting_date_asc/desc + amount_asc/desc
+  - 1 party filter
+  - 5 CSV (HALT 2): columns, 50K cap throw, party filter applied,
+    raw decimals, ISO dates
+  - 6 filter (HALT 2.5): account_names, from_date, to_date,
+    to_date clamp, voucher_types, combined intersection
+  - 2 export filter (HALT 2.5): honors filters in CSV body, filename
+    `_filtered_` infix marker
+  - 3 misc shape (e.g., scope_fanout in response)
+- `test_account_drill.py` (+2): account-breakdown CSV columns,
+  raw decimals
+- `test_party_drill.py` (+8): mode='page' total_pages, max_page_size
+  500, name_desc sort, scope echo, mode-invalid raises, card-mode
+  regression, party-list CSV columns, party-list raw decimals
+
+EXPLAIN check (HALT 1 baseline + HALT 2.5.3 re-verify): both passed
+the spec §10 / §4 Q1 fail criterion. Optimizer picked
+`dgv_party_drill` index for the inner JOIN, no `Using temporary` /
+`Using filesort`. New `account_names` + `voucher_types` predicates
+folded into the existing `Using where` -- byte-identical plan to
+HALT 1 baseline.
+
+**Performance:**
+
+| Operation | Scope | Median ms | Notes |
+|---|---|---:|---|
+| `get_gl_entries` p1 size=100 | account-leaf, single co (~9K rows) | 26-300 | Well within <500ms target |
+| `get_gl_entries` p1 size=100 | subtree, all 20 cos (~50K-100K rows) | 25,000-31,000 | Truncated; fanout banner warns. Documented v1 limitation |
+| `get_filter_metadata` first paint | SGR Current Liabilities (21 accts × 1 co) | 1,120 | Cached client-side per page load |
+| `get_gl_entries` with `account_names` filter | same scope | 68 | Filter narrows; perf improves |
+| `export_gl_entries_csv` (1,728 rows) | filtered scope | <2,000 | Single-pass windowed read |
+| `get_party_breakdown` mode='page' | subtree, single co | <100 | Same shape as mode='card'; just different knobs |
+| `export_party_list_csv` (7 parties) | small scope | <500 | Cap at 50K -- party lists are small |
+| Test suite | trust-subset seed | ~430s (8 min) | Snapshot/refresh tests dominate |
+
+**Carryover (visual-only, non-blocking):**
+
+- Filter row alignment + popup wrap of long company names on the
+  GL drill page were iterated through several CSS rounds during
+  HALT 2.5. Final pass: native date inputs pinned to `height: 30px`
+  with `box-sizing: border-box` to match custom dropdowns; popup
+  uses `width: max-content` capped at 720px with `white-space:
+  nowrap` on option text so long names display single-line.
+  Aditya signed off the functionality but didn't have time for a
+  final visual confirm; deferred to follow-up. See cockpit.css
+  `.dgv-gl-filter-from` / `.dgv-gl-filter-to` (date inputs at
+  `height: 30px`), `.dgv-gl-multiselect-popup` (max-content sizing
+  + 720px cap), and `.dgv-gl-multiselect-option > span`
+  (`white-space: nowrap`) rules.
+
+**Gotchas surfaced:**
+
+- **Page-record registration without `bench migrate`.** The dev's
+  `bench migrate` is blocked by an unrelated `vehicle_no` custom-
+  field collision on Sales Invoice (from a different installed app).
+  New Frappe pages defined by `<page>.json` files are NOT
+  auto-registered into `tabPage` from a clear-cache or bench build
+  alone -- normally `bench migrate` does the sync. Workaround used
+  during HALT 1 + HALT 4: a one-off `bench execute` calling
+  `frappe.get_doc({...}).insert()` to insert the Page row directly
+  with the same metadata as the JSON file. The unrelated
+  `vehicle_no` collision needs to be fixed before the next
+  production rollout that adds new doctypes / pages -- track as a
+  side issue.
+- **`loadFilterMetadata` race for card scopes.** Initial HALT 2.5.2
+  implementation called `loadFilterMetadata()` immediately at page
+  boot. For card-kind scopes, that fired BEFORE `resolveCardScope`
+  populated `state.resolvedAccounts`, so the function returned early
+  without making the API call -- filter row stayed hidden. Fix
+  moved the call into the same Promise chain as `fetchAndRender`
+  so it runs after card resolution.
+- **`_count_entries` JOIN missing.** When HALT 2.5 added the
+  `account_names` filter (which references `a.account_name` in the
+  WHERE clause), the count query (which previously didn't JOIN
+  `tabAccount`) started failing with "Unknown column 'a.account_name'".
+  Fix added the JOIN to `_count_entries`. Caught by tests on first
+  run after the WHERE-clause extension.
+- **Frappe response handling for binary downloads.** All three CSV
+  endpoints set `frappe.local.response.filename` + `filecontent`
+  + `type='binary'`. The `filecontent` must be bytes (encoded
+  UTF-8). Frappe sends `Content-Disposition: attachment` based on
+  `filename` and the browser triggers the download.
+
+**`tabGL Entry` audit:** `grep -rn "tabGL Entry"` across `gl_drill_v1.py`,
+`party_drill_v1.py`, all the page JS, and the new tests returns only
+the `_drill`-suffixed APIs as actual queries. Cockpit reads
+(`account_drill_v1.export_account_breakdown_csv`, page Python stubs)
+read snapshot tables only. Architecture rule preserved.
+
+**Open follow-ups (Phase 5 candidates):**
+
+- Filter UI alignment + popup wrap visual confirmation (carryover).
+- Saved filter presets backed by a `DGV User Preferences` doctype.
+- Card-id stability across Phase 5 editor changes (see master spec
+  §13.1 known limitation; `# TODO(phase-5)` markers in
+  `cards_v1.resolve_match_to_accounts` + `account_drill.js` URL
+  builders).
+- Index choice (`dgv_party_drill` vs `dgv_snapshot_aggregation`)
+  perf sweep against real production click data after 6 weeks of
+  usage.
+- Fanout-banner threshold tuning based on real usage (currently
+  `N_accounts > 20 OR N_companies > 5`).
+- The unrelated `vehicle_no` migrate block on dev -- fix separately
+  before next prod rollout.

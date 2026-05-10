@@ -656,3 +656,193 @@ class TestSubRupeeFilter(_PartyDrillFixtureBase):
 		finally:
 			self._delete_extra_voucher(v_filtered)
 			self._delete_extra_voucher(v_kept)
+
+
+# ---------------------------------------------------------------------------
+# HALT 4 -- mode='page' extension to get_party_breakdown
+# ---------------------------------------------------------------------------
+
+class TestGetPartyBreakdownPageMode(_PartyDrillFixtureBase):
+	"""HALT 4: spec v0.6 §5.4 mode='page' tier.
+
+	Differences from card mode (HALT 1+2 default):
+	  - DEFAULT_PAGE_SIZE 50 (was 10)
+	  - MAX_PAGE_SIZE 500 (was 200)
+	  - allowed_sorts adds 'name_desc'
+	  - response includes total_pages + scope echo
+
+	Card mode is byte-identical to its previous behavior; the
+	test_card_defaults_unchanged regression guard pins that.
+	"""
+
+	def test_get_party_breakdown_mode_page_returns_total_pages(self):
+		"""mode='page' includes total_pages = ceil(total / page_size)."""
+		out = party_drill_v1.get_party_breakdown(
+			accounts=self._payable_leaves(),
+			as_of_date=str(FIXTURE_AS_OF_DATE),
+			companies=self.state["companies"],
+			mode="page", page=1, page_size=2,
+		)
+		self.assertIn("total_pages", out)
+		# Fixture payable scope has 3 parties; ceil(3/2) = 2
+		self.assertEqual(out["total_pages"], 2)
+		self.assertEqual(out["total_parties"], 3)
+
+	def test_get_party_breakdown_mode_page_max_page_size_500(self):
+		"""mode='page' clamps page_size to 500 (not 200)."""
+		out = party_drill_v1.get_party_breakdown(
+			accounts=self._payable_leaves(),
+			as_of_date=str(FIXTURE_AS_OF_DATE),
+			companies=self.state["companies"],
+			mode="page", page=1, page_size=500,
+		)
+		# page_size accepted at 500 (vs card mode's 200 cap)
+		self.assertEqual(out["page_size"], 500)
+		# Higher request still clamps -- 600 -> 500
+		out_higher = party_drill_v1.get_party_breakdown(
+			accounts=self._payable_leaves(),
+			as_of_date=str(FIXTURE_AS_OF_DATE),
+			companies=self.state["companies"],
+			mode="page", page=1, page_size=600,
+		)
+		self.assertEqual(out_higher["page_size"], 500)
+
+	def test_get_party_breakdown_mode_page_supports_name_desc_sort(self):
+		"""name_desc sort is allowed in mode='page' but NOT mode='card'."""
+		out_page = party_drill_v1.get_party_breakdown(
+			accounts=self._payable_leaves(),
+			as_of_date=str(FIXTURE_AS_OF_DATE),
+			companies=self.state["companies"],
+			mode="page", sort="name_desc", page=1, page_size=10,
+		)
+		# Verify reverse-alphabetical: "Vidarbha..." > "Single Co..." > "Asha..."
+		party_names = [p["party"] for p in out_page["parties"]]
+		self.assertEqual(party_names,
+		                 sorted(party_names, reverse=True),
+		                 msg="name_desc should sort Z->A")
+
+		# In mode='card', name_desc is NOT in the allow-list, so it
+		# silently falls back to balance_desc (the card-mode default).
+		out_card = party_drill_v1.get_party_breakdown(
+			accounts=self._payable_leaves(),
+			as_of_date=str(FIXTURE_AS_OF_DATE),
+			companies=self.state["companies"],
+			mode="card", sort="name_desc", page=1, page_size=10,
+		)
+		card_names = [p["party"] for p in out_card["parties"]]
+		# Should NOT be reverse-alphabetical (fell back to balance_desc)
+		self.assertNotEqual(card_names, sorted(card_names, reverse=True),
+			msg="card mode should not honor name_desc; should fall back")
+
+	def test_get_party_breakdown_mode_page_returns_scope_echo(self):
+		"""mode='page' echoes the resolved scope shape so the page can
+		confirm what the server interpreted."""
+		out = party_drill_v1.get_party_breakdown(
+			accounts=self._payable_leaves(),
+			as_of_date=str(FIXTURE_AS_OF_DATE),
+			companies=self.state["companies"],
+			mode="page", page=1, page_size=10,
+		)
+		self.assertIn("scope", out)
+		echo = out["scope"]
+		self.assertEqual(echo["n_leaves"], len(self._payable_leaves()))
+		# accounts shape (vs scope shape) -- accounts is the input here
+		self.assertIn("accounts", echo)
+
+	def test_get_party_breakdown_mode_invalid_raises(self):
+		"""Spec v0.6 §5.4: invalid mode is a hard error with a clear
+		message (not silent fallback)."""
+		with self.assertRaises(frappe.exceptions.ValidationError) as cm:
+			party_drill_v1.get_party_breakdown(
+				accounts=self._payable_leaves(),
+				as_of_date=str(FIXTURE_AS_OF_DATE),
+				companies=self.state["companies"],
+				mode="bogus",
+			)
+		msg = str(cm.exception)
+		self.assertIn("Invalid mode", msg)
+
+	def test_get_party_breakdown_mode_card_defaults_unchanged(self):
+		"""Backward-compat regression guard: card mode (the default,
+		used by panel + account-drill page) returns the byte-identical
+		response shape it always has -- NO total_pages, NO scope echo.
+		"""
+		out = party_drill_v1.get_party_breakdown(
+			accounts=self._payable_leaves(),
+			as_of_date=str(FIXTURE_AS_OF_DATE),
+			companies=self.state["companies"],
+			# No mode arg -> default 'card'
+			page=1, page_size=10,
+		)
+		self.assertNotIn("total_pages", out,
+			msg="card mode response should NOT include total_pages")
+		self.assertNotIn("scope", out,
+			msg="card mode response should NOT include scope echo")
+		# Existing fields still present
+		self.assertIn("total_parties", out)
+		self.assertIn("page", out)
+		self.assertIn("page_size", out)
+		self.assertIn("parties", out)
+
+
+# ---------------------------------------------------------------------------
+# HALT 4 -- export_party_list_csv
+# ---------------------------------------------------------------------------
+
+class TestExportPartyListCsv(_PartyDrillFixtureBase):
+	"""HALT 4: party-list CSV export. Same response-mutation pattern
+	as gl_drill_v1.export_gl_entries_csv."""
+
+	def _invoke(self, **kwargs):
+		from frappe import _dict
+		default = dict(
+			accounts=self._payable_leaves(),
+			scope_label="FXT Payable",
+			as_of_date=str(FIXTURE_AS_OF_DATE),
+			companies=self.state["companies"],
+		)
+		default.update(kwargs)
+		original = dict(getattr(frappe.local, "response", {}))
+		try:
+			frappe.local.response = _dict()
+			party_drill_v1.export_party_list_csv(**default)
+			body = frappe.local.response.get("filecontent") or b""
+			filename = frappe.local.response.get("filename") or ""
+			body_str = body.decode("utf-8") if isinstance(body, bytes) else str(body)
+			return body_str, filename
+		finally:
+			frappe.local.response = _dict(original)
+
+	def test_export_party_list_csv_columns(self):
+		"""Header row matches HALT 4 spec: Party, Party Type, Balance,
+		Company Count. Filename pattern correct."""
+		body, filename = self._invoke()
+		self.assertTrue(filename.startswith("party_list_"),
+		                msg=f"unexpected filename: {filename}")
+		self.assertTrue(filename.endswith(".csv"))
+		lines = [ln for ln in body.splitlines() if ln]
+		self.assertTrue(lines)
+		self.assertEqual(lines[0], "Party,Party Type,Balance,Company Count")
+		# Fixture has 3 payable parties (Asha, Vidarbha, Single Co Vendor)
+		self.assertEqual(len(lines), 4)  # header + 3 data rows
+
+	def test_export_party_list_csv_raw_decimals_NOT_indian_grouped(self):
+		"""Balance cells contain raw decimals like '500000.00', NOT
+		Indian-grouped strings. CSV is data interchange; presentation
+		formatting belongs in rendered UI."""
+		import csv as _csv
+		import io as _io
+		body, _ = self._invoke()
+		rows = list(_csv.reader(_io.StringIO(body)))
+		header = rows[0]
+		data = rows[1:]
+		bal_col = header.index("Balance")
+		self.assertTrue(data, msg="expected data rows")
+		for r in data:
+			cell = r[bal_col]
+			self.assertNotIn(",", cell,
+				msg=f"Balance cell {cell!r} contains comma -- looks Indian-grouped")
+			try:
+				float(cell)
+			except ValueError:
+				self.fail(f"Balance cell {cell!r} does not parse as float")

@@ -41,6 +41,8 @@ spotlight cache aggregation's `SUM(CASE WHEN root_type IN (...) THEN
 storage. Pinned by the parity tests in `test_party_drill.py`.
 """
 
+import csv
+import io
 import json
 from collections import defaultdict
 
@@ -59,6 +61,17 @@ DEFAULT_PAGE_SIZE = 10
 MAX_PAGE_SIZE = 200
 ALLOWED_SORTS = ("balance_desc", "balance_asc", "name_asc")
 
+# HALT 4 -- mode='page' tier (per spec v0.6 §5.4 "Mode args contract"):
+# higher max_page_size + extra `name_desc` sort + `total_pages` /
+# `scope` echo in response. Existing `card` mode (panel + account-drill
+# page) is byte-identical to its HALT 1+2 behavior.
+ALLOWED_MODES = ("card", "page")
+PAGE_MODE_DEFAULT_PAGE_SIZE = 50
+PAGE_MODE_MAX_PAGE_SIZE = 500
+PAGE_MODE_ALLOWED_SORTS = (
+	"balance_desc", "balance_asc", "name_asc", "name_desc",
+)
+
 
 # ---------------------------------------------------------------------------
 # get_party_breakdown -- group by party across companies
@@ -67,10 +80,25 @@ ALLOWED_SORTS = ("balance_desc", "balance_asc", "name_asc")
 @frappe.whitelist()
 def get_party_breakdown(scope=None, accounts=None, as_of_date=None,
                         companies=None, page=1, page_size=None,
-                        sort="balance_desc"):
+                        sort="balance_desc", mode="card"):
 	"""Group GL entries by party across companies in scope.
 
-	Output shape per spec §4.2.1.
+	Two modes (per spec v0.6 §5.4):
+
+	  - `card` (default; HALT 1 + HALT 2 behavior, unchanged): smaller
+	    DEFAULT_PAGE_SIZE / MAX_PAGE_SIZE; sort allow-list excludes
+	    `name_desc`; response shape has no `total_pages` / `scope`
+	    echo. Used by the panel and the account-drill full page.
+	  - `page` (HALT 4, new): for the /app/party-list page. Higher
+	    page_size cap (500), extra `name_desc` sort, `total_pages` and
+	    echoed `scope` in the response so the page can render
+	    pagination + show what the server resolved.
+
+	Output shape per spec §4.2.1 (card) and §5.4 / §6.2 (page).
+
+	`mode` is normalised to a known value via `_normalise_mode`; an
+	invalid mode raises ValidationError so a typo from a hand-crafted
+	URL gets a clear error rather than silently degrading.
 	"""
 	from dux_groupview.dux_groupview.api.pivot import (
 		_require_cockpit_role,
@@ -82,17 +110,21 @@ def get_party_breakdown(scope=None, accounts=None, as_of_date=None,
 	scope = _ensure_dict(scope)
 	accounts = _ensure_list(accounts)
 
+	mode = _normalise_mode(mode)
+	default_size, max_size, allowed_sorts = _mode_knobs(mode)
+
 	page = _coerce_int(page, default=1, minimum=1)
-	page_size = _coerce_int(page_size, default=DEFAULT_PAGE_SIZE,
-	                        minimum=1, maximum=MAX_PAGE_SIZE)
-	sort = sort if sort in ALLOWED_SORTS else "balance_desc"
+	page_size = _coerce_int(page_size, default=default_size,
+	                        minimum=1, maximum=max_size)
+	sort = sort if sort in allowed_sorts else "balance_desc"
 
 	allowed = _resolve_scope(companies)
 	target_date = getdate(as_of_date) if as_of_date else getdate(today())
 
 	leaves = _leaves_from_input(scope, accounts, allowed)
 	if not leaves or not allowed:
-		return _empty_party_breakdown(page, page_size)
+		return _empty_party_breakdown(page, page_size, mode=mode,
+		                              scope=scope, accounts=accounts)
 
 	common_where, common_params, flip_ph = _common_where_clause(
 		leaves, allowed, target_date,
@@ -106,7 +138,8 @@ def get_party_breakdown(scope=None, accounts=None, as_of_date=None,
 	# only drops what's clearly noise, never real small balances.
 	total = _count_parties(common_where, common_params, flip_ph)
 	if total == 0:
-		return _empty_party_breakdown(page, page_size)
+		return _empty_party_breakdown(page, page_size, mode=mode,
+		                              scope=scope, accounts=accounts)
 
 	# Page query.
 	# `balance_desc` / `balance_asc` sort by ABSOLUTE balance so a panel
@@ -129,6 +162,7 @@ def get_party_breakdown(scope=None, accounts=None, as_of_date=None,
 		"balance_desc": f"{abs_balance_expr} DESC, g.party ASC",
 		"balance_asc":  f"{abs_balance_expr} ASC, g.party ASC",
 		"name_asc":     "g.party ASC, g.party_type ASC",
+		"name_desc":    "g.party DESC, g.party_type ASC",
 	}[sort]
 	offset = (page - 1) * page_size
 
@@ -165,12 +199,22 @@ def get_party_breakdown(scope=None, accounts=None, as_of_date=None,
 		for r in rows
 	]
 
-	return {
+	response = {
 		"total_parties": total,
 		"page": page,
 		"page_size": page_size,
 		"parties": parties,
 	}
+	# HALT 4: page mode adds total_pages (math) + scope echo (the
+	# resolved scope shape so the page can confirm what the server
+	# interpreted). Card mode keeps its byte-identical shape so
+	# existing panel + account-drill page callers don't break.
+	if mode == "page":
+		response["total_pages"] = max(
+			1, (total + page_size - 1) // page_size
+		)
+		response["scope"] = _scope_echo(scope, accounts, leaves)
+	return response
 
 
 # ---------------------------------------------------------------------------
@@ -358,13 +402,71 @@ def _coerce_int(value, default, minimum=None, maximum=None):
 	return v
 
 
-def _empty_party_breakdown(page, page_size):
-	return {
+def _empty_party_breakdown(page, page_size, mode="card", scope=None,
+                           accounts=None):
+	out = {
 		"total_parties": 0,
 		"page": page,
 		"page_size": page_size,
 		"parties": [],
 	}
+	if mode == "page":
+		out["total_pages"] = 1
+		out["scope"] = _scope_echo(scope, accounts, [])
+	return out
+
+
+def _normalise_mode(mode):
+	"""Return a known mode value or raise ValidationError.
+
+	Accepts None / empty string as 'card' (HALT 1+2 callers don't
+	pass a mode). Any other unknown value raises -- spec v0.6 §5.4
+	says invalid mode is a hard error so a typo from a hand-crafted
+	URL gets a clear failure.
+	"""
+	if not mode:
+		return "card"
+	if mode in ALLOWED_MODES:
+		return mode
+	frappe.throw(
+		_("Invalid mode '{0}'. Allowed: {1}").format(
+			mode, ", ".join(ALLOWED_MODES),
+		),
+		title=_("Invalid mode"),
+	)
+
+
+def _mode_knobs(mode):
+	"""Return (default_page_size, max_page_size, allowed_sorts) for a mode."""
+	if mode == "page":
+		return (
+			PAGE_MODE_DEFAULT_PAGE_SIZE,
+			PAGE_MODE_MAX_PAGE_SIZE,
+			PAGE_MODE_ALLOWED_SORTS,
+		)
+	return (DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, ALLOWED_SORTS)
+
+
+def _scope_echo(scope, accounts, leaves):
+	"""Return the resolved scope shape for the response echo.
+
+	`scope` (dict) and `accounts` (list) are the inputs the caller
+	provided; `leaves` is the post-resolution leaf list. Echo
+	includes the leaf count so the page can show "N accounts in
+	scope" without re-fetching.
+	"""
+	echo = {
+		"n_leaves": len(leaves) if leaves else 0,
+	}
+	if isinstance(scope, dict):
+		echo["scope"] = {
+			"type": scope.get("type"),
+			"value": scope.get("value"),
+		}
+	elif accounts is not None:
+		echo["accounts"] = list(accounts)[:50]  # cap to keep echo small
+		echo["accounts_truncated"] = len(accounts) > 50
+	return echo
 
 
 def _leaves_from_input(scope, accounts, allowed):
@@ -435,3 +537,144 @@ def _group_company_names():
 	doesn't reveal company names the user can't already infer.
 	"""
 	return set(frappe.db.sql_list("SELECT name FROM `tabCompany`"))
+
+
+# ---------------------------------------------------------------------------
+# CSV export -- export_party_list_csv (HALT 4)
+# ---------------------------------------------------------------------------
+
+PARTY_CSV_HEADERS = ("Party", "Party Type", "Balance", "Company Count")
+PARTY_EXPORT_TOO_LARGE_MSG = (
+	"Scope too large for CSV export ({n} parties). Narrow the scope "
+	"or use the party list page with pagination."
+)
+PARTY_CSV_HARD_TRUNCATE_AT = 50_000
+
+
+@frappe.whitelist()
+def export_party_list_csv(scope=None, accounts=None, scope_label=None,
+                          as_of_date=None, companies=None,
+                          sort="balance_desc"):
+	"""Stream the party list for one drill scope as a CSV download.
+
+	Honors the same scope/companies/sort args as `get_party_breakdown`
+	mode='page'. NO pagination -- all parties up to the 50K hard cap
+	are exported.
+
+	Cell format (locked at HALT 2 + carried to HALT 4):
+	  - Balance: raw decimal like "4500000.00" -- NO Indian grouping,
+	    NO currency symbol. Spreadsheet apps reformat per locale on
+	    import; pre-formatting breaks numerical typing.
+	  - Sub-rupee filter (ABS(balance) >= 1) applies same as the
+	    on-screen list, so file matches what user sees.
+
+	Filename: party_list_<scope-slug>_<as_of>_<HHMMSS>.csv per
+	HALT 4 instruction. (No `_filtered` infix because party list
+	doesn't have HALT 2.5-style filters yet.)
+	"""
+	# Reuse the shared CSV helpers from gl_drill_v1 to keep filename
+	# slugification + response-setting consistent across all three
+	# CSV endpoints.
+	from dux_groupview.dux_groupview.api.gl_drill_v1 import (
+		_csv_filename, _set_csv_response,
+	)
+	from dux_groupview.dux_groupview.api.pivot import (
+		_require_cockpit_role,
+		_resolve_scope,
+	)
+
+	_require_cockpit_role()
+
+	scope = _ensure_dict(scope)
+	accounts = _ensure_list(accounts)
+	# Sort allow-list matches mode='page' (4 sorts incl name_desc).
+	sort = sort if sort in PAGE_MODE_ALLOWED_SORTS else "balance_desc"
+
+	allowed = _resolve_scope(companies)
+	target_date = getdate(as_of_date) if as_of_date else getdate(today())
+
+	# Resolve label for filename slug.
+	resolved_label = scope_label or ""
+	if accounts is not None:
+		leaves = [a for a in accounts if isinstance(a, str)]
+	elif isinstance(scope, dict):
+		leaves, default_label = _resolve_scope_to_leaves(scope, allowed)
+		if not resolved_label:
+			resolved_label = default_label
+	else:
+		leaves = []
+
+	filename = _csv_filename("party_list", resolved_label, target_date)
+
+	if not allowed or not leaves:
+		_set_csv_response(filename, _build_party_csv([]))
+		return
+
+	common_where, common_params, flip_ph = _common_where_clause(
+		leaves, allowed, target_date,
+	)
+
+	# Cap check before the expensive query.
+	total = _count_parties(common_where, common_params, flip_ph)
+	if total > PARTY_CSV_HARD_TRUNCATE_AT:
+		frappe.throw(
+			_(PARTY_EXPORT_TOO_LARGE_MSG).format(n=f"{total:,}"),
+			title=_("Export too large"),
+		)
+
+	if total == 0:
+		_set_csv_response(filename, _build_party_csv([]))
+		return
+
+	# Same SQL shape as get_party_breakdown's page query, no LIMIT.
+	abs_balance_expr = (
+		f"ABS(SUM(CASE WHEN a.root_type IN ({flip_ph}) "
+		"THEN g.credit - g.debit "
+		"ELSE g.debit - g.credit END))"
+	)
+	sort_clause = {
+		"balance_desc": f"{abs_balance_expr} DESC, g.party ASC",
+		"balance_asc":  f"{abs_balance_expr} ASC, g.party ASC",
+		"name_asc":     "g.party ASC, g.party_type ASC",
+		"name_desc":    "g.party DESC, g.party_type ASC",
+	}[sort]
+
+	rows = frappe.db.sql(
+		f"""
+		SELECT
+		  g.party_type,
+		  g.party,
+		  SUM(CASE WHEN a.root_type IN ({flip_ph})
+		           THEN g.credit - g.debit
+		           ELSE g.debit - g.credit END) AS balance,
+		  COUNT(DISTINCT g.company) AS company_count
+		FROM `tabGL Entry` g
+		JOIN `tabAccount` a ON a.name = g.account
+		{common_where}
+		GROUP BY g.party_type, g.party
+		HAVING ABS(balance) >= 1
+		ORDER BY {sort_clause}
+		LIMIT %(cap)s
+		""",
+		{**common_params, "cap": PARTY_CSV_HARD_TRUNCATE_AT},
+		as_dict=True,
+	)
+
+	_set_csv_response(filename, _build_party_csv(rows))
+
+
+def _build_party_csv(rows):
+	"""Build the party list CSV body. UTF-8, QUOTE_MINIMAL,
+	\\n line endings, raw decimals.
+	"""
+	buf = io.StringIO()
+	w = csv.writer(buf, lineterminator="\n", quoting=csv.QUOTE_MINIMAL)
+	w.writerow(PARTY_CSV_HEADERS)
+	for r in rows:
+		w.writerow([
+			r["party"] or "",
+			r["party_type"] or "",
+			f"{flt(r['balance']):.2f}",
+			int(r["company_count"]),
+		])
+	return buf.getvalue()
