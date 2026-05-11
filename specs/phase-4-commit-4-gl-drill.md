@@ -1,6 +1,6 @@
 # Phase 4 commit 4 — GL drill page + CSV export + view all parties
 
-**Status:** v0.7, perf reversal of v0.5 partition decision (Phase 4 commit 9 measurement-driven)
+**Status:** v0.8, running_balance becomes conditional on single-leaf scope (Phase 4 commit 9, second iteration)
 **Branch:** `phase-4-drills` (continuing; no new branch)
 **Estimated duration:** 1–2 working days
 **Depends on:** Phase 4 commits 1, 2, 2.5, 3, 3.1 (all on `phase-4-drills`); side PR #10 (trust-subset seed) and #11 (augmented AP/AR seed) — both merged to main.
@@ -9,7 +9,69 @@ This spec extends the master Phase 4 spec (`specs/phase-4-drills.md`).
 Sections labelled §4.x reference the master spec; sections numbered
 without a prefix are local to this commit.
 
-**Changes from v0.6 (this revision):**
+**Changes from v0.7 (this revision):**
+- §5.1 — `running_balance` is now **conditional on scope shape**:
+  - **Single-leaf scope** (`len(resolved_leaves) == 1`): the window
+    function path is kept, with `PARTITION BY (company, account)`.
+    With one leaf, partitioning collapses to one partition per
+    company; each partition is small (rows-per-leaf-per-company,
+    typically <500), the window sort aligns with the index, and the
+    outer LIMIT can short-circuit cheaply. Single-account drills are
+    the common cockpit path (pivot row click → account drill → "view
+    all entries"; focus mode → row click) and accountants/auditors
+    expect a running ledger for them.
+  - **Multi-leaf scope** (`len(resolved_leaves) > 1`): the running
+    balance is **omitted from the response entirely** (the key is
+    absent from every row, not present-as-None). No window function
+    in SQL — the query reduces to a plain paginated SELECT with
+    `FORCE INDEX (dgv_party_drill)`. The UI suppresses the column
+    when the response shape lacks the key.
+
+  **Why this branch.** The running balance over a multi-leaf scope was
+  always semantically dubious — at v0.5 it was a global accumulator
+  across mixed (company, account) ledgers in date order, which is not
+  a real accounting concept. At v0.7 we re-introduced PARTITION BY
+  expecting it to fix performance. Phase 4 commit 9 measurement
+  disproved that hypothesis: partitioning made the medium-scope case
+  **slower**, not faster, because the windowed query has to materialise
+  the full filter set into a derived table before the outer LIMIT can
+  pick the top 50 — and partitioning forces a second sort (per-
+  partition window-order then global display-order). FORCE INDEX
+  alone (no PARTITION BY) measured 10.6 s at medium; PARTITION BY +
+  FORCE INDEX measured 30.6 s at medium. Both fail the <500 ms spec.
+
+  Dropping the window function entirely for multi-leaf removes the
+  bottleneck cleanly. The single-leaf case is unaffected (1 partition
+  means no extra sort cost; the windowed query becomes a streamed
+  index scan in (company, account, posting_date) order).
+
+- §6.1 — page UI handles the conditional column. When the response
+  has no `running_balance` key on its row entries, the page suppresses
+  the Running Balance column header AND data cell for every row.
+  A small italic subtitle below the toolbar reads "Running balance
+  shown for single-account scopes only." for discoverability — the
+  user sees why the column is missing and what they'd need to drill
+  into to get it.
+
+  Group divider chips remain visible regardless (they always served
+  the "label which (company, account) each row belongs to" role per
+  v0.5+).
+
+**Iteration history for the running_balance design (PHASE_LOG honesty):**
+1. **v0.4** — running balance partitioned by `(company, account)`.
+2. **v0.5** — dropped PARTITION BY for aesthetic "scope-wide
+   accumulator" UX. Shipped this way through Phase 4 commits 4-7.
+3. **v0.7** (this spec's first commit 9 iteration) — restored
+   PARTITION BY based on the hypothesis that the unpartitioned
+   window's global sort was the bottleneck. Hypothesis was incorrect.
+4. **v0.8** (this revision) — branched on scope size. Single-leaf
+   keeps the window with PARTITION BY (semantically meaningful, fast
+   with 1 partition). Multi-leaf drops the running balance entirely.
+
+Phase A measurement at 5M scale was the discipline that surfaced
+this. Without it we'd have shipped 10-second loads to production.
+
+**Changes from v0.6:**
 - §5.1 — `PARTITION BY g.company, g.account` is **restored** on the
   running-balance window function. v0.5's scope-wide accumulation
   decision is reversed.
