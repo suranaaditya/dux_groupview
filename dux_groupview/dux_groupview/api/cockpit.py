@@ -70,6 +70,20 @@ def get_spotlight_cards(snapshot_date):
 	format, color) and server-rendered formatted strings for the value
 	and delta. Cards with no cache row (zero-match accounts on dev seed)
 	still appear with value=0 / delta=0 / sparkline_data=[].
+
+	Cache fallback (commit 7 F-3): scheduler-driven runs go through
+	`_refresh_with_spotlight()` (refresh.py) which chains the spotlight
+	cache after the TB snapshot, so under normal operation the cache
+	rows for a fresh snapshot are present. If the chained refresh
+	silently fails (caught and logged in `_refresh_with_spotlight`) OR
+	someone runs `refresh_tb_snapshot` manually without the wrapper,
+	the cache lags and this endpoint would return all-zero cards --
+	indistinguishable from a "no activity" cockpit. Defensive read-side
+	fallback: if no cache rows exist for `snapshot_date`, fall through
+	to the same live recomputation path that
+	`get_spotlight_cards_filtered` uses, scoped to the user's full
+	allowed company set. Logs to `frappe.log_error` so production
+	observability flags every fallback fire.
 	"""
 	_require_cockpit_role()
 	snapshot_date = getdate(snapshot_date)
@@ -83,6 +97,26 @@ def get_spotlight_cards(snapshot_date):
 		(snapshot_date,),
 		as_dict=True,
 	)
+
+	# Defensive fallback when the cache is empty for this date.
+	if not cache_rows:
+		frappe.log_error(
+			message=(
+				f"Spotlight cache empty for snapshot_date={snapshot_date}; "
+				"falling back to live recomputation. Either the chained "
+				"_refresh_with_spotlight failed silently for this date, or "
+				"refresh_tb_snapshot was run without the wrapper. Cockpit "
+				"is showing correct numbers via fallback."
+			),
+			title="Spotlight cache empty fallback",
+		)
+		# Live recompute scoped to user's full allowed companies, mirroring
+		# the no-explicit-scope path that `get_spotlight_cards_filtered`
+		# uses when companies=null. Reuses the same code path; no new
+		# helper needed.
+		allowed = _resolve_scope(None)
+		return _build_filtered_cards_payload(snapshot_date, allowed)
+
 	cache_by_id = {r["card_id"]: r for r in cache_rows}
 
 	# Phase 4 commit 2.5 fix 3: per-card has_prior_baseline. A card has
@@ -163,6 +197,19 @@ def get_spotlight_cards_filtered(snapshot_date, companies):
 	snapshot_date = getdate(snapshot_date)
 
 	allowed = _resolve_scope(companies)
+	return _build_filtered_cards_payload(snapshot_date, allowed)
+
+
+def _build_filtered_cards_payload(snapshot_date, allowed):
+	"""Live-recompute the 6 cards for an explicit company list.
+
+	Shared between `get_spotlight_cards_filtered` (always called) and
+	`get_spotlight_cards`'s defensive fallback (called when the cache
+	is empty for the requested date — commit 7 F-3 fix).
+
+	`allowed` is already permission-intersected (caller invokes
+	`_resolve_scope`).
+	"""
 	if not allowed:
 		# No accessible companies after intersection -- return zeroed
 		# cards in the same shape as get_spotlight_cards.

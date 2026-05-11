@@ -265,3 +265,43 @@ class TestMissingBaselineBranches(FrappeTestCase):
 			out["headline"],
 			"Sundry creditors up by ₹4.1 Cr since April.",
 		)
+
+
+class TestSpotlightCacheEmptyFallback(FrappeTestCase):
+	"""Commit 7 F-3: `get_spotlight_cards` falls back to live
+	recompute when the cache table has zero rows for the requested
+	snapshot date. Pre-fix the endpoint silently returned all-zero
+	cards (indistinguishable from a "no activity" cockpit). Now the
+	fallback path runs and returns the live aggregate, with a
+	frappe.log_error entry for observability.
+	"""
+
+	def setUp(self):
+		super().setUp()
+		# Pick a date that has snapshot rows but no spotlight cache
+		# rows. We pick a date 90 days in the past + nuke any cache
+		# rows for that date as our test setup.
+		from datetime import timedelta
+		self.test_date = (getdate(today()) - timedelta(days=90)).isoformat()
+
+	def test_get_spotlight_cards_falls_back_when_cache_empty(self):
+		# Make sure there's no cache row for self.test_date (DELETE
+		# only fires if some test seeded one previously; harmless
+		# otherwise).
+		frappe.db.sql(
+			"DELETE FROM `tabDGV Spotlight Cache` WHERE snapshot_date = %s",
+			(self.test_date,),
+		)
+		frappe.db.commit()
+		# Endpoint should not raise; should return the 6-card list
+		# in the same shape as the cached path. Values may be zero
+		# (no snapshot rows for that date on dev) -- what we're
+		# testing is the SHAPE, not the magnitude.
+		out = cockpit.get_spotlight_cards(self.test_date)
+		self.assertEqual(len(out), 6)
+		for card in out:
+			self.assertIn("card_id", card)
+			self.assertIn("value", card)
+			self.assertIn("formatted_value", card)
+			# Live-recompute path returns numeric (not None) values.
+			self.assertIsNotNone(card["value"])

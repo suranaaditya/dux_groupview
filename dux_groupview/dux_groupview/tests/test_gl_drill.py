@@ -754,3 +754,44 @@ class TestExportGlEntriesCsvFilters(_GlDrillBase):
 	def _fixture_pd(self):
 		from datetime import timedelta
 		return getdate(today()) - timedelta(days=30)
+
+
+class TestGlDrillFilterMetadataCompaniesInScope(_GlDrillBase):
+	"""Commit 7 F-11: get_filter_metadata now returns the explicit
+	companies-in-scope list so the GL drill page can render the
+	COMPANIES filter dropdown even when the URL has no `companies=`
+	param. Pre-fix the dropdown hid entirely under that condition,
+	violating commit-4 spec §3.1 visibility rule.
+	"""
+
+	def test_filter_metadata_returns_companies_in_scope(self):
+		# Use the fixture's 3 companies as the scope (no companies=
+		# arg → server uses permission-allowed set, which on the
+		# test runner is "all"; we narrow via the accounts list).
+		out = gl_drill_v1.get_filter_metadata(
+			accounts=self._payable_leaves(),
+			as_of_date=today(),
+		)
+		self.assertIn("companies_in_scope", out)
+		self.assertIsInstance(out["companies_in_scope"], list)
+		# Server returns ALL permission-allowed companies regardless
+		# of which the accounts list spans -- that's the "scope
+		# universe" the filter dropdown needs.
+		self.assertGreaterEqual(len(out["companies_in_scope"]), 1)
+		for c in out["companies_in_scope"]:
+			self.assertIsInstance(c, str)
+			self.assertTrue(c, "company name should be non-empty")
+
+	def test_filter_metadata_companies_in_scope_matches_n_companies(self):
+		out = gl_drill_v1.get_filter_metadata(
+			accounts=self._payable_leaves(),
+			as_of_date=today(),
+		)
+		# The list length must match the scope_fanout count -- pins
+		# the invariant that the visibility check on the client
+		# (n_companies > 1) and the universe-populate logic
+		# (len(companies_in_scope) > 1) agree.
+		self.assertEqual(
+			len(out["companies_in_scope"]),
+			out["scope_fanout"]["n_companies"],
+		)

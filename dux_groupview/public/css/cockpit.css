@@ -2400,6 +2400,43 @@
 	min-height: 110px;
 }
 
+/* GL drill row-click filter cells (Phase 4 commit 7 F-7).
+ * Party / company / account names are clickable to add a filter.
+ * Subtle dotted underline shows the affordance without making the
+ * row look like a sea of links; hover brightens to make the
+ * clickability unmistakable. */
+.dgv-gl-filter-cell {
+	color: var(--rgi-text-primary);
+	text-decoration: none;
+	border-bottom: 1px dotted var(--rgi-text-tertiary);
+	cursor: pointer;
+	transition: color 0.1s ease, border-color 0.1s ease;
+}
+.dgv-gl-filter-cell:hover {
+	color: var(--rgi-text-primary);
+	border-bottom-color: var(--rgi-text-primary);
+}
+.dgv-gl-filter-cell:focus-visible {
+	outline: 2px solid var(--rgi-text-primary);
+	outline-offset: 2px;
+	border-radius: 2px;
+}
+
+/* Cockpit spotlight responsive at <=800px (commit 7 F-14 fix).
+ * Pre-fix the 3-column tier grid had no narrow-width override; cards
+ * compressed unevenly at narrow widths. Stack both tiers as a single
+ * column at <=800px; card internal padding stays the same. */
+@media (max-width: 800px) {
+	.rgi-spotlight-tier-primary,
+	.rgi-spotlight-tier-secondary {
+		grid-template-columns: 1fr;
+		gap: 12px;
+	}
+	.rgi-spotlight-tier-primary {
+		margin-bottom: 12px;
+	}
+}
+
 /* Hero (drill panel) skeleton */
 .dgv-drill-hero-skeleton-bars {
 	padding: 8px 0;

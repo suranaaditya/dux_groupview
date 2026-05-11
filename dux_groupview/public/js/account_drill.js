@@ -1468,6 +1468,18 @@
 			: 0;
 		var body = xhrOrErr.responseJSON || null;
 
+		// Frappe's error pipeline sometimes strips xhr.status before
+		// the JS-side error callback fires (some exception classes
+		// surface as status=0 once Frappe's default handler has
+		// captured the response). Check the body for the
+		// malformed_scope flag regardless of status -- if the server
+		// set `frappe.local.response["malformed_scope"] = True`, route
+		// to the invalid-scope tile no matter what status survived
+		// (commit 7 F-12 fix).
+		if (body && body.malformed_scope) {
+			return { category: 'invalid', status: status };
+		}
+
 		if (status === 0 || status === undefined) {
 			return { category: 'network', status: status };
 		}
@@ -1475,6 +1487,10 @@
 			return { category: 'permission', status: status };
 		}
 		if (status === 404 && body && body.malformed_scope) {
+			// Reachable when status survives. Flagged at top of fn
+			// for safety (status-stripped pipeline) but kept here for
+			// the gl_drill / party_list synthetic-xhr usage that
+			// always emits a real status: 404.
 			return { category: 'invalid', status: status };
 		}
 		if (status >= 500) {

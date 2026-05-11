@@ -507,8 +507,18 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 					textEl.textContent = '';
 					return;
 				}
+				// Always set the text, but only un-hide the headline
+				// when we're NOT in focus mode (commit 7 F-13 race fix).
+				// Pre-fix: focus-mode entry called applyFocusModeToCockpit
+				// which hid the headline at t=T; this callback then fired
+				// at t=T+~200ms and un-hid it on top of the focus view.
+				// Now: if focusMode is active, leave the headline hidden;
+				// applyFocusModeToCockpit's exit path will re-evaluate
+				// when the user returns to the cockpit.
 				textEl.textContent = text;
-				headlineEl.hidden = false;
+				if (!focusMode) {
+					headlineEl.hidden = false;
+				}
 			},
 		});
 	}
@@ -828,7 +838,17 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 			`);
 		}
 
-		$delta.replaceWith(renderDelta(card));
+		// Empty cards skip the delta line entirely (commit 7 F-1 fix).
+		// Pre-fix: every card unconditionally rendered renderDelta(),
+		// which produced "First reported this month" or
+		// "Up ₹X Cr from <Month>" beneath an empty card -- logically
+		// meaningless when there's no value to compare. Remove the
+		// row outright; the visual gap is small and intentional.
+		if (isEmpty) {
+			$delta.remove();
+		} else {
+			$delta.replaceWith(renderDelta(card));
+		}
 
 		// Click handler: stub for now -- real drill panel wires in commit 5.
 		// "No activity recorded" cards are clickable too; commit 5's panel
@@ -1188,6 +1208,17 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 			const tile = host.querySelector('.dgv-error-tile');
 			if (tile) tile.style.gridColumn = '1 / -1';
 		}
+		// Suppress Frappe's default error modal that pops up on top
+		// of our error tile (commit 7 F-12 part B). Frappe shows a
+		// "Not found / Trust X does not exist" dialog automatically
+		// for DoesNotExistError responses; our error tile already
+		// gives the user a recovery affordance, so the modal is
+		// redundant noise. hide_msgprint() + manual modal dismiss
+		// covers both surfaces Frappe might use.
+		try {
+			if (frappe.hide_msgprint) frappe.hide_msgprint();
+			$('.modal.show').modal('hide');
+		} catch (e) { /* swallow */ }
 	}
 
 	function renderFocusedView(payload) {

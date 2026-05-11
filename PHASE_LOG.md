@@ -1484,3 +1484,164 @@ intervention required.
   (carried over from commit 5).
 - Per-company strip data inline in `get_focused_view` response
   (carried over from commit 5).
+
+
+## Phase 4 — Commit 7 — End-to-end walkthrough + bug bash
+
+**Status:** Done -- 2026-05-10. Branch `phase-4-drills` (single
+commit covering Phase A discovery walkthrough + Phase B targeted
+fixes).
+
+**Goal:** Walk the full cockpit user flow systematically, log every
+paper cut / functional gap / visual oddity uncovered, triage with
+Aditya, then land the bundled fixes in one commit. Commit 7 is
+maintenance / polish on top of the commit 4–6 feature set, not net
+new functionality.
+
+**Phase A walkthrough method:** Claude in Chrome MCP-driven
+walkthrough of all 10 scenarios from the original brief (cockpit
+landing → spotlight cards → pivot interaction → drill panel → GL
+drill → party list → focus mode → cross-page navigation → edge
+cases → cosmetic). 14 findings logged in `.claude/scratch/
+COMMIT_7_FINDINGS.md`. Scenario 10 cosmetic deferred to standalone
+fresh-eyes pass after commit 7 ships (automation can't reliably
+judge subjective polish).
+
+**Triage decisions** (Aditya, end of Phase A):
+
+- 10 findings to fix in commit 7 (F-1, F-3, F-5, F-7, F-9, F-10,
+  F-11, F-12, F-13, F-14)
+- 4 findings deferred (F-2: dev seed only has 4 of 10 trusts --
+  prod fixes; F-4: synthetic-seed noisy Cash & Bank numbers; F-6:
+  GL drill default-sort flip kept oldest-first per HALT 1
+  decision; F-8: voucher click 404 on dev because synthetic seed
+  has no real Journal Entry records -- fine in prod)
+
+**Deliverables (Phase B):**
+
+- [x] `api/cockpit.py` -- F-3 Layer 1 defensive fallback in
+  `get_spotlight_cards`. When no cache rows exist for the
+  requested snapshot_date, log a `frappe.log_error` and fall back
+  to live recomputation via the new helper
+  `_build_filtered_cards_payload` (extracted from
+  `get_spotlight_cards_filtered` so both endpoints share the same
+  per-card logic).
+- [x] `api/focus_v1.py` -- F-12 part A. `_resolve_focused_companies`
+  now sets `frappe.local.response["malformed_scope"] = True`
+  before raising `DoesNotExistError` for unknown company / trust
+  names. Routes the JS classifier to the "invalid scope" tile
+  instead of the generic "network" or "server" branch.
+- [x] `api/gl_drill_v1.py` -- F-11 fix. `get_filter_metadata`
+  response shape extended with `companies_in_scope` (explicit list
+  of permission-allowed companies). Lets the GL drill page render
+  the COMPANIES filter dropdown when the URL has no `companies=`
+  param.
+- [x] `page/groupview/groupview.js` -- F-1 (skip delta line on
+  empty cards), F-13 (guard `loadHeadline` callback against
+  un-hiding the headline when focus mode is active).
+  `renderFocusError` also dismisses any Frappe default error modal
+  via `frappe.hide_msgprint()` + manual `.modal('hide')` for F-12
+  part B.
+- [x] `page/gl_drill/gl_drill.js` -- F-5 (unify page labels to
+  "GL Entries" everywhere), F-7 (clickable party / company /
+  account names with delegated click handler routing through
+  `applyFilterChange`), F-9 (sort URL parse validation against
+  the 4 known values), F-10 (remove duplicate hero party chip --
+  the active-filter-chip row below is the spec §7.3 single source
+  of truth), F-11 (populate `state.companiesUniverse` from the
+  server's `companies_in_scope` when not seeded from URL).
+- [x] `public/js/account_drill.js` -- F-12 part A. Classifier
+  short-circuits to `invalid` if `responseJSON.malformed_scope`
+  is true, regardless of status code. Compensates for Frappe's
+  error pipeline stripping `xhr.status` to 0 on some exception
+  classes.
+- [x] `public/css/cockpit.css` -- F-7 (`.dgv-gl-filter-cell`
+  styling: subtle dotted underline + brighter on hover + focus
+  ring) and F-14 (`@media (max-width: 800px)` rules for cockpit
+  spotlight tiers: stack to 1 column at narrow widths).
+- [x] `tests/test_focus.py` -- 1 new test
+  (`test_get_focused_view_invalid_scope_sets_malformed_scope_flag`)
+  pinning F-12 part A server behaviour.
+- [x] `tests/test_cockpit.py` -- 1 new test
+  (`test_get_spotlight_cards_falls_back_when_cache_empty`)
+  pinning F-3 fallback shape.
+- [x] `tests/test_gl_drill.py` -- 2 new tests in
+  `TestGlDrillFilterMetadataCompaniesInScope` pinning F-11
+  response-shape + count invariant.
+- [x] Suite at 182 / 182 green (was 178 before commit 7;
+  +4 new, 2 documented skips carrying over).
+
+**Architectural decisions:**
+
+- **F-3 layered fix.** Layer 2 (preventative chaining) was
+  ALREADY in place via `snapshots/refresh.py::_refresh_with_spotlight`
+  -- both scheduler entries (`refresh_tb_snapshot_business_hours`
+  and `_off_hours`) call the wrapper, which runs TB refresh →
+  spotlight cache refresh in sequence with error logging on
+  spotlight failure. The dev gap that surfaced the bug was a
+  manual `bench execute refresh_tb_snapshot` (bypassing the
+  wrapper) during commit 5/6 testing. Layer 1 (defensive read-
+  side fallback) is still worth adding for resilience against
+  silent spotlight failures (caught and logged in the wrapper)
+  or future manual invocation paths. Layer 1 chosen over a
+  scheduler-coupling change because it's defensive at the read
+  path (always safe) rather than dependent on the
+  write/scheduler path (which can fail).
+- **`companies_in_scope` returned by get_filter_metadata.**
+  Considered alternatives: (1) re-call `get_scope_options` from
+  the GL drill page after boot -- adds a round-trip, requires
+  separate permission scoping; (2) parse the company list from
+  the `get_gl_entries` rows themselves -- works only when there's
+  data, fails on zero-row scopes. The chosen path (server
+  returns the resolved scope directly) is single-source-of-truth
+  and the same logic the SQL already runs.
+- **F-7 row-click filter additions use existing
+  `applyFilterChange` plumbing.** Per Aditya's triage:
+  party = single-select replace, company = multi-select toggle,
+  account = multi-select toggle. `applyFilterChange` already
+  resets pagination to page 1 and pushes URL state, so no new
+  helpers needed -- just call it with the patched state. Single
+  delegated click handler on `document` keeps the row-render
+  template clean (no inline onclick).
+- **F-12 classifier check on `responseJSON.malformed_scope`
+  regardless of status code.** Frappe's error pipeline
+  occasionally surfaces `DoesNotExistError` responses to the
+  JS-side error callback with `xhr.status = 0` (likely because
+  Frappe's default modal handler captures and re-emits the
+  response). Trusting the body flag rather than the status code
+  is more robust against Frappe-internal changes.
+
+**Findings deferred (NOT in commit 7):**
+
+| ID | Title | Reason |
+|----|-------|--------|
+| F-2 | Pivot trust list shows only 4 of 10 configured trusts | Dev seed limitation; production has 10 trusts |
+| F-4 | Cash & Bank renders -₹11,076 Cr on full-scope live recompute | Synthetic seed quirk; not a code bug |
+| F-6 | GL drill default sort = "Date (oldest first)" | Spec v0.4 deliberate decision; kept per HALT 1 |
+| F-8 | Voucher click 404s on dev (synthetic seed) | Real ERPNext production data has the voucher records |
+| (cosmetic scenario 10) | Visual polish walkthrough | Deferred to standalone fresh-eyes pass; automation can't reliably judge "feels off" |
+
+**Test count:** 182 / 182 green (was 178 before commit 7; +4 new).
+- `test_focus.py`: +1
+  (test_get_focused_view_invalid_scope_sets_malformed_scope_flag)
+- `test_cockpit.py`: +1
+  (test_get_spotlight_cards_falls_back_when_cache_empty)
+- `test_gl_drill.py`: +2 in TestGlDrillFilterMetadataCompaniesInScope
+
+**`tabGL Entry` audit:** No new `tabGL Entry` reads introduced.
+Architecture rule preserved.
+
+**Open follow-ups (Phase 5 candidates / not commit 7):**
+
+- Scenario 10 cosmetic polish walkthrough by Aditya in his own
+  browser (color consistency, hover states, focus rings,
+  empty whitespace judgments).
+- Voucher row click currently goes to `/app/<voucher-type>/<voucher_no>`
+  which works in production but 404s on dev synthetic seed.
+  Consider a "voucher resolver" middleware that pre-checks
+  existence and shows a friendly message on miss -- not worth
+  the complexity today.
+- Auditing all server endpoints for the `malformed_scope` flag
+  pattern: `cards_v1`, `focus_v1` set it; `gl_drill_v1`,
+  `party_drill_v1`, `account_drill_v1` may have similar
+  stale-scope cases that would benefit from the same treatment.

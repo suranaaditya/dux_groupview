@@ -29,9 +29,14 @@
  */
 
 frappe.pages['gl-drill'].on_page_load = function(wrapper) {
+	// Page label is "GL Entries" everywhere — eyebrow / title / breadcrumb /
+	// document.title — for consistency with the breadcrumb step that
+	// users actually look at (commit 7 F-5 fix). Pre-fix the loading
+	// state showed three different strings ("GL DRILL" / "GL drill" /
+	// "GL entries") for the same page.
 	frappe.ui.make_app_page({
 		parent: wrapper,
-		title: 'GL drill',
+		title: 'GL Entries',
 		single_column: true,
 	});
 
@@ -53,7 +58,7 @@ frappe.pages['gl-drill'].on_page_load = function(wrapper) {
 
 			<section class="dgv-drill-page-hero" id="dgv-gl-hero">
 				<div class="dgv-drill-page-hero-meta">
-					<div class="dgv-drill-eyebrow">GL drill</div>
+					<div class="dgv-drill-eyebrow">GL Entries</div>
 					<h2 class="dgv-drill-title" id="dgv-gl-title">…</h2>
 					<div class="dgv-drill-scope-sub" id="dgv-gl-sub"></div>
 				</div>
@@ -225,6 +230,64 @@ frappe.pages['gl-drill'].on_page_load = function(wrapper) {
 		window.location.href = url;
 	});
 
+	// Delegated click handler for row-level filter-adding cells
+	// (commit 7 F-7). Each clickable cell in the table carries
+	//   data-filter-type   in {company, account_name, party}
+	//   data-filter-value  the value to filter to
+	//   data-filter-extra  (party only) the party_type
+	// Click → applyFilterChange merges the patch into state and
+	// fires the existing filter-change pipeline (URL push +
+	// pagination reset + refetch).
+	$(document).on('click', '.dgv-gl-filter-cell', function (e) {
+		e.preventDefault();
+		e.stopPropagation();
+		var $cell = $(this);
+		var filterType = $cell.data('filter-type');
+		var value = $cell.data('filter-value');
+		if (!filterType || value === undefined || value === null || value === '') return;
+
+		if (filterType === 'party') {
+			// Single-select: replace any existing party filter.
+			applyFilterChange({
+				party: String(value),
+				party_type: $cell.data('filter-extra') || null,
+			});
+		} else if (filterType === 'company') {
+			// Multi-select toggle: if `companies` already includes
+			// the value, remove it (toggle off); otherwise add it.
+			// When companies state is null (all), clicking sets it
+			// to a single-element list (narrow to that company).
+			var current = (state.companies && state.companies.slice()) || null;
+			var v = String(value);
+			if (current === null) {
+				applyFilterChange({ companies: [v] });
+			} else if (current.indexOf(v) === -1) {
+				current.push(v);
+				applyFilterChange({ companies: current });
+			} else {
+				current = current.filter(function (c) { return c !== v; });
+				applyFilterChange({
+					companies: current.length ? current : null,
+				});
+			}
+		} else if (filterType === 'account_name') {
+			// Multi-select toggle on stripped account_name list.
+			var currentNames = (state.account_names && state.account_names.slice()) || null;
+			var n = String(value);
+			if (!currentNames || !currentNames.length) {
+				applyFilterChange({ account_names: [n] });
+			} else if (currentNames.indexOf(n) === -1) {
+				currentNames.push(n);
+				applyFilterChange({ account_names: currentNames });
+			} else {
+				currentNames = currentNames.filter(function (a) { return a !== n; });
+				applyFilterChange({
+					account_names: currentNames.length ? currentNames : null,
+				});
+			}
+		}
+	});
+
 	// Browser back/forward integration. popstate re-parses the URL
 	// and re-fetches. pushUrl() never fires popstate (only the user
 	// does), so we don't loop.
@@ -301,7 +364,17 @@ frappe.pages['gl-drill'].on_page_load = function(wrapper) {
 		// default this way) so running balance reads as accumulator
 		// down the column. posting_date_desc remains available in the
 		// toolbar for "what's most recent" queries.
-		const sort = params.get('sort') || 'posting_date_asc';
+		// Validation (commit 7 F-9 fix): unknown / null / malformed
+		// values fall back to the default rather than passing through
+		// to the URL as `sort=null` and leaving the dropdown blank.
+		const _VALID_SORTS = new Set([
+			'posting_date_asc', 'posting_date_desc',
+			'amount_asc', 'amount_desc',
+		]);
+		const _rawSort = params.get('sort');
+		const sort = (_rawSort && _VALID_SORTS.has(_rawSort))
+			? _rawSort
+			: 'posting_date_asc';
 
 		// HALT 2.5 filter state -- comma-separated lists for
 		// account_names / voucher_types; ISO dates for from/to.
@@ -527,6 +600,25 @@ frappe.pages['gl-drill'].on_page_load = function(wrapper) {
 			args: args,
 			callback: function (r) {
 				state.filterMetadata = (r && r.message) || null;
+				// Populate the company universe from the server's
+				// resolved scope when it wasn't seeded from a URL
+				// `companies=` param at boot (commit 7 F-11 fix).
+				// Pre-fix: the COMPANIES filter dropdown hid entirely
+				// when the URL had no companies param, even though the
+				// resolved scope spanned multiple companies. Now we
+				// fall back to the server's `companies_in_scope` list
+				// to populate the universe -- the dropdown becomes
+				// visible whenever the resolved scope spans >1
+				// company, matching commit-4 spec §3.1.
+				if (
+					(!state.companiesUniverse || !state.companiesUniverse.length)
+					&& state.filterMetadata
+					&& Array.isArray(state.filterMetadata.companies_in_scope)
+					&& state.filterMetadata.companies_in_scope.length
+				) {
+					state.companiesUniverse =
+						state.filterMetadata.companies_in_scope.slice();
+				}
 				renderFilters();
 				renderFilterChips();
 				updateMobileBadge();
@@ -1058,17 +1150,15 @@ frappe.pages['gl-drill'].on_page_load = function(wrapper) {
 		document.getElementById('dgv-gl-sub').textContent = scopeSubLine();
 		document.title = label + ' — GL entries';
 
-		// Totals (right side of hero): show entry count + party filter
-		// chip if active.
+		// Totals (right side of hero): show entry count.
+		// Party-filter chip removed from the hero (commit 7 F-10 fix);
+		// the active-filter-chip row below the filter panel (rendered
+		// by renderFilterChips, with "Clear all filters") is the
+		// commit-4 §7.3 spec-mandated single source of truth.
 		let totalsHtml = '';
 		totalsHtml += '<div class="dgv-gl-totals-num">' +
 			(data.total_entries || 0).toLocaleString() + '</div>';
 		totalsHtml += '<div class="dgv-gl-totals-label">GL entries</div>';
-		if (state.party) {
-			totalsHtml += '<div class="dgv-gl-party-chip">Party: ' +
-				escape(state.party) +
-				' <button type="button" class="dgv-gl-party-clear" title="Remove party filter">×</button></div>';
-		}
 		document.getElementById('dgv-gl-totals').innerHTML = totalsHtml;
 		const clearBtn = document.querySelector('.dgv-gl-party-clear');
 		if (clearBtn) {
@@ -1160,19 +1250,46 @@ frappe.pages['gl-drill'].on_page_load = function(wrapper) {
 			const isBoundary = showDividers && key !== prevKey;
 			prevKey = key;
 
+			// Group divider with clickable company + account names
+			// (commit 7 F-7). Each segment becomes a filter-adding
+			// link with `data-filter-type` + `data-filter-value`
+			// attributes; the delegated click handler near the page
+			// init reads these and calls applyFilterChange.
+			const accountStripped = stripCompanySuffix(e.account);
 			const dividerHtml = isBoundary
 				? '<tr class="dgv-gl-group-divider">' +
 				    '<td colspan="6">' +
 				      '<span class="dgv-gl-group-chip">' +
-				        escape(e.company) + ' • ' + escape(stripCompanySuffix(e.account)) +
+				        '<a href="#" class="dgv-gl-filter-cell" ' +
+				        'data-filter-type="company" ' +
+				        'data-filter-value="' + escape(e.company) + '" ' +
+				        'title="Filter to ' + escape(e.company) + '">' +
+				          escape(e.company) +
+				        '</a>' +
+				        ' • ' +
+				        '<a href="#" class="dgv-gl-filter-cell" ' +
+				        'data-filter-type="account_name" ' +
+				        'data-filter-value="' + escape(accountStripped) + '" ' +
+				        'title="Filter to ' + escape(accountStripped) + '">' +
+				          escape(accountStripped) +
+				        '</a>' +
 				      '</span>' +
 				    '</td>' +
 				  '</tr>'
 				: '';
 
 			const dateStr = e.posting_date || '';
+			// Party cell with clickable party name (commit 7 F-7).
+			// Single-select semantics — clicking a party name replaces
+			// any prior party filter.
 			const partyHtml = e.party
-				? escape(e.party) +
+				? '<a href="#" class="dgv-gl-filter-cell" ' +
+				  'data-filter-type="party" ' +
+				  'data-filter-value="' + escape(e.party) + '" ' +
+				  'data-filter-extra="' + escape(e.party_type || '') + '" ' +
+				  'title="Filter to ' + escape(e.party) + '">' +
+				    escape(e.party) +
+				  '</a>' +
 				  '<span class="dgv-gl-party-type">' + escape(e.party_type || '') + '</span>'
 				: '<span class="dgv-gl-empty-cell">—</span>';
 			const remarksHtml = e.remarks
@@ -1293,7 +1410,7 @@ frappe.pages['gl-drill'].on_page_load = function(wrapper) {
 
 	function showError(message) {
 		document.getElementById('dgv-gl-bc-current').textContent = 'Error';
-		document.getElementById('dgv-gl-title').textContent = 'GL drill';
+		document.getElementById('dgv-gl-title').textContent = 'GL Entries';
 		document.getElementById('dgv-gl-sub').textContent = '';
 		document.getElementById('dgv-gl-totals').innerHTML = '';
 		document.getElementById('dgv-gl-fanout-banner').hidden = true;

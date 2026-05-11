@@ -247,6 +247,40 @@ class TestFocusedViewValidation(FrappeTestCase):
 				as_of_date=today(),
 			)
 
+	def test_get_focused_view_invalid_scope_sets_malformed_scope_flag(self):
+		"""Commit 7 F-12 fix: stale focus deep-links (unknown
+		company / trust name) raise `frappe.DoesNotExistError` AND
+		set `frappe.local.response["malformed_scope"] = True` so the
+		cockpit JS classifier routes to the "This link is no longer
+		valid" tile rather than the generic "server" or "network"
+		message. Matches the same pattern in
+		`cards_v1.resolve_match_to_accounts`.
+		"""
+		# Unknown company → malformed_scope flag set.
+		frappe.local.response = frappe._dict()
+		with self.assertRaises(frappe.DoesNotExistError):
+			focus_v1.get_focused_view(
+				scope_type="company",
+				scope_value="No Such Company X9Z",
+				as_of_date=today(),
+			)
+		self.assertTrue(
+			frappe.local.response.get("malformed_scope"),
+			"malformed_scope flag missing on unknown-company raise",
+		)
+		# Unknown trust → malformed_scope flag set.
+		frappe.local.response = frappe._dict()
+		with self.assertRaises(frappe.DoesNotExistError):
+			focus_v1.get_focused_view(
+				scope_type="trust",
+				scope_value="No Such Trust X9Z",
+				as_of_date=today(),
+			)
+		self.assertTrue(
+			frappe.local.response.get("malformed_scope"),
+			"malformed_scope flag missing on unknown-trust raise",
+		)
+
 
 class TestFocusedViewSignConvention(FrappeTestCase):
 	"""Sign-flip correctness against snapshot raw balances."""

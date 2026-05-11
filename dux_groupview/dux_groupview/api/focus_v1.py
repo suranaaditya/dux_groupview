@@ -63,6 +63,11 @@ def _resolve_focused_companies(scope_type, scope_value):
 
 	if scope_type == "company":
 		if not frappe.db.exists("Company", scope_value):
+			# Stale deep-link: company in URL doesn't exist. Set
+			# malformed_scope flag so the cockpit JS classifier
+			# routes to the "invalid scope" tile (commit 7 F-12 fix);
+			# matches the pattern used in cards_v1.
+			frappe.local.response["malformed_scope"] = True
 			frappe.throw(
 				_("Company {0} does not exist").format(scope_value),
 				frappe.DoesNotExistError,
@@ -81,6 +86,11 @@ def _resolve_focused_companies(scope_type, scope_value):
 			trust_companies = list(trust["companies"])
 			break
 	if trust_companies is None:
+		# Stale deep-link: trust in URL doesn't exist (e.g. user
+		# bookmarked a trust that's since been removed from the
+		# TRUSTS list, or hand-edited URL). malformed_scope flag
+		# routes the JS classifier to the "invalid" tile.
+		frappe.local.response["malformed_scope"] = True
 		frappe.throw(
 			_("Trust {0} does not exist").format(scope_value),
 			frappe.DoesNotExistError,

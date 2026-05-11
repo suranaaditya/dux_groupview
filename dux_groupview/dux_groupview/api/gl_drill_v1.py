@@ -947,6 +947,7 @@ def get_filter_metadata(scope=None, accounts=None, as_of_date=None,
 			"n_accounts": len(leaves),
 			"n_companies": len(allowed),
 		},
+		"companies_in_scope": list(allowed),
 	}
 	if not allowed or not leaves:
 		return empty
@@ -1013,6 +1014,13 @@ def get_filter_metadata(scope=None, accounts=None, as_of_date=None,
 			"n_accounts": len(leaves),
 			"n_companies": len(allowed),
 		},
+		# Companies-in-scope explicit list (commit 7 F-11 fix). Pre-fix,
+		# the GL drill page derived its companies-filter universe from
+		# the URL `companies=` param alone -- when absent, the dropdown
+		# hid even though the resolved scope spanned multiple companies.
+		# Returning the actual permission-allowed list here lets the
+		# client render the filter regardless of URL shape.
+		"companies_in_scope": list(allowed),
 	}
 
 
