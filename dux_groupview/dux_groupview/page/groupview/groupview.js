@@ -923,7 +923,7 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 			const d = new Date(iso);
 			d.setDate(1);
 			d.setMonth(d.getMonth() - 1);
-			return d.toLocaleDateString(undefined, { month: 'long' });
+			return d.toLocaleDateString('en-IN', { month: 'long' });
 		} catch (e) { return ''; }
 	}
 
@@ -948,7 +948,7 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 		if (!iso) return '';
 		try {
 			const d = new Date(iso);
-			return d.toLocaleDateString(undefined, {
+			return d.toLocaleDateString('en-IN', {
 				day: 'numeric', month: 'long', year: 'numeric',
 			});
 		} catch (e) { return iso; }

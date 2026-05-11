@@ -333,7 +333,7 @@ frappe.pages['account-drill'].on_page_load = function(wrapper) {
 		if (!iso) return '';
 		try {
 			const d = new Date(iso);
-			return d.toLocaleDateString(undefined, {
+			return d.toLocaleDateString('en-IN', {
 				day: 'numeric', month: 'long', year: 'numeric',
 			});
 		} catch (e) { return iso; }

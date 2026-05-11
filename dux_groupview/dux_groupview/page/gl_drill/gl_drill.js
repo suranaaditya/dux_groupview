@@ -1237,7 +1237,8 @@ frappe.pages['gl-drill'].on_page_load = function(wrapper) {
 		const wrap = document.getElementById('dgv-gl-table-wrap');
 		if (!data.entries || !data.entries.length) {
 			wrap.innerHTML = '<div class="dgv-gl-empty">' +
-				'No GL entries for this scope as of ' + escape(state.as_of_date) + '.' +
+				'No GL entries for this scope as of ' +
+				escape(formatLongDate(state.as_of_date)) + '.' +
 				'</div>';
 			return;
 		}
@@ -1292,7 +1293,7 @@ frappe.pages['gl-drill'].on_page_load = function(wrapper) {
 				  '</tr>'
 				: '';
 
-			const dateStr = e.posting_date || '';
+			const dateStr = formatShortDate(e.posting_date || '');
 			// Party cell with clickable party name (commit 7 F-7).
 			// Single-select semantics — clicking a party name replaces
 			// any prior party filter.
@@ -1397,9 +1398,25 @@ frappe.pages['gl-drill'].on_page_load = function(wrapper) {
 		if (!iso) return '';
 		try {
 			const d = new Date(iso);
-			return d.toLocaleDateString(undefined, {
+			return d.toLocaleDateString('en-IN', {
 				day: 'numeric', month: 'long', year: 'numeric',
 			});
+		} catch (e) { return iso; }
+	}
+
+	// Indian short form for the table date column: "11-May-2026"
+	// (DD-MMM-YYYY). Tally / audit-ledger convention -- compact and
+	// unambiguous (no MM/DD vs DD/MM confusion).
+	function formatShortDate(iso) {
+		if (!iso) return '';
+		try {
+			const d = new Date(iso);
+			const day = String(d.getDate()).padStart(2, '0');
+			const months = ['Jan','Feb','Mar','Apr','May','Jun',
+			                'Jul','Aug','Sep','Oct','Nov','Dec'];
+			const mon = months[d.getMonth()];
+			const year = d.getFullYear();
+			return day + '-' + mon + '-' + year;
 		} catch (e) { return iso; }
 	}
 

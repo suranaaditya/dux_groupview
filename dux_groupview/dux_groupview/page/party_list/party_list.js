@@ -458,7 +458,8 @@ frappe.pages['party-list'].on_page_load = function(wrapper) {
 				: '';
 			return '<tr class="dgv-pl-row" ' +
 				'data-party="' + escapeAttr(p.party) + '" ' +
-				'data-party-type="' + escapeAttr(p.party_type) + '">' +
+				'data-party-type="' + escapeAttr(p.party_type) + '" ' +
+				'data-company-count="' + (p.company_count || 1) + '">' +
 				'<td class="dgv-pl-cell-party">' +
 					escape(p.party) + groupBadge +
 				'</td>' +
@@ -491,9 +492,92 @@ frappe.pages['party-list'].on_page_load = function(wrapper) {
 			row.addEventListener('click', function () {
 				const party = row.getAttribute('data-party');
 				const ptype = row.getAttribute('data-party-type');
+				const coCount = parseInt(
+					row.getAttribute('data-company-count') || '1', 10);
 				if (!party || !ptype) return;
+
+				// Spec v0.9: GL drill is per-company. If the row's
+				// party spans multiple companies under the current
+				// scope, ask the user which company to view before
+				// navigating -- mirrors the picker pattern from the
+				// cockpit drill-panel "View GL entries" path.
+				if (coCount > 1 && window.dgvOpenCompanyPickerForGlDrill) {
+					openPickerForParty(party, ptype);
+					return;
+				}
 				window.location.href = buildGlDrillForPartyUrl(party, ptype);
 			});
+		});
+	}
+
+	/**
+	 * Fetch the party's per-company breakdown to get the exact list of
+	 * companies where this party has activity, then open the company
+	 * picker scoped to just those companies. Cleaner than showing all
+	 * scope companies (which would include zeros for this party).
+	 *
+	 * Falls back to state.companies if the breakdown call fails or
+	 * returns nothing -- the picker is still usable, just less precise.
+	 */
+	function openPickerForParty(party, party_type) {
+		// Mirror the args pattern used by the page's get_party_breakdown
+		// fetch (line ~320): card scopes pass pre-resolved
+		// `accounts=state.resolvedAccounts`, account/subtree scopes
+		// pass `scope={type,value}`. Anything else falls back to the
+		// scope's full company list.
+		const args = {
+			party: party,
+			party_type: party_type,
+		};
+		if (state.resolvedAccounts !== null) {
+			args.accounts = JSON.stringify(state.resolvedAccounts);
+		} else if (state.scope.kind === 'account' || state.scope.kind === 'subtree') {
+			args.scope = JSON.stringify({
+				type: state.scope.kind, value: state.scope.id,
+			});
+		} else {
+			// Unresolvable scope shape -- fall back gracefully without
+			// the breakdown narrowing.
+			openPickerWithCompanies(party, party_type, state.companies || []);
+			return;
+		}
+		if (state.as_of_date) args.as_of_date = state.as_of_date;
+		if (state.companies)  args.companies = JSON.stringify(state.companies);
+
+		frappe.call({
+			method: 'dux_groupview.dux_groupview.api.party_drill_v1.get_party_company_breakdown',
+			args: args,
+			callback: function (r) {
+				const data = (r && r.message) || {};
+				const rows = (data.by_company || []);
+				const cos = rows.map(function (x) { return x.company; })
+					.filter(function (c) { return c; });
+				const cosFinal = cos.length
+					? cos
+					: (state.companies || []);
+				openPickerWithCompanies(party, party_type, cosFinal);
+			},
+			error: function () {
+				// Fallback: scope's full company list. The picker is
+				// still usable, just shows companies where this party
+				// may have no activity.
+				openPickerWithCompanies(party, party_type, state.companies || []);
+			},
+		});
+	}
+
+	function openPickerWithCompanies(party, party_type, companies) {
+		// Single-co edge case (defensive -- if the breakdown returned
+		// only one company despite company_count > 1 on the row, just
+		// navigate directly without the picker).
+		if (companies.length <= 1) {
+			window.location.href = buildGlDrillForPartyUrl(
+				party, party_type, companies[0]);
+			return;
+		}
+		window.dgvOpenCompanyPickerForGlDrill(companies, function (picked) {
+			window.location.href = buildGlDrillForPartyUrl(
+				party, party_type, picked);
 		});
 	}
 
@@ -502,8 +586,12 @@ frappe.pages['party-list'].on_page_load = function(wrapper) {
 	 * preserving the current scope + as_of + companies, adding the
 	 * party filter. HALT 1's gl-drill already supports `party=` /
 	 * `party_type=` URL params from its initial implementation.
+	 *
+	 * Optional `companyOverride`: when present, replaces the scope's
+	 * companies list with `[companyOverride]`. Used by the multi-co
+	 * picker path (spec v0.9).
 	 */
-	function buildGlDrillForPartyUrl(party, party_type) {
+	function buildGlDrillForPartyUrl(party, party_type, companyOverride) {
 		const params = [];
 		const scopeParam = state.scope.kind === 'card'
 			? state.scope.id
@@ -512,8 +600,11 @@ frappe.pages['party-list'].on_page_load = function(wrapper) {
 		if (state.as_of_date) {
 			params.push('as_of=' + encodeURIComponent(state.as_of_date));
 		}
-		if (state.companies && state.companies.length) {
-			params.push('companies=' + encodeURIComponent(state.companies.join(',')));
+		const effective_cos = companyOverride
+			? [companyOverride]
+			: (state.companies || []);
+		if (effective_cos.length) {
+			params.push('companies=' + encodeURIComponent(effective_cos.join(',')));
 		}
 		params.push('party=' + encodeURIComponent(party));
 		params.push('party_type=' + encodeURIComponent(party_type));
@@ -540,7 +631,7 @@ frappe.pages['party-list'].on_page_load = function(wrapper) {
 		if (!iso) return '';
 		try {
 			const d = new Date(iso);
-			return d.toLocaleDateString(undefined, {
+			return d.toLocaleDateString('en-IN', {
 				day: 'numeric', month: 'long', year: 'numeric',
 			});
 		} catch (e) { return iso; }

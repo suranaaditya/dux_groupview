@@ -26,6 +26,11 @@
 	root.dgvParseAccountDrillHash = parseDrillUrlParams;
 	root.dgvRenderErrorTile = renderErrorTile;
 	root.dgvClassifyError = classifyError;
+	// Spec v0.9: exposed for cross-page reuse. Party-list page calls
+	// this when the user clicks a multi-company party row, so the
+	// picker fires there too instead of bumping into the per-company
+	// ValidationError tile.
+	root.dgvOpenCompanyPickerForGlDrill = openCompanyPickerForGlDrill;
 
 	// Component render functions exported so the full page (account_drill.js
 	// inside the new Frappe page) can call them with its own opts.
@@ -1601,7 +1606,7 @@
 		if (!iso) return '';
 		try {
 			var d = new Date(iso);
-			return d.toLocaleDateString(undefined, {
+			return d.toLocaleDateString('en-IN', {
 				day: 'numeric', month: 'long', year: 'numeric',
 			});
 		} catch (e) { return iso; }
