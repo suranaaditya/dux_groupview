@@ -1,6 +1,6 @@
 # Phase 4 commit 4 — GL drill page + CSV export + view all parties
 
-**Status:** v0.6, finalized — HALT 2.5 (filter UI) about to begin per `specs/phase-4-commit-4-filters.md`
+**Status:** v0.7, perf reversal of v0.5 partition decision (Phase 4 commit 9 measurement-driven)
 **Branch:** `phase-4-drills` (continuing; no new branch)
 **Estimated duration:** 1–2 working days
 **Depends on:** Phase 4 commits 1, 2, 2.5, 3, 3.1 (all on `phase-4-drills`); side PR #10 (trust-subset seed) and #11 (augmented AP/AR seed) — both merged to main.
@@ -8,6 +8,79 @@
 This spec extends the master Phase 4 spec (`specs/phase-4-drills.md`).
 Sections labelled §4.x reference the master spec; sections numbered
 without a prefix are local to this commit.
+
+**Changes from v0.6 (this revision):**
+- §5.1 — `PARTITION BY g.company, g.account` is **restored** on the
+  running-balance window function. v0.5's scope-wide accumulation
+  decision is reversed.
+
+  **Why reversed.** Phase 4 commit 9's perf measurement at 5M-row
+  production scale found that the scope-wide cumulative sum dominates
+  wall time once the filtered set exceeds a few thousand rows: even
+  with `FORCE INDEX (dgv_party_drill)` and the correct row-count
+  estimate, the unpartitioned window forces a global sort of every
+  matched row before LIMIT can short-circuit. Medium scope (one trust
+  + a "Current Assets" subtree ≈ 112 leaves × 16 cos ≈ 7,728 rows
+  fed to the window) measured at 10.65 sec p95 — 21× over the
+  <500 ms spec target — and large scope (1,236 leaves × 66 cos) at
+  107 sec. No realistic UI scope produces under-spec timings with
+  the unpartitioned shape.
+
+  With `PARTITION BY (company, account)` restored, each partition is
+  small (≈ rows-per-leaf-per-company, typically <500), ordered by
+  `(posting_date, name)` which aligns with `dgv_party_drill`'s
+  ordering — MariaDB can stream-process per partition and the
+  global sort goes away. Combined with `FORCE INDEX
+  (dgv_party_drill)`, medium scope is expected back under 500 ms.
+
+  **Semantic change.** Each `(company, account)` becomes its own
+  running-balance stream; group divider chips denote balance resets
+  at boundary transitions, which is the conventional accounting
+  ledger semantic (Tally, ERPNext stock ledger, audit reports all
+  use this). v0.5's rationale ("scope-wide accumulation answers the
+  cockpit-style question") was an aesthetic call without weight
+  against a perf cost that makes the endpoint unusable at
+  production scale.
+
+  **§6.1 toolbar banner & group divider chips revert to v0.4 wording.**
+  Banner: `"GL entries across N accounts × M companies. Running
+  balance resets per (account, company)."` Chip styling reverts to
+  v0.4 (background tint restored — the divider now denotes a hard
+  semantic boundary again, not just labelling).
+
+- §10 — `MAX_LEAVES_HARD_CAP = 800` added to `gl_drill_v1`. Both
+  `get_gl_entries` and `get_filter_metadata` reject scopes whose
+  resolved leaf set exceeds the cap with a `ValidationError` whose
+  message is exact: `"This drill spans {N} accounts across {M}
+  companies. Narrow to a specific trust or sub-account, or use Focus
+  mode for a per-company view."` Client-side error tile (commit 6
+  pattern) renders this message inline with an "Open Focus mode"
+  button as a discoverability nudge. Cockpit panel callers catch the
+  error and render the tile in place of opening the drill; URL-direct
+  navigation to `/app/gl-drill` renders the tile on page load.
+
+  The 800 threshold clears any realistic cockpit UI scope: a single
+  trust × full subtree maxes around 300–500 leaves on RGI's COA.
+  The 1,236-leaf "Application of Funds (Assets) across 66 cos" case
+  in the commit 9 harness is artificial — no actual click path
+  produces it.
+
+- §5.1 — `_voucher_types_in_scope` query restructured. The JOIN to
+  `tabAccount a` is dropped when no `account_names` HALT 2.5 filter
+  is applied (the only reason for the JOIN was `a.account_name`
+  membership). `FORCE INDEX (dgv_party_drill)` added. `LIMIT 1000`
+  appended as a safety cap on the DISTINCT result; production data
+  has <50 distinct voucher types per scope, so the cap is a guard
+  against pathological seeds, not a functional limit.
+
+- §5.1 — `FORCE INDEX (dgv_party_drill)` added to the three remaining
+  `tabGL Entry`-touching queries in `gl_drill_v1` and
+  `get_filter_metadata`'s `parties` query. EXPLAIN at commit 9
+  showed the optimizer flips to the single-column `posting_date`
+  index when the IN-list on `account` grows past a few dozen values;
+  the cost-model misjudgment is not a stats issue (`ANALYZE TABLE`
+  diagnostic confirmed no change). Phase 9 PHASE_LOG documents the
+  full diagnosis.
 
 **Changes from v0.5:**
 - §9 — account-breakdown CSV column list aligned with HALT 2
