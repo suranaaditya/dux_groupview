@@ -1,6 +1,6 @@
 # Phase 4 commit 4 — GL drill page + CSV export + view all parties
 
-**Status:** v0.8, running_balance becomes conditional on single-leaf scope (Phase 4 commit 9, second iteration)
+**Status:** v0.9, GL drill becomes per-company by design (Phase 4 commit 9, perf-driven reframing)
 **Branch:** `phase-4-drills` (continuing; no new branch)
 **Estimated duration:** 1–2 working days
 **Depends on:** Phase 4 commits 1, 2, 2.5, 3, 3.1 (all on `phase-4-drills`); side PR #10 (trust-subset seed) and #11 (augmented AP/AR seed) — both merged to main.
@@ -9,7 +9,107 @@ This spec extends the master Phase 4 spec (`specs/phase-4-drills.md`).
 Sections labelled §4.x reference the master spec; sections numbered
 without a prefix are local to this commit.
 
-**Changes from v0.7 (this revision):**
+**Changes from v0.8 (this revision):**
+
+**Reframing:** GL drill becomes per-company by design.
+
+Phase 4 commit 9 perf measurement at 5M scale exposed that
+multi-company GL drill is fundamentally bounded by row count — 87K+
+rows for any realistic multi-company scope, regardless of index or
+query restructure. Three iterations of fix attempts (v0.7 PARTITION
+BY restoration, v0.8 conditional running balance, Phase B FORCE INDEX
++ leaf caps) all confirmed the data volume is the cost driver. The
+right answer was always "GL drill is per-company" — we just didn't
+see it because the original design didn't constrain entry to
+single-company scopes.
+
+This matches conventional accounting workflows: Tally, ERPNext stock
+ledger, QuickBooks, audit-review tools all scope transaction-level
+queries per-company. Multi-company aggregates are summary views; the
+GL drill page is the entity-level transactional detail.
+
+**Concrete spec changes from v0.8:**
+
+- **§5.1 `get_gl_entries`** — server asserts the resolved permission-
+  allowed set has exactly one company. ValidationError otherwise with
+  the verbatim message:
+  `"GL drill is per-company. Use Focus mode for company-wide views."`
+  Defensive: the UI should always present a company picker before
+  reaching this endpoint with multi-company scope.
+
+- **§5.1 `_fetch_windowed_page`** — window function path becomes
+  unconditional. `PARTITION BY (company, account)` retained (now one
+  company's accounts each get their own partition — small, ordered,
+  index-aligned via `dgv_party_drill`). `FORCE INDEX (dgv_party_drill)`
+  kept as a safety hint (non-load-bearing under the per-company
+  constraint but cheap). `MAX_LEAVES_HARD_CAP` removed (the
+  per-company constraint bounds row count by construction).
+  Conditional running_balance from v0.8 reverted — the response
+  always includes `running_balance`.
+
+- **§5.2 `export_gl_entries_csv`** — same single-company assertion.
+  Existing 50K row cap retained as a second-line defense.
+
+- **§5.3 `get_filter_metadata`** — same single-company assertion.
+  `_voucher_types_in_scope` reverts to the v0.7 JOIN-when-account_names
+  shape; FORCE INDEX hint retained. Under per-company constraint the
+  query touches at most ~85K rows for one company's full COA, fast.
+
+- **§7 JS wiring (account_drill.js, gl_drill.js)** — every drill-launch
+  call site checks the scope's `companies` array:
+  - **0 or 1 company:** navigate directly to `/app/gl-drill`
+    (unchanged for single-company).
+  - **>1 company:** open a company picker modal listing the
+    permission-allowed companies in scope. User picks one, modal
+    closes, navigate to `/app/gl-drill?companies=<picked>` with the
+    scope_id otherwise unchanged. Escape and backdrop click close
+    without navigation.
+
+  Modal chrome reuses existing drill panel tokens (same border
+  treatment, same color palette, same close-X iconography). Keyboard:
+  Esc closes; Enter on a focused row picks; arrow keys navigate.
+
+  Pivot numeric-cell click path is unaffected — it already produces
+  single-company scope (Phase 4 commit 3 contract).
+
+- **§6.1 page UI** — running balance column is permanent again
+  (matches v0.4). Group divider chips revert to v0.4 styling
+  (background tint restored — denotes balance reset at (account)
+  boundary within the one company). v0.8's "Running balance shown
+  for single-account scopes only" subtitle removed.
+
+- **§10 perf targets** — under per-company constraint, all gl_entries
+  cells expected sub-500 ms at 5M scale. Validated in commit 9
+  PHASE_LOG.
+
+**Deferred to Phase 5:** cross-company GL drill as a separate page or
+flag if real users request it. The drill panel summary already shows
+cross-company aggregates; one extra click to pick a company before
+viewing transactions is a low-friction UX for the actual workflow.
+
+**Iteration history for the running_balance + GL drill scoping design
+(PHASE_LOG honesty, expanded):**
+1. **v0.4** — running balance partitioned by `(company, account)`.
+   Multi-company scope allowed.
+2. **v0.5** — dropped PARTITION BY for aesthetic "scope-wide
+   accumulator" UX. Shipped through Phase 4 commits 4–7.
+3. **v0.7** (commit 9 first iteration) — restored PARTITION BY
+   hypothesizing the global sort was the bottleneck. Wrong.
+4. **v0.8** (commit 9 second iteration) — branched on single-leaf vs
+   multi-leaf, dropped running balance for multi-leaf. Address window
+   function cost. Window function was never the bottleneck — also
+   didn't help.
+5. **v0.9** (this revision) — reframed: GL drill is per-company by
+   design. Row volume bounded by construction. PARTITION BY restored
+   cleanly. The first three iterations addressed query structure; this
+   one addresses user-flow. Aditya proposed this during Phase B halt;
+   it matched conventional accounting workflows so naturally that it
+   would have been the obvious choice if we'd designed at-scale first.
+
+Phase A measurement at 5M scale was the discipline that surfaced
+this. Without it we'd have shipped 30-second loads to production.
+
+**Changes from v0.7:**
 - §5.1 — `running_balance` is now **conditional on scope shape**:
   - **Single-leaf scope** (`len(resolved_leaves) == 1`): the window
     function path is kept, with `PARTITION BY (company, account)`.
