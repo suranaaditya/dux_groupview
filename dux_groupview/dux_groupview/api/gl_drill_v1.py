@@ -20,15 +20,27 @@ phase-4-drills branch). The amendment's conditions (a)-(g) all hold:
 
 Sign convention: `signed_amount` uses the same FLIP_ROOT_TYPES sign
 convention as the rest of the cockpit -- positive on the natural side
-of the account's root_type. Running balance accumulates `signed_amount`
-in (posting_date ASC, name ASC) order across the entire scope (no
-PARTITION BY -- spec v0.5 dropped per-(company, account) partitioning
-to align with cockpit-wide aggregate-thinking). Group divider chips
-in the rendered table label which (company, account) each row belongs
-to but no longer denote a balance reset.
+of the account's root_type.
 
-Spec halt-1 scope: this module ships ONLY `get_gl_entries`. The CSV
-export endpoint (spec §5.2) lands in halt-2.
+Running balance (spec v0.9): window function with PARTITION BY
+(company, account), ordered (posting_date, name). Under the v0.9
+per-company scope constraint, each call sees one company's accounts
+each as its own small partition (typically <500 rows). The window
+sort aligns with `dgv_party_drill`'s ordering and the outer LIMIT
+short-circuits cheaply.
+
+GL drill is per-company by design (spec v0.9). `get_gl_entries`,
+`export_gl_entries_csv`, and `get_filter_metadata` all assert
+`len(resolved_companies) == 1` at entry. ValidationError otherwise.
+This is enforced server-side; the UI presents a company picker for
+multi-company scopes before reaching these endpoints. The
+per-company constraint bounds row count by construction -- realistic
+single-company scopes resolve to <10K rows even at production scale.
+
+Iteration history is in the spec changelog (v0.4 partitioned,
+v0.5 unpartitioned, v0.7 re-partitioned, v0.8 conditional running
+balance, v0.9 per-company reframing). PHASE_LOG commit 9 entry has
+the honest narrative.
 """
 
 import csv
@@ -59,6 +71,38 @@ ALLOWED_SORTS = (
 	"amount_asc",
 )
 REMARKS_TRUNCATE_LEN = 200
+
+# GL drill is per-company by design (spec v0.9). The endpoints assert
+# exactly one company in the resolved permission-allowed set. The UI
+# presents a company picker for multi-company scopes before calling
+# any of these endpoints; the server-side check is a defensive
+# guard against direct URL hits with `companies=` lists.
+PER_COMPANY_ERROR_MESSAGE = (
+	"GL drill is per-company. Use Focus mode for company-wide views."
+)
+
+
+def _check_single_company(allowed):
+	"""Raise ValidationError if the resolved allowed-companies set is
+	not exactly one company.
+
+	Permission-empty (allowed == []) is handled by the caller's
+	existing empty-response path; this helper only fires when there's
+	a non-empty multi-company set.
+
+	The verbatim message is the same on every endpoint so the client
+	error tile renders identically regardless of which call surfaced
+	the error. `scope_multi_company` flag in the response lets the
+	classifier route to a dedicated tile category that nudges the user
+	toward the company picker / Focus mode.
+	"""
+	if allowed and len(allowed) > 1:
+		frappe.local.response["scope_multi_company"] = True
+		frappe.local.response["scope_multi_company_message"] = (
+			PER_COMPANY_ERROR_MESSAGE
+		)
+		frappe.local.response["scope_companies"] = list(allowed)
+		frappe.throw(_(PER_COMPANY_ERROR_MESSAGE), frappe.ValidationError)
 
 
 # ---------------------------------------------------------------------------
@@ -202,6 +246,10 @@ def get_gl_entries(
 			n_accounts=len(leaves) if leaves else 0,
 			n_companies=len(allowed) if allowed else 0,
 		)
+
+	# Spec v0.9: GL drill is per-company by design. Reject multi-company
+	# scopes; UI presents a company picker before reaching this endpoint.
+	_check_single_company(allowed)
 
 	# Normalise party + HALT 2.5 filter inputs (csv strings -> lists,
 	# date strings -> getdate, to_date clamped to as_of_date, etc.).
@@ -359,9 +407,12 @@ def _count_entries(where_clause, params):
 	# `a.account_name` (HALT 2.5 account_names filter). The JOIN is
 	# cheap (PRIMARY-key lookup per row) and matches the data
 	# query's shape so EXPLAIN stays consistent.
+	# FORCE INDEX: optimizer picks posting_date for large IN-lists at
+	# 5M+ scale (cost-model issue, not stats). See commit 9 PHASE_LOG
+	# for diagnosis.
 	row = frappe.db.sql(
 		f"""
-		SELECT COUNT(*) FROM `tabGL Entry` g
+		SELECT COUNT(*) FROM `tabGL Entry` g FORCE INDEX (dgv_party_drill)
 		JOIN `tabAccount` a ON a.name = g.account
 		{where_clause}
 		""",
@@ -477,8 +528,19 @@ def _voucher_types_in_scope(leaves, allowed, target_date, party, party_type,
 	query, MINUS the voucher_types filter itself (so the dropdown
 	shows everything the user could pick, even when they've narrowed).
 
-	Cheap query: index-only on tabGL Entry; the inner filter set is
-	already capped at <= 50K rows post-cap.
+	Per-company scope (spec v0.9): caller enforces single-company at
+	the endpoint entry, so `allowed` here is one company. Row count
+	bounded to that company's tabGL Entry slice (~85K rows max on
+	the dev seed), comfortably fast.
+
+	FORCE INDEX (dgv_party_drill) retained as a safety hint -- the
+	optimizer's cost-model issue with large IN-lists (commit 9
+	PHASE_LOG) is non-load-bearing under the per-company constraint
+	but cheap to keep.
+
+	LIMIT 1000 protects against pathological data -- production data
+	has <50 distinct voucher_types per scope; cap is a safety, not a
+	functional limit.
 	"""
 	# Build WHERE with the same shape but voucher_types=None to
 	# return the full universe.
@@ -490,10 +552,11 @@ def _voucher_types_in_scope(leaves, allowed, target_date, party, party_type,
 	rows = frappe.db.sql_list(
 		f"""
 		SELECT DISTINCT g.voucher_type
-		FROM `tabGL Entry` g
+		FROM `tabGL Entry` g FORCE INDEX (dgv_party_drill)
 		JOIN `tabAccount` a ON a.name = g.account
 		{where_clause}
 		ORDER BY g.voucher_type ASC
+		LIMIT 1000
 		""",
 		where_params,
 	)
@@ -537,18 +600,23 @@ def _fetch_windowed_page(
 	sort, page, page_size, is_truncated,
 	account_names=None, from_date=None, voucher_types=None,
 ):
-	"""Run the windowed SELECT and return page rows.
+	"""Run the windowed paginated GL fetch and return page rows.
 
-	Triple-nested SQL:
-	  - innermost:  filter `tabGL Entry` and JOIN `tabAccount` for
-	                root_type -> compute signed_amount.
-	  - middle:     window function for running_balance, partitioned
-	                by (company, account), ordered (posting_date ASC,
-	                name ASC).
-	  - outer:      ORDER BY display sort + LIMIT/OFFSET.
+	Per-company scope (spec v0.9): caller enforces single-company. The
+	window function with `PARTITION BY (company, account)` collapses
+	to one partition per account within the single company -- each
+	partition is small (typically <500 rows), the window's ORDER BY
+	aligns with `dgv_party_drill`'s ordering, and the outer LIMIT
+	short-circuits cheaply.
 
-	When `is_truncated`, the innermost subquery applies the display
-	sort and LIMITs to 50K. Otherwise it returns the unsorted full set.
+	FORCE INDEX (dgv_party_drill) retained as a safety hint -- the
+	optimizer's cost-model issue with large IN-lists is non-load-
+	bearing under the per-company constraint but cheap to keep.
+
+	When `is_truncated`, the innermost filter step applies the display
+	sort and LIMITs to 50K. Under per-company constraint truncation
+	rarely fires (one company's full COA × 12 months stays comfortably
+	under 50K) but the path is retained for defense.
 
 	HALT 2.5 filters (`account_names`, `from_date`, `voucher_types`)
 	pass through to `_build_where_clause`.
@@ -587,6 +655,7 @@ def _fetch_windowed_page(
 				voucher_type, voucher_no, party_type, party,
 				debit, credit, signed_amount, remarks,
 				SUM(signed_amount) OVER (
+					PARTITION BY company, account
 					ORDER BY posting_date ASC, name ASC
 					ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
 				) AS running_balance
@@ -607,7 +676,7 @@ def _fetch_windowed_page(
 					     ELSE g.debit - g.credit
 					END AS signed_amount,
 					g.remarks
-				FROM `tabGL Entry` g
+				FROM `tabGL Entry` g FORCE INDEX (dgv_party_drill)
 				JOIN `tabAccount` a ON a.name = g.account
 				{where_clause}
 				{inner_order_clause}
@@ -861,6 +930,12 @@ def export_gl_entries_csv(
 		_set_csv_response(filename, csv_string)
 		return
 
+	# Spec v0.9: GL drill (and its CSV export) is per-company by design.
+	# The CSV download path has no in-band channel for the
+	# scope_multi_company flag, but Frappe surfaces frappe.throw as an
+	# error response that triggers no download -- correct UX.
+	_check_single_company(allowed)
+
 	# --- Cap check before doing the expensive query ---
 	count_where, count_params = _build_where_clause(
 		leaves, allowed, effective_to_date, party, party_type,
@@ -952,6 +1027,10 @@ def get_filter_metadata(scope=None, accounts=None, as_of_date=None,
 	if not allowed or not leaves:
 		return empty
 
+	# Spec v0.9: GL drill is per-company by design. Reject multi-company
+	# scopes; UI presents a company picker before reaching this endpoint.
+	_check_single_company(allowed)
+
 	# account_names: distinct stripped names + how many companies
 	# each appears in.
 	a_ph, a_params = _named_in("a", leaves)
@@ -984,10 +1063,13 @@ def get_filter_metadata(scope=None, accounts=None, as_of_date=None,
 
 	# parties: top 50 by row count, with their type. Party autocomplete
 	# suggestions; not authoritative.
+	# FORCE INDEX: optimizer picks posting_date for large IN-lists at
+	# 5M+ scale (cost-model issue, not stats). See commit 9 PHASE_LOG
+	# for diagnosis.
 	party_rows = frappe.db.sql(
 		f"""
 		SELECT g.party AS party, g.party_type AS party_type, COUNT(*) AS n
-		FROM `tabGL Entry` g
+		FROM `tabGL Entry` g FORCE INDEX (dgv_party_drill)
 		WHERE g.account IN ({a_ph})
 		  AND g.company IN ({c_ph})
 		  AND g.posting_date <= %(as_of_date)s

@@ -1645,3 +1645,221 @@ Architecture rule preserved.
   pattern: `cards_v1`, `focus_v1` set it; `gl_drill_v1`,
   `party_drill_v1`, `account_drill_v1` may have similar
   stale-scope cases that would benefit from the same treatment.
+
+
+## Phase 4 commit 9 — Performance verification at 5M-row scale
+
+**Branch:** `phase-4-drills` (continuing).
+**Spec:** `specs/phase-4-commit-4-gl-drill.md` revised v0.6 → v0.7
+→ v0.8 → **v0.9** under measurement pressure (see iteration history
+below).
+**Goal:** measure every Phase 4 endpoint at production scale (5M+ GL
+entries, 65 companies), capture EXPLAIN baselines, fix anything that
+fails the spec §10 targets.
+
+### Setup at production scale
+
+| Stage | Outcome |
+|---|---|
+| Branch reset of `claude/nice-satoshi-dfdfcf` to `origin/phase-4-drills` | `7a48841` (commit 7) |
+| Full RGI seed via `seed_rgi_named_data()` (all 10 trusts) | 5,015,000 RGI GL rows + 5 Test Co + Dux residuals = **5,070,740 total**, 65 cos; **17.1 min** |
+| Dev deploy of `phase-4-drills` (was on `main`); `bench migrate` | **139 sec total**; CREATE INDEX patches all pre-existed from earlier deploy. **No fresh CREATE INDEX timing pinned**: Phase 3's 45 sec for `dgv_snapshot_aggregation` on the same table at the same scale is the canonical reference; expect composite CREATE INDEX on `tabGL Entry` @ 5M ≈ 1 minute. |
+| TB snapshot refresh @ 5M | 5,440 rows, **59.156 sec** — right at the spec's <60 sec line. |
+| Spotlight cache refresh | 6 cards, **0.188 sec**. |
+
+### Phase A baseline (uncapped harness, before Phase B fixes)
+
+42-cell harness — 14 endpoints × 3 scope variants (small/medium/large)
+× 100 iters (20 for CSV exports). Results in
+`.claude/tmp/commit_9_perf_baseline.json` (uncommitted, ephemeral).
+
+12 of 14 endpoints passed spec §10. The two failures:
+
+| Endpoint | small p95 | medium p95 | large p95 | Spec | Status |
+|---|---:|---:|---:|---|---|
+| `get_gl_entries` | 19 ms | **30 766 ms** | **316 565 ms** | <500 ms | ✗ 62×/633× over |
+| `get_filter_metadata` | 11 ms | **10 926 ms** | **101 956 ms** | <500 ms (implied) | ✗ 21×/204× over |
+
+All other 12 endpoints under spec: `get_pivot_data` p95 large 43 ms
+(target <2 s, **47× under**), `get_focused_view` trust p95 9 ms (target
+<600 ms), account/party drills all <200 ms, exports all under their
+respective sub-second / few-second caps.
+
+### EXPLAIN diagnosis — what went wrong
+
+EXPLAIN of `get_gl_entries` at large scope showed MariaDB picking the
+single-column `posting_date` BTREE (scanning ~2.6M rows) instead of
+the Phase 4 commit 2 `dgv_party_drill` composite index. Smoking gun:
+the optimizer's cost model flips index choice when the `account IN
+(...)` list grows beyond a few dozen values.
+
+**ANALYZE TABLE diagnostic** (run during Phase A): the wrong index
+choice persists post-ANALYZE — this is a cost-model issue, not stale
+statistics. `dgv_party_drill` correctly chosen for small IN-lists
+(5 leaves → `type=ref, rows=69`); flips to `posting_date` for large
+IN-lists (>~50 leaves).
+
+### Phase B — three iterations under perf pressure
+
+The running-balance design + the gl-drill scoping went through three
+fix attempts, each measurement-driven:
+
+**Iteration 1 — spec v0.7: restore PARTITION BY (company, account)
+on the window function.** Hypothesis: the v0.5 scope-wide accumulator
+required a global sort of the entire filter set before LIMIT could
+short-circuit, dominating wall time. Restoring partitioning would let
+MariaDB stream-process per partition. Tested with `FORCE INDEX
+(dgv_party_drill)` added. **Result: 30.6 sec at medium — worse than
+the 10.6 sec measured with FORCE INDEX alone.** Hypothesis wrong;
+PARTITION BY introduced a second sort (per-partition + outer global)
+where the unpartitioned shape could share one sort with the LIMIT.
+
+**Iteration 2 — spec v0.8: conditional running_balance.** New
+hypothesis: the window function is the bottleneck regardless of
+PARTITION BY. Branch the SQL — single-leaf scope keeps the window
+(meaningful running balance, fast at 1 partition); multi-leaf drops
+the window entirely (plain SELECT, no running_balance). UI suppresses
+the column when absent. **Result: 30 sec at medium — also no help.**
+Isolation diagnostic showed why: `_count_entries` (9.5 s), `_voucher_
+types_in_scope` (10 s), and the paginated SELECT (10 s) each have to
+fetch the row data for the 87,309 matching rows in scope (every leaf
+account in "Current Assets" across 16 cos averages ~780 rows). The
+window function was **never** the bottleneck; row materialisation cost
+is. No SQL-level fix can help — the data volume is the cost.
+
+**Iteration 3 — spec v0.9: per-company by design.** Aditya proposed
+the reframing during the Phase B halt: GL drill is per-company by
+design, like Tally / ERPNext stock ledger / audit-review tools.
+Multi-company GL drill isn't a natural accounting workflow — the
+drill panel summary already shows cross-company aggregates; the GL
+drill page is for entity-level transactional detail. With this
+constraint, row count is bounded by construction (one company's
+slice typically <10K rows); the windowed query becomes fast; the
+running balance becomes semantically meaningful again (one company's
+account ledger). v0.5's "scope-wide accumulator" was an aesthetic
+call that broke the model under data volume.
+
+### Phase B v0.9 — implementation
+
+**Spec:** [phase-4-commit-4-gl-drill.md](specs/phase-4-commit-4-gl-drill.md)
+revised v0.8 → v0.9. Spec amendments committed standalone:
+- `e3f2de9` v0.7 (PARTITION BY restore — superseded)
+- `0b16317` v0.8 (conditional running_balance — superseded)
+- `39ee745` v0.9 (per-company reframing — shipped)
+
+**Server (`api/gl_drill_v1.py`):**
+- `_check_single_company(allowed)` helper raises ValidationError
+  when the resolved permission-allowed set has >1 company. Message
+  is verbatim `"GL drill is per-company. Use Focus mode for
+  company-wide views."` and the response carries
+  `scope_multi_company=True` + `scope_multi_company_message` +
+  `scope_companies` for the client error-tile classifier.
+- Applied at three entry points: `get_gl_entries`,
+  `export_gl_entries_csv`, `get_filter_metadata`.
+- `_fetch_windowed_page` restored to always-windowed with `PARTITION
+  BY (company, account)` (v0.5 reverted, v0.7's restore retained).
+  Outer ORDER BY shared with the window's `(posting_date, name)`
+  ordering — one sort.
+- `FORCE INDEX (dgv_party_drill)` retained as safety hint on the four
+  `tabGL Entry`-touching queries. Non-load-bearing under the per-
+  company constraint but cheap to keep.
+- `_row_to_entry` always includes `running_balance` (v0.8 conditional
+  omission reverted).
+- `_build_gl_csv` always includes the Running Balance column.
+- `_voucher_types_in_scope` reverted to v0.7 always-JOIN shape;
+  `LIMIT 1000` retained as a safety guard on the DISTINCT result.
+- `MAX_LEAVES_HARD_CAP` and `_check_leaves_cap` removed.
+
+**Client (`public/js/account_drill.js`, `page/gl_drill/gl_drill.js`,
+`public/css/cockpit.css`):**
+- New company picker modal: `openCompanyPickerForGlDrill(companies,
+  onPick)`. Presented in `stubGlDrill` when `args.companies.length > 1`
+  before navigating to `/app/gl-drill`. Vanilla DOM modal, no Frappe
+  Dialog dependency, reuses cockpit color tokens. Keyboard: Esc
+  closes, Enter picks (first visible row when focused on search),
+  ArrowUp/Down navigate between search input and rows. Includes a
+  live-filter search input (autofocused on open) — type-ahead filters
+  the row list by case-insensitive substring; empty-state message
+  shown when no match.
+- Classifier `scope-multi-company` category added to `dgvClassifyError`
+  with verbatim server message + "Open Cockpit" action.
+- `filter_metadata` fetch silences popups on `scope_multi_company` /
+  `malformed_scope` (main fetch's tile is the user-actionable surface).
+- v0.8's `dgv-gl-scope-note` removed.
+- v0.8's conditional column rendering in `renderTable` removed.
+
+### Phase B v0.9 — measured results (5M scale)
+
+42-cell harness re-run after v0.9 deploy:
+
+| Endpoint × scope | p95 (post-fix) | Spec | Status |
+|---|---:|---:|---|
+| `get_gl_entries` small (1 leaf, 1 co) | **25 ms** | <500 ms | ✓ 20× under |
+| `get_gl_entries` medium (subtree, 1 co) | **65 ms** | <500 ms | ✓ 7.7× under |
+| `get_gl_entries` large (multi-co) | ValidationError | — | ✓ by design |
+| `get_filter_metadata` small | **8 ms** | <500 ms | ✓ |
+| `get_filter_metadata` medium | **17 ms** | <500 ms | ✓ |
+| `get_filter_metadata` large | ValidationError | — | ✓ by design |
+| `export_gl_entries_csv` small | **46 ms** | <10 s | ✓ |
+| `export_gl_entries_csv` medium | **96 ms** | <10 s | ✓ |
+| `export_gl_entries_csv` large | ValidationError | — | ✓ by design |
+| All 11 other endpoints | unchanged | unchanged | ✓ no regression |
+
+Total harness wall: **69.5 sec** (from 633 sec on Phase A baseline).
+
+### Operational notes for Phase 9 / future ops
+
+- **CREATE INDEX timing on `tabGL Entry` @ 5M not freshly captured.**
+  All four `dgv_*` indexes pre-existed from prior Phase 4 deploys, so
+  the migrate's CREATE INDEX path didn't fire. Phase 3's covering-
+  index CREATE at 45 sec on `tabGL Entry` @ 5M is the canonical
+  reference. Operational expectation: composite index CREATE on
+  `tabGL Entry` @ 5M ≈ 1 minute.
+- **TB snapshot refresh @ 5M = 59.156 sec** — single sample on KVM 4.
+  At the <60 sec spec line. Future ops should monitor; consider a
+  perf alert if a scheduled refresh runs over 75 sec.
+
+### Test changes
+
+- `test_gl_drill.py` — multi-company tests adapted to single-company:
+  `companies=self.state["companies"]` → `companies=[self._A()]`;
+  `accounts=self._payable_leaves()` (all cos) →
+  `accounts=self._payable_leaves(self._A())` (one co);
+  similar for `_all_fixture_leaves()` via new
+  `_all_fixture_leaves_for(company)` helper. Numeric assertions for
+  filter / pagination tests updated (3 single-co rows instead of
+  6 multi-co rows). 26 tests in module, all green.
+- New tests in `TestGlDrillPerCompanyAssertion`:
+  - `test_get_gl_entries_raises_for_multi_company` — pins the
+    ValidationError + response side-channel flags.
+  - `test_get_gl_entries_single_company_returns_running_balance` —
+    inverse of the above; confirms `running_balance` always present
+    when scope is single-company.
+  - `test_export_gl_entries_csv_raises_for_multi_company`.
+  - `test_get_filter_metadata_raises_for_multi_company`.
+- The original `test_get_gl_entries_running_balance_continuous_across_partitions`
+  (v0.5 scope-wide accumulator) renamed to
+  `test_get_gl_entries_running_balance_resets_per_account_v09` and
+  rewritten to verify per-partition behavior on a single-company,
+  single-leaf scope.
+
+### Files changed in this commit (beyond the three standalone spec commits)
+
+- `dux_groupview/dux_groupview/api/gl_drill_v1.py` — server changes
+- `dux_groupview/public/js/account_drill.js` — classifier + picker modal
+- `dux_groupview/dux_groupview/page/gl_drill/gl_drill.js` — filter-fetch popup silence
+- `dux_groupview/public/css/cockpit.css` — picker modal styles
+- `dux_groupview/dux_groupview/tests/test_gl_drill.py` — single-co adaptation + new tests
+- `PHASE_LOG.md` — this entry
+
+### Honest narrative
+
+The first three iterations addressed query structure. The fourth
+addressed user-flow. Phase A measurement at 5M scale was the
+discipline that surfaced the issue — without it we'd have shipped
+30-second loads to production. The right answer ("GL drill is
+per-company") was always there in conventional accounting tools but
+we didn't see it because the original v0.4 design didn't constrain
+entry to single-company scopes. Worth recording: spec iterations
+under perf pressure are not failure, they're how the design finds
+the actual user-flow.

@@ -2524,6 +2524,123 @@
 
 
 /* ===========================================================================
+ * Company picker modal (Phase 4 commit 4 spec v0.9)
+ *
+ * Presented before navigating to /app/gl-drill from a multi-company
+ * scope. Vanilla modal -- no Frappe Dialog. Reuses cockpit's color
+ * tokens and border treatment to feel native.
+ * ======================================================================== */
+
+.dgv-cpicker-modal {
+	position: fixed;
+	inset: 0;
+	z-index: 1100;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+.dgv-cpicker-backdrop {
+	position: absolute;
+	inset: 0;
+	background: rgba(0, 0, 0, 0.4);
+}
+.dgv-cpicker-card {
+	position: relative;
+	background: var(--rgi-bg-surface, #fff);
+	border: 1px solid var(--rgi-border, #e5e5e5);
+	border-radius: 6px;
+	box-shadow: 0 12px 36px rgba(0, 0, 0, 0.18);
+	width: min(480px, calc(100vw - 32px));
+	max-height: calc(100vh - 64px);
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+}
+.dgv-cpicker-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 14px 18px 6px;
+}
+.dgv-cpicker-header h3 {
+	margin: 0;
+	font-size: 16px;
+	font-weight: 600;
+	color: var(--rgi-text-primary, #1a1a1a);
+	font-family: var(--rgi-font-sans);
+}
+.dgv-cpicker-close {
+	background: transparent;
+	border: none;
+	color: var(--rgi-text-tertiary, #666);
+	font-size: 22px;
+	line-height: 1;
+	cursor: pointer;
+	padding: 0 4px;
+}
+.dgv-cpicker-close:hover { color: var(--rgi-text-primary, #1a1a1a); }
+.dgv-cpicker-subtitle {
+	padding: 0 18px 12px;
+	color: var(--rgi-text-tertiary, #666);
+	font-family: var(--rgi-font-sans);
+	font-size: 12px;
+	font-style: italic;
+}
+.dgv-cpicker-search-wrap {
+	padding: 0 18px 10px;
+	border-bottom: 1px solid var(--rgi-border, #e5e5e5);
+}
+.dgv-cpicker-search {
+	width: 100%;
+	padding: 8px 10px;
+	border: 1px solid var(--rgi-border, #e5e5e5);
+	border-radius: 4px;
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+	color: var(--rgi-text-primary, #1a1a1a);
+	background: var(--rgi-bg-surface, #fff);
+}
+.dgv-cpicker-search:focus {
+	outline: 2px solid var(--rgi-accent, #1d9e75);
+	outline-offset: -1px;
+	border-color: transparent;
+}
+.dgv-cpicker-list {
+	overflow-y: auto;
+	padding: 6px 0;
+}
+.dgv-cpicker-empty {
+	padding: 24px 18px;
+	text-align: center;
+	color: var(--rgi-text-tertiary, #666);
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+	font-style: italic;
+}
+.dgv-cpicker-row {
+	display: block;
+	width: 100%;
+	padding: 10px 18px;
+	background: transparent;
+	border: none;
+	text-align: left;
+	font-family: var(--rgi-font-sans);
+	font-size: 14px;
+	color: var(--rgi-text-primary, #1a1a1a);
+	cursor: pointer;
+}
+.dgv-cpicker-row:hover,
+.dgv-cpicker-row:focus {
+	background: var(--rgi-bg-row-alt, #f6f6f7);
+	outline: none;
+}
+.dgv-cpicker-row:focus-visible {
+	outline: 2px solid var(--rgi-accent, #1d9e75);
+	outline-offset: -2px;
+}
+
+
+/* ===========================================================================
  * Focus mode (Phase 4 commit 5)
  *
  * Single-scope vertical view of the cockpit data. Replaces the pivot grid

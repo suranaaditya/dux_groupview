@@ -62,6 +62,13 @@ class _GlDrillBase(FrappeTestCase):
 		teardown_fixture()
 		super().tearDownClass()
 
+	def _A(self):
+		"""First fixture company. Most v0.9 tests scope to a single
+		company; using A keeps the fixture's hand-rolled V002/V005/V007
+		Payable balance plan (the original multi-co plan) usable
+		without reshuffling fixture data."""
+		return self.state["companies"][0]
+
 	def _payable_leaves(self, *companies):
 		"""Payable account full-names for the named companies (default all)."""
 		cos = companies or tuple(self.state["companies"])
@@ -74,6 +81,13 @@ class _GlDrillBase(FrappeTestCase):
 			for role in ("receivable", "payable", "bank", "equity"):
 				out.append(self.state["accounts"][c][role])
 		return out
+
+	def _all_fixture_leaves_for(self, company):
+		"""Every fixture leaf for one company (4 leaves)."""
+		return [
+			self.state["accounts"][company][role]
+			for role in ("receivable", "payable", "bank", "equity")
+		]
 
 
 # ---------------------------------------------------------------------------
@@ -180,58 +194,50 @@ class TestGlDrillRunningBalance(_GlDrillBase):
 		self.assertAlmostEqual(
 			bal_by_voucher["FIXTURE-PARTY-DRILL-007"], 750_000.0, places=2)
 
-	def test_get_gl_entries_running_balance_continuous_across_partitions(self):
-		"""Spec v0.5: dropped the PARTITION BY clause; running balance
-		now accumulates scope-wide in (posting_date, name) ASC order
-		regardless of (company, account).
+	def test_get_gl_entries_running_balance_resets_per_account_v09(self):
+		"""Spec v0.9: PARTITION BY (company, account) restored. GL drill
+		is per-company, so each call sees one company's accounts each
+		as its own partition. Running balance accumulates within each
+		(company, account) partition in (posting_date, name) ASC order.
 
-		With (A + B + C) Payable scope, all 6 vouchers share the same
-		posting_date so the order is by `g.name` ASC. Voucher-name
-		order: V002 < V003 < V004 < V005 < V006 < V007. (Each row's
-		full GL Entry name is `<voucher_no>-payable-<ts>-<i>` so the
-		voucher_no prefix dominates the ASCII sort.)
+		This test exercises a single company (A) with two leaf accounts
+		(Payable + Bank) -- each gets its own partition. Within each
+		partition the running balance accumulates independently.
 
-		Expected scope-wide cumulative:
-		  V002 (A, +500K) -> 500K
-		  V003 (B, +700K) -> 1,200K   <-- if partition were still on, this would reset to 700K
-		  V004 (C, +300K) -> 1,500K   <-- if partition were still on, this would reset to 300K
-		  V005 (A, +200K) -> 1,700K
-		  V006 (B, +100K) -> 1,800K
-		  V007 (A,  +50K) -> 1,850K
+		Company A's Payable rows: V002 (+500K), V005 (+200K), V007 (+50K)
+		  -> running: 500K, 700K, 750K within Payable partition.
 
-		Final row's running_balance == sum of all signed_amounts.
+		Company A's Bank rows from the fixture (V012-style if any) get
+		their own partition starting from 0. Independent of Payable.
 		"""
+		A = self.state["companies"][0]
+		payable_A = self.state["accounts"][A]["payable"]
 		out = gl_drill_v1.get_gl_entries(
-			accounts=self._payable_leaves(),  # all three companies
+			accounts=[payable_A],
 			as_of_date=today(),
-			companies=self.state["companies"],
+			companies=[A],
 			page=1, page_size=100,
 			sort="posting_date_asc",
 		)
 
-		# Map by voucher_no (unique within payable scope -- one row per voucher)
 		bal = {e["voucher_no"]: e["running_balance"] for e in out["entries"]}
 
-		# Scope-wide cumulative -- each row carries the running total
-		# of all rows up to and including itself in (date, name) ASC order.
-		self.assertAlmostEqual(bal["FIXTURE-PARTY-DRILL-002"],   500_000.0, places=2)
-		self.assertAlmostEqual(bal["FIXTURE-PARTY-DRILL-003"], 1_200_000.0, places=2,
-			msg="V003 (B) should be A's 500K + B's 700K = 1,200K -- continuous, no partition reset")
-		self.assertAlmostEqual(bal["FIXTURE-PARTY-DRILL-004"], 1_500_000.0, places=2,
-			msg="V004 (C) should be 500+700+300 = 1,500K -- continuous, no partition reset")
-		self.assertAlmostEqual(bal["FIXTURE-PARTY-DRILL-005"], 1_700_000.0, places=2)
-		self.assertAlmostEqual(bal["FIXTURE-PARTY-DRILL-006"], 1_800_000.0, places=2)
-		self.assertAlmostEqual(bal["FIXTURE-PARTY-DRILL-007"], 1_850_000.0, places=2)
+		# Within Payable-A partition -- accumulates only Payable-A rows.
+		self.assertAlmostEqual(bal["FIXTURE-PARTY-DRILL-002"], 500_000.0, places=2)
+		self.assertAlmostEqual(bal["FIXTURE-PARTY-DRILL-005"], 700_000.0, places=2,
+			msg="V005 (A Payable) follows V002 in this partition: 500K + 200K = 700K")
+		self.assertAlmostEqual(bal["FIXTURE-PARTY-DRILL-007"], 750_000.0, places=2,
+			msg="V007 (A Payable) follows V005: 700K + 50K = 750K")
 
-		# Independent invariant: last visible row's running_balance equals
-		# the sum of all visible rows' signed_amounts. Holds regardless
-		# of order or which test rows changed; catches drift in either
-		# the window function or signed_amount sign convention.
-		entries_by_name = sorted(out["entries"], key=lambda e: (e["posting_date"], e["name"]))
-		expected_total = sum(e["signed_amount"] for e in entries_by_name)
+		# Per-partition cumulative invariant: last visible row's
+		# running_balance equals sum of all signed_amounts within the
+		# partition (single-account scope here means one partition).
+		entries_sorted = sorted(out["entries"], key=lambda e: (e["posting_date"], e["name"]))
+		expected_total = sum(e["signed_amount"] for e in entries_sorted)
 		self.assertAlmostEqual(
-			entries_by_name[-1]["running_balance"], expected_total, places=2,
-			msg="Last row's running balance should equal sum of all signed_amounts (scope-wide cumulative)",
+			entries_sorted[-1]["running_balance"], expected_total, places=2,
+			msg="Single-partition (single-leaf, single-co) cumulative "
+			    "should equal sum of all signed_amounts in partition",
 		)
 
 
@@ -246,9 +252,9 @@ class TestGlDrillTruncation(_GlDrillBase):
 		# total_entries to still report the actual count.
 		with mock.patch.object(gl_drill_v1, "HARD_TRUNCATE_AT", 5):
 			out = gl_drill_v1.get_gl_entries(
-				accounts=self._all_fixture_leaves(),
+				accounts=self._all_fixture_leaves_for(self._A()),
 				as_of_date=today(),
-				companies=self.state["companies"],
+				companies=[self._A()],
 				page=1, page_size=100,
 				sort="posting_date_desc",
 			)
@@ -258,41 +264,39 @@ class TestGlDrillTruncation(_GlDrillBase):
 		# Returned entries are <= cap (5). With page_size=100, page 1
 		# returns the full capped set.
 		self.assertEqual(len(out["entries"]), 5)
-		# scope_fanout should reflect 4 leaves * 3 companies = 12.
-		self.assertEqual(out["scope_fanout"]["n_accounts"], 12)
-		self.assertEqual(out["scope_fanout"]["n_companies"], 3)
+		# Spec v0.9: single-company scope -- A's 4 fixture leaves.
+		self.assertEqual(out["scope_fanout"]["n_accounts"], 4)
+		self.assertEqual(out["scope_fanout"]["n_companies"], 1)
 
 
 class TestGlDrillPartyFilter(_GlDrillBase):
 	"""Test 6 -- party arg narrows results."""
 
 	def test_get_gl_entries_party_filter(self):
-		"""Filter Payable scope by party=Asha; should return only the
-		3 Asha rows (one per company A/B/C, V002/V003/V004)."""
+		"""Filter A's Payable scope by party=Asha; should return only
+		A's Asha row (V002). Spec v0.9: single-company drill, so only
+		one Asha voucher appears (V003/V004 are on B/C respectively
+		and are no longer in scope)."""
 		out = gl_drill_v1.get_gl_entries(
-			accounts=self._payable_leaves(),
+			accounts=self._payable_leaves(self._A()),
 			as_of_date=today(),
-			companies=self.state["companies"],
+			companies=[self._A()],
 			party="Asha Stationers",
 			party_type="Supplier",
 			page=1, page_size=100,
 		)
-		self.assertEqual(out["total_entries"], 3)
+		self.assertEqual(out["total_entries"], 1)
 		parties = {e["party"] for e in out["entries"]}
 		self.assertEqual(parties, {"Asha Stationers"})
 		voucher_nos = {e["voucher_no"] for e in out["entries"]}
-		self.assertEqual(voucher_nos, {
-			"FIXTURE-PARTY-DRILL-002",
-			"FIXTURE-PARTY-DRILL-003",
-			"FIXTURE-PARTY-DRILL-004",
-		})
+		self.assertEqual(voucher_nos, {"FIXTURE-PARTY-DRILL-002"})
 
-		# Without party filter, the same scope returns more rows
-		# (Asha + Vidarbha + Single Co = 6 rows total across 3 cos).
+		# Without party filter, A's Payable returns 3 rows (V002, V005,
+		# V007). Party filter narrows to 1 (Asha is only on V002).
 		out_unfiltered = gl_drill_v1.get_gl_entries(
-			accounts=self._payable_leaves(),
+			accounts=self._payable_leaves(self._A()),
 			as_of_date=today(),
-			companies=self.state["companies"],
+			companies=[self._A()],
 			page=1, page_size=100,
 		)
 		self.assertGreater(out_unfiltered["total_entries"],
@@ -368,9 +372,9 @@ class TestExportGlEntriesCsv(_GlDrillBase):
 		import frappe as _f
 		from frappe import _dict
 		default = dict(
-			accounts=self._payable_leaves(),
+			accounts=self._payable_leaves(self._A()),
 			as_of_date=today(),
-			companies=self.state["companies"],
+			companies=[self._A()],
 		)
 		default.update(kwargs)
 		original = dict(getattr(_f.local, "response", {}))
@@ -399,8 +403,9 @@ class TestExportGlEntriesCsv(_GlDrillBase):
 			"Party Type,Party,Debit,Credit,Running Balance,Remarks"
 		)
 		self.assertEqual(lines[0], expected_header)
-		# All 6 payable rows present (header + 6 data rows)
-		self.assertEqual(len(lines), 7)
+		# Spec v0.9: single-company. A's Payable: V002+V005+V007 = 3 rows.
+		# Header + 3 data rows = 4 lines.
+		self.assertEqual(len(lines), 4)
 
 	def test_export_gl_entries_csv_caps_at_50k(self):
 		"""When total_count > 50K, raise via frappe.throw with the
@@ -410,7 +415,7 @@ class TestExportGlEntriesCsv(_GlDrillBase):
 		from unittest import mock
 		with self.assertRaises(frappe.exceptions.ValidationError) as cm:
 			with mock.patch.object(gl_drill_v1, "HARD_TRUNCATE_AT", 5):
-				self._invoke(accounts=self._all_fixture_leaves())
+				self._invoke(accounts=self._all_fixture_leaves_for(self._A()))
 		# The frappe.throw renders the formatted message into the
 		# exception. Check key phrasing.
 		msg = str(cm.exception)
@@ -418,9 +423,9 @@ class TestExportGlEntriesCsv(_GlDrillBase):
 		self.assertIn("Narrow the scope", msg)
 
 	def test_export_gl_entries_csv_party_filter(self):
-		"""Party filter narrows the CSV. Asha Stationers has 3
-		(payable, A/B/C) rows in the fixture; without filter the
-		payable scope yields 6 rows.
+		"""Party filter narrows the CSV. Spec v0.9: single-company A
+		scope -- Asha appears only on V002 (A's Payable). Without
+		filter, A's Payable yields 3 rows (V002, V005, V007).
 		"""
 		body_filtered, _, _ = self._invoke(
 			party="Asha Stationers", party_type="Supplier",
@@ -429,9 +434,9 @@ class TestExportGlEntriesCsv(_GlDrillBase):
 		# Count data rows (skip header).
 		filtered_rows = len(body_filtered.splitlines()) - 1
 		unfiltered_rows = len(body_unfiltered.splitlines()) - 1
-		self.assertEqual(filtered_rows, 3,
-		                 msg="expected 3 Asha rows in filtered CSV")
-		self.assertEqual(unfiltered_rows, 6)
+		self.assertEqual(filtered_rows, 1,
+		                 msg="expected 1 Asha row in A's filtered CSV")
+		self.assertEqual(unfiltered_rows, 3)
 		# Every party cell in filtered CSV is "Asha Stationers".
 		import csv as _csv
 		import io as _io
@@ -514,15 +519,15 @@ class TestGlDrillFilters(_GlDrillBase):
 		"""account_names=['FXT Payable'] returns only payable rows
 		from the all-leaves scope (drops Receivable/Bank/Equity)."""
 		out_unfiltered = gl_drill_v1.get_gl_entries(
-			accounts=self._all_fixture_leaves(),
+			accounts=self._all_fixture_leaves_for(self._A()),
 			as_of_date=today(),
-			companies=self.state["companies"],
+			companies=[self._A()],
 			page=1, page_size=500,
 		)
 		out_filtered = gl_drill_v1.get_gl_entries(
-			accounts=self._all_fixture_leaves(),
+			accounts=self._all_fixture_leaves_for(self._A()),
 			as_of_date=today(),
-			companies=self.state["companies"],
+			companies=[self._A()],
 			account_names=["FXT Payable"],
 			page=1, page_size=500,
 		)
@@ -551,22 +556,22 @@ class TestGlDrillFilters(_GlDrillBase):
 		# also excluded because today() upper bound is well before
 		# 2150).
 		out_excluded = gl_drill_v1.get_gl_entries(
-			accounts=self._payable_leaves(),
+			accounts=self._payable_leaves(self._A()),
 			as_of_date=today(),
-			companies=self.state["companies"],
+			companies=[self._A()],
 			from_date=str(fixture_pd + timedelta(days=1)),
 			page=1, page_size=500,
 		)
 		self.assertEqual(out_excluded["total_entries"], 0)
 		# from_date = fixture posting_date -> all rows still in
 		out_included = gl_drill_v1.get_gl_entries(
-			accounts=self._payable_leaves(),
+			accounts=self._payable_leaves(self._A()),
 			as_of_date=today(),
-			companies=self.state["companies"],
+			companies=[self._A()],
 			from_date=str(fixture_pd),
 			page=1, page_size=500,
 		)
-		self.assertEqual(out_included["total_entries"], 6)
+		self.assertEqual(out_included["total_entries"], 3)
 		self.assertEqual(out_included["filter_state"]["from_date"],
 		                 fixture_pd.isoformat())
 
@@ -576,22 +581,22 @@ class TestGlDrillFilters(_GlDrillBase):
 		fixture_pd = self._fixture_pd()
 		# to_date = 1 day before fixture posting_date -> excludes all
 		out_excluded = gl_drill_v1.get_gl_entries(
-			accounts=self._payable_leaves(),
+			accounts=self._payable_leaves(self._A()),
 			as_of_date=today(),
-			companies=self.state["companies"],
+			companies=[self._A()],
 			to_date=str(fixture_pd - timedelta(days=1)),
 			page=1, page_size=500,
 		)
 		self.assertEqual(out_excluded["total_entries"], 0)
 		# to_date = fixture posting_date -> all 6 rows in
 		out_included = gl_drill_v1.get_gl_entries(
-			accounts=self._payable_leaves(),
+			accounts=self._payable_leaves(self._A()),
 			as_of_date=today(),
-			companies=self.state["companies"],
+			companies=[self._A()],
 			to_date=str(fixture_pd),
 			page=1, page_size=500,
 		)
-		self.assertEqual(out_included["total_entries"], 6)
+		self.assertEqual(out_included["total_entries"], 3)
 		self.assertFalse(out_included["clamped_to_date"])
 
 	def test_get_gl_entries_to_date_clamps_to_as_of_date(self):
@@ -600,18 +605,18 @@ class TestGlDrillFilters(_GlDrillBase):
 		from datetime import timedelta
 		far_future = str(getdate(today()) + timedelta(days=365))
 		out = gl_drill_v1.get_gl_entries(
-			accounts=self._payable_leaves(),
+			accounts=self._payable_leaves(self._A()),
 			as_of_date=today(),
-			companies=self.state["companies"],
+			companies=[self._A()],
 			to_date=far_future,
 			page=1, page_size=500,
 		)
 		# Same row count as no to_date -- the clamp made the filter
 		# a no-op (effective_to_date == as_of_date).
 		out_no_to = gl_drill_v1.get_gl_entries(
-			accounts=self._payable_leaves(),
+			accounts=self._payable_leaves(self._A()),
 			as_of_date=today(),
-			companies=self.state["companies"],
+			companies=[self._A()],
 			page=1, page_size=500,
 		)
 		self.assertEqual(out["total_entries"], out_no_to["total_entries"])
@@ -625,22 +630,22 @@ class TestGlDrillFilters(_GlDrillBase):
 		fixture rows."""
 		# Non-existent voucher type
 		out_zero = gl_drill_v1.get_gl_entries(
-			accounts=self._payable_leaves(),
+			accounts=self._payable_leaves(self._A()),
 			as_of_date=today(),
-			companies=self.state["companies"],
+			companies=[self._A()],
 			voucher_types=["NonExistentVoucherType"],
 			page=1, page_size=500,
 		)
 		self.assertEqual(out_zero["total_entries"], 0)
 		# Actual voucher type
 		out_all = gl_drill_v1.get_gl_entries(
-			accounts=self._payable_leaves(),
+			accounts=self._payable_leaves(self._A()),
 			as_of_date=today(),
-			companies=self.state["companies"],
+			companies=[self._A()],
 			voucher_types=["DGV Test Seed"],
 			page=1, page_size=500,
 		)
-		self.assertEqual(out_all["total_entries"], 6)
+		self.assertEqual(out_all["total_entries"], 3)
 		# voucher_types_in_scope echoes the unfiltered universe so the
 		# UI dropdown shows what's available even when narrowed.
 		self.assertIn("DGV Test Seed", out_all["voucher_types_in_scope"])
@@ -649,17 +654,17 @@ class TestGlDrillFilters(_GlDrillBase):
 		"""Apply account_names + voucher_types together: result is
 		the intersection."""
 		out = gl_drill_v1.get_gl_entries(
-			accounts=self._all_fixture_leaves(),
+			accounts=self._all_fixture_leaves_for(self._A()),
 			as_of_date=today(),
-			companies=self.state["companies"],
+			companies=[self._A()],
 			account_names=["FXT Payable"],
 			voucher_types=["DGV Test Seed"],
 			page=1, page_size=500,
 		)
-		# Same 6 payable rows from the account_names test -- both
+		# Same 3 payable rows from the account_names test (A only under v0.9) -- both
 		# filters happen to align on the fixture data, but the test
 		# verifies the SQL combines AND-style.
-		self.assertEqual(out["total_entries"], 6)
+		self.assertEqual(out["total_entries"], 3)
 		for e in out["entries"]:
 			self.assertTrue(e["account"].startswith("FXT Payable"))
 			self.assertEqual(e["voucher_type"], "DGV Test Seed")
@@ -681,9 +686,9 @@ class TestExportGlEntriesCsvFilters(_GlDrillBase):
 	def _invoke(self, **kwargs):
 		from frappe import _dict
 		default = dict(
-			accounts=self._payable_leaves(),
+			accounts=self._payable_leaves(self._A()),
 			as_of_date=today(),
-			companies=self.state["companies"],
+			companies=[self._A()],
 		)
 		default.update(kwargs)
 		original = dict(getattr(frappe.local, "response", {}))
@@ -702,16 +707,17 @@ class TestExportGlEntriesCsvFilters(_GlDrillBase):
 		the filtered get_gl_entries."""
 		body_unfiltered, _ = self._invoke()
 		body_filtered, _ = self._invoke(
-			accounts=self._all_fixture_leaves(),
+			accounts=self._all_fixture_leaves_for(self._A()),
 			account_names=["FXT Payable"],
 		)
 		# Header + N data rows; subtract header
 		unfiltered_rows = len(body_unfiltered.splitlines()) - 1
 		filtered_rows = len(body_filtered.splitlines()) - 1
-		# Unfiltered payable scope = 6 rows; account_names-filtered
-		# all-leaves scope also = 6 rows (only payable leaves match).
-		self.assertEqual(unfiltered_rows, 6)
-		self.assertEqual(filtered_rows, 6)
+		# Spec v0.9 single-company A: payable scope = 3 rows
+		# (V002+V005+V007); account_names-filtered all-leaves scope
+		# also = 3 rows (only A's payable leaf matches).
+		self.assertEqual(unfiltered_rows, 3)
+		self.assertEqual(filtered_rows, 3)
 		# Same row count, but the filtered filename should differ
 		# (presence of the `_filtered_` segment).
 
@@ -769,8 +775,9 @@ class TestGlDrillFilterMetadataCompaniesInScope(_GlDrillBase):
 		# arg → server uses permission-allowed set, which on the
 		# test runner is "all"; we narrow via the accounts list).
 		out = gl_drill_v1.get_filter_metadata(
-			accounts=self._payable_leaves(),
+			accounts=self._payable_leaves(self._A()),
 			as_of_date=today(),
+			companies=[self._A()],
 		)
 		self.assertIn("companies_in_scope", out)
 		self.assertIsInstance(out["companies_in_scope"], list)
@@ -784,8 +791,9 @@ class TestGlDrillFilterMetadataCompaniesInScope(_GlDrillBase):
 
 	def test_filter_metadata_companies_in_scope_matches_n_companies(self):
 		out = gl_drill_v1.get_filter_metadata(
-			accounts=self._payable_leaves(),
+			accounts=self._payable_leaves(self._A()),
 			as_of_date=today(),
+			companies=[self._A()],
 		)
 		# The list length must match the scope_fanout count -- pins
 		# the invariant that the visibility check on the client
@@ -795,3 +803,84 @@ class TestGlDrillFilterMetadataCompaniesInScope(_GlDrillBase):
 			len(out["companies_in_scope"]),
 			out["scope_fanout"]["n_companies"],
 		)
+
+
+# ---------------------------------------------------------------------------
+# Spec v0.9 -- GL drill is per-company
+# ---------------------------------------------------------------------------
+
+class TestGlDrillPerCompanyAssertion(_GlDrillBase):
+	"""Spec v0.9: get_gl_entries, export_gl_entries_csv, and
+	get_filter_metadata all assert exactly one company in the
+	resolved permission-allowed set. ValidationError otherwise."""
+
+	def test_get_gl_entries_raises_for_multi_company(self):
+		"""Calling get_gl_entries with companies spanning >1 entry
+		raises ValidationError with the verbatim per-company message
+		and sets the scope_multi_company response flag (so the client
+		can route through the picker / focus-mode nudge tile)."""
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			gl_drill_v1.get_gl_entries(
+				accounts=self._payable_leaves(*self.state["companies"]),
+				as_of_date=today(),
+				companies=self.state["companies"],  # >1 -- must fail
+				page=1, page_size=50,
+			)
+		# The verbatim message is locked -- the client tile relies on
+		# matching this exactly when no scope_multi_company_message in
+		# the response (defensive fallback).
+		self.assertIn(
+			"GL drill is per-company", str(ctx.exception),
+			msg="ValidationError must carry the verbatim per-company message",
+		)
+		# Response side-channel for the client error-tile classifier.
+		self.assertTrue(
+			frappe.local.response.get("scope_multi_company"),
+			msg="scope_multi_company flag must be set in response",
+		)
+		self.assertEqual(
+			frappe.local.response.get("scope_multi_company_message"),
+			gl_drill_v1.PER_COMPANY_ERROR_MESSAGE,
+		)
+
+	def test_get_gl_entries_single_company_returns_running_balance(self):
+		"""Inverse of the multi-company assertion: with companies=[A]
+		the endpoint succeeds and every returned entry includes
+		running_balance (always present under v0.9 -- no v0.8 omission
+		branch)."""
+		A = self._A()
+		out = gl_drill_v1.get_gl_entries(
+			accounts=self._payable_leaves(A),
+			as_of_date=today(),
+			companies=[A],
+			page=1, page_size=50,
+		)
+		self.assertGreater(len(out["entries"]), 0)
+		for e in out["entries"]:
+			self.assertIn("running_balance", e,
+				msg="running_balance must be present on every entry under v0.9")
+			self.assertIsInstance(e["running_balance"], (int, float))
+
+	def test_export_gl_entries_csv_raises_for_multi_company(self):
+		"""CSV export has the same per-company assertion. ValidationError
+		fires before the download starts, so the user gets no half-baked
+		file."""
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			gl_drill_v1.export_gl_entries_csv(
+				accounts=self._payable_leaves(*self.state["companies"]),
+				as_of_date=today(),
+				companies=self.state["companies"],
+			)
+		self.assertIn("GL drill is per-company", str(ctx.exception))
+
+	def test_get_filter_metadata_raises_for_multi_company(self):
+		"""Filter metadata shares the per-company constraint with the
+		main endpoint -- otherwise the dropdown population query would
+		run over the same multi-company row set that gl_entries rejects."""
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			gl_drill_v1.get_filter_metadata(
+				accounts=self._payable_leaves(*self.state["companies"]),
+				as_of_date=today(),
+				companies=self.state["companies"],
+			)
+		self.assertIn("GL drill is per-company", str(ctx.exception))

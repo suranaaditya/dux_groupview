@@ -623,6 +623,20 @@ frappe.pages['gl-drill'].on_page_load = function(wrapper) {
 				renderFilterChips();
 				updateMobileBadge();
 			},
+			error: function (r, xhr) {
+				// Filter metadata is a side concern; the main get_gl_entries
+				// call surfaces user-facing errors. Spec v0.9:
+				// scope_multi_company fires on both endpoints for the same
+				// scope, and the main fetch's error tile is the user's
+				// actionable surface. Just suppress Frappe's default popup
+				// for known classified errors here.
+				const body = (xhr && xhr.responseJSON) || {};
+				if (body.scope_multi_company || body.malformed_scope) {
+					return;
+				}
+				// For other failures, leave the filter sidebar empty.
+				// The main view's failure surface is the table area.
+			},
 		});
 	}
 
@@ -1322,11 +1336,15 @@ frappe.pages['gl-drill'].on_page_load = function(wrapper) {
 			'</tr>';
 		}).join('');
 
+		// Spec v0.9: GL drill is per-company, so the running balance
+		// always resets at (account) boundary within the one company.
+		// The sort-by-amount note explains why dividers are hidden
+		// when sorting by amount.
 		const dividerNote = showDividers ? '' :
 			'<div class="dgv-gl-sort-note">Sorted by amount; ' +
 			'group dividers hidden. Running balance still ' +
-			'accumulates scope-wide in date order (independent of ' +
-			'this display sort).</div>';
+			'accumulates per account in date order ' +
+			'(independent of this display sort).</div>';
 
 		return dividerNote +
 			'<table class="dgv-gl-table">' +

@@ -1042,8 +1042,190 @@
 		//   - Page:     args = page state shape (scope:{kind,id}/
 		//               companies/as_of_date)
 		// buildGlDrillUrl handles both shapes.
+		//
+		// Spec v0.9: GL drill is per-company. When `args.companies`
+		// has >1 entry, present a picker modal first; the picked
+		// company becomes the sole `companies` in the navigation URL.
+		// Single-company (length 0 means "user's full allowed set",
+		// length 1 means already narrowed) flows through unchanged.
+		var companies = (args && args.companies) || [];
+		if (companies.length > 1) {
+			openCompanyPickerForGlDrill(companies, function (picked) {
+				var picked_args = Object.assign({}, args, {
+					companies: [picked],
+				});
+				window.location.href = buildGlDrillUrl(picked_args);
+			});
+			return;
+		}
 		var url = buildGlDrillUrl(args);
 		window.location.href = url;
+	}
+
+	// =========================================================================
+	// Company picker modal (spec v0.9)
+	// =========================================================================
+	// Presented before navigating to /app/gl-drill from a multi-company
+	// scope. Vanilla DOM (no Frappe Dialog dep) so it loads on /app and
+	// /app/gl-drill alike. CSS in cockpit.css (.dgv-cpicker-*).
+	//
+	// Keyboard: Esc closes; Enter on focused row picks; ArrowUp/Down
+	// navigate. Tab is intentionally NOT trapped -- the modal is short-
+	// lived; user can dismiss with Esc or backdrop click.
+
+	function openCompanyPickerForGlDrill(companies, onPick) {
+		// One modal at a time.
+		var existing = document.getElementById('dgv-cpicker-modal');
+		if (existing) existing.remove();
+
+		var modal = document.createElement('div');
+		modal.id = 'dgv-cpicker-modal';
+		modal.className = 'dgv-cpicker-modal';
+		modal.setAttribute('role', 'dialog');
+		modal.setAttribute('aria-modal', 'true');
+		modal.setAttribute('aria-labelledby', 'dgv-cpicker-title');
+
+		var rowsHtml = companies.map(function (c) {
+			return '<button type="button" class="dgv-cpicker-row" ' +
+			       'data-company="' + escapeHtml(c) + '" tabindex="-1">' +
+			       escapeHtml(c) + '</button>';
+		}).join('');
+
+		modal.innerHTML =
+			'<div class="dgv-cpicker-backdrop"></div>' +
+			'<div class="dgv-cpicker-card" role="document">' +
+				'<div class="dgv-cpicker-header">' +
+					'<h3 id="dgv-cpicker-title">Choose a company</h3>' +
+					'<button type="button" class="dgv-cpicker-close" ' +
+					        'aria-label="Close">×</button>' +
+				'</div>' +
+				'<div class="dgv-cpicker-subtitle">' +
+					'GL drill shows transactions for one company at a time.' +
+				'</div>' +
+				'<div class="dgv-cpicker-search-wrap">' +
+					'<input type="text" class="dgv-cpicker-search" ' +
+					       'placeholder="Search companies…" ' +
+					       'aria-label="Filter companies" ' +
+					       'autocomplete="off" spellcheck="false" />' +
+				'</div>' +
+				'<div class="dgv-cpicker-list">' + rowsHtml + '</div>' +
+				'<div class="dgv-cpicker-empty" hidden>' +
+					'No companies match your search.' +
+				'</div>' +
+			'</div>';
+
+		document.body.appendChild(modal);
+
+		var search = modal.querySelector('.dgv-cpicker-search');
+		var emptyMsg = modal.querySelector('.dgv-cpicker-empty');
+		var listEl = modal.querySelector('.dgv-cpicker-list');
+		var allRows = Array.prototype.slice.call(
+			modal.querySelectorAll('.dgv-cpicker-row')
+		);
+		var visibleRows = allRows.slice();
+
+		function applyFilter() {
+			var q = (search.value || '').trim().toLowerCase();
+			visibleRows = [];
+			allRows.forEach(function (r) {
+				var co = (r.getAttribute('data-company') || '').toLowerCase();
+				var match = !q || co.indexOf(q) !== -1;
+				r.hidden = !match;
+				if (match) visibleRows.push(r);
+			});
+			emptyMsg.hidden = visibleRows.length > 0;
+			listEl.hidden = visibleRows.length === 0;
+		}
+
+		function close() {
+			modal.remove();
+			document.removeEventListener('keydown', onKey);
+		}
+		function pick(co) {
+			close();
+			try { onPick(co); } catch (e) { /* swallow */ }
+		}
+		function focusRow(idx) {
+			if (!visibleRows.length) return;
+			var i = ((idx % visibleRows.length) + visibleRows.length)
+			        % visibleRows.length;
+			visibleRows[i].focus();
+		}
+		function indexOfActiveRow() {
+			var active = document.activeElement;
+			for (var i = 0; i < visibleRows.length; i++) {
+				if (visibleRows[i] === active) return i;
+			}
+			return -1;
+		}
+		function onKey(e) {
+			if (e.key === 'Escape') {
+				e.preventDefault();
+				close();
+				return;
+			}
+			if (e.key === 'ArrowDown') {
+				if (document.activeElement === search) {
+					if (visibleRows.length) {
+						e.preventDefault();
+						focusRow(0);
+					}
+				} else {
+					var idx = indexOfActiveRow();
+					if (idx !== -1) {
+						e.preventDefault();
+						focusRow(idx + 1);
+					}
+				}
+				return;
+			}
+			if (e.key === 'ArrowUp') {
+				var idx = indexOfActiveRow();
+				if (idx === 0) {
+					// First row -> back to search input.
+					e.preventDefault();
+					search.focus();
+				} else if (idx > 0) {
+					e.preventDefault();
+					focusRow(idx - 1);
+				}
+				return;
+			}
+			if (e.key === 'Enter') {
+				if (document.activeElement === search) {
+					// Pick first visible row.
+					if (visibleRows.length) {
+						e.preventDefault();
+						pick(visibleRows[0].getAttribute('data-company'));
+					}
+				} else {
+					var focused = document.activeElement;
+					if (focused && focused.classList &&
+					    focused.classList.contains('dgv-cpicker-row')) {
+						e.preventDefault();
+						pick(focused.getAttribute('data-company'));
+					}
+				}
+			}
+		}
+		document.addEventListener('keydown', onKey);
+
+		search.addEventListener('input', applyFilter);
+
+		modal.querySelector('.dgv-cpicker-backdrop')
+			.addEventListener('click', close);
+		modal.querySelector('.dgv-cpicker-close')
+			.addEventListener('click', close);
+		allRows.forEach(function (r) {
+			r.addEventListener('click', function () {
+				pick(r.getAttribute('data-company'));
+			});
+		});
+
+		// Initial state: filter pass-through + focus the search input
+		// so the user can start typing immediately.
+		applyFilter();
+		search.focus();
 	}
 
 	function stubExportCsv(ctx, args) {
@@ -1479,6 +1661,20 @@
 		if (body && body.malformed_scope) {
 			return { category: 'invalid', status: status };
 		}
+		// Spec v0.9: scope_multi_company flag from gl_drill_v1's per-
+		// company assertion. Renders the server's verbatim message
+		// ("GL drill is per-company...") with a "Pick a company" or
+		// "Open Focus mode" nudge. Status-stripping safe -- check
+		// body regardless of status.
+		if (body && body.scope_multi_company) {
+			return {
+				category: 'scope-multi-company',
+				status: status,
+				message: body.scope_multi_company_message || '',
+				companies: body.scope_companies || null,
+				responseJSON: body,
+			};
+		}
 
 		if (status === 0 || status === undefined) {
 			return { category: 'network', status: status };
@@ -1525,6 +1721,19 @@
 			message = 'This link is no longer valid. Return to cockpit?';
 			actionText = 'Cockpit';
 			actionFn = function () { window.location.href = '/app/groupview'; };
+			break;
+		case 'scope-multi-company':
+			// Spec v0.9 -- direct URL hit with multi-company scope
+			// bypassed the UI's company picker. Surface the server's
+			// verbatim message and nudge back to the cockpit where the
+			// drill panel will show the picker.
+			message = info.message
+				|| 'GL drill is per-company. Use Focus mode for ' +
+				   'company-wide views.';
+			actionText = 'Open Cockpit';
+			actionFn = function () {
+				window.location.href = '/app/groupview';
+			};
 			break;
 		case 'server':
 		default:
