@@ -1863,3 +1863,219 @@ we didn't see it because the original v0.4 design didn't constrain
 entry to single-company scopes. Worth recording: spec iterations
 under perf pressure are not failure, they're how the design finds
 the actual user-flow.
+
+
+## Phase 4 commit 10 — Multi-company popup suppression + Phase 4 close
+
+**Branch:** `phase-4-drills` (continuing to PR review for merge to `main`).
+**Spec:** no further amendments; v0.9 stands.
+
+Commit 10 ships a small, targeted server fix and consolidates Phase 4
+into a closing summary in this PHASE_LOG.
+
+### Bug B — Frappe `_server_messages` popup fires alongside the targeted error tile
+
+Surfaced during commit 10's pre-commit browser smoke (see
+`.claude/scratch/COMMIT_10_SMOKE.md` -- ephemeral, not tracked).
+When a user lands on `/app/gl-drill?...&companies=co1,co2` (direct URL
+with multi-company scope), the server raises `frappe.throw(...)` from
+`_check_single_company`. Frappe's default error handler then renders
+a generic popup ("Message: GL drill is per-company...") on top of the
+client-side targeted error tile, producing visible double-error UX.
+
+**Fix:** `_check_single_company` clears `frappe.local.response[
+"_server_messages"] = json.dumps([])` after setting the
+`scope_multi_company` side-channel flags. Frappe's popup-rendering
+code checks `len(json.loads(_server_messages))` before showing the
+popup -- empty array suppresses it without breaking the rest of the
+error response shape.
+
+Scoped suppression: this clear only fires inside `_check_single_company`.
+Other `frappe.throw()` calls in `gl_drill_v1.py` (CSV-too-large,
+malformed scope, etc.) retain default popup behavior.
+
+**User-facing message text tweaked** alongside this fix: was "GL
+drill is per-company. Use Focus mode for company-wide views." which
+implied the user should switch to Focus mode (which doesn't solve
+multi-company GL drill -- the answer is the picker). Now reads "GL
+drill is per-company. Open from the cockpit drill panel and use the
+company picker." Matching update in `account_drill.js`'s
+`renderErrorTile` fallback case.
+
+**Exception text** also separated from the user-facing text. The
+exception's `_(...)` argument is "GL drill requires a single company
+in scope." (terse, log-friendly); the user-facing text lives in
+`scope_multi_company_message` and is what the client tile renders.
+
+### Test
+
+- `test_get_gl_entries_multi_company_clears_server_messages` in
+  `TestGlDrillPerCompanyAssertion`. Asserts that after a multi-company
+  `get_gl_entries` raises, `frappe.local.response["_server_messages"]`
+  parses to an empty list (`json.loads("[]") == []`).
+- Existing `test_*_raises_for_multi_company` updated to assert the
+  new exception text ("GL drill requires a single company").
+- Full test_gl_drill module: **27 tests OK** (was 26 + 1 new).
+
+### Files changed in commit 10
+
+- `dux_groupview/dux_groupview/api/gl_drill_v1.py` -- `_check_single_company`
+  updated (`_server_messages` clear + new message text + terse
+  exception). `PER_COMPANY_ERROR_MESSAGE` constant text updated.
+- `dux_groupview/public/js/account_drill.js` -- `renderErrorTile`
+  fallback text updated to match.
+- `dux_groupview/dux_groupview/tests/test_gl_drill.py` -- new test +
+  updated existing test assertions.
+- `PHASE_LOG.md` -- this entry + Phase 4 Summary below.
+
+**Trailer convention:** simple form (`Claude <noreply@anthropic.com>`)
+restored after drift to extended form in commits 9 and 9-follow-up.
+Forward commits use simple form.
+
+
+# Phase 4 Summary
+
+## What shipped
+
+The cockpit supports the full account-drill flow at production scale
+(5M+ GL entries, 65 companies on the RGI seed):
+
+- **Drill into account aggregates** -- click a pivot cell or a
+  spotlight card to open the drill panel. Panel shows group total,
+  12-month trend, by-company breakdown, and (for party-trackable
+  accounts) top parties.
+- **Per-company GL transaction views** -- click "View GL entries"
+  from the drill panel; for multi-company scopes, a company picker
+  modal asks which company first. GL drill page shows paginated
+  ledger with running balance per `(company, account)` partition,
+  group divider chips, sort options, and HALT 2.5 filters
+  (account_names, date range, voucher types).
+- **CSV exports** for every drill surface (account breakdown,
+  party list, GL entries, focused view). Raw decimals + ISO dates
+  for spreadsheet locale compatibility; 50K-row cap on the GL drill
+  export with helpful "scope too large" error.
+- **Focus mode** -- per-company or per-trust focused vertical view
+  with summary tiles + account-hierarchy listing. Replaces the
+  pivot grid; "Back to cockpit" returns with prior state restored.
+
+## Architectural decisions
+
+1. **Snapshot-only reads** for cockpit + focus mode; drill APIs
+   (account_drill_v1, party_drill_v1, gl_drill_v1) read `tabGL Entry`
+   directly under the CLAUDE.md commit 1 amendment for `_drill`-suffixed
+   APIs. Covering indexes ensure perf: `dgv_pivot`, `dgv_account_drill`,
+   `dgv_company_drill` on snapshot row; `dgv_snapshot_aggregation`,
+   `dgv_party_drill` on `tabGL Entry`.
+
+2. **GL drill is per-company by design** (spec v0.9) -- matches
+   conventional accounting workflow scoping (Tally, ERPNext stock
+   ledger, audit-review tools). Bounds row count by construction;
+   single-company scopes resolve to <10K rows even at production
+   scale. Multi-company entry paths get a picker modal first.
+
+3. **Sign convention** `FLIP_ROOT_TYPES = ('Liability', 'Equity',
+   'Income')` applied in SQL `CASE` expressions throughout the
+   drill APIs. Single source of truth in `api/utils.py`, pinned by
+   sign-convention parity tests.
+
+4. **Single source of truth for client error classification**
+   (`dgvClassifyError` + `dgvRenderErrorTile` in
+   `public/js/account_drill.js`). Every page (cockpit, focus, GL
+   drill, party list) routes its `error:` callbacks through the
+   same helper. Adding a new category is a single switch entry.
+
+5. **`malformed_scope` response flag** distinguishes 404 from 200+
+   empty. Server endpoints set
+   `frappe.local.response["malformed_scope"] = True` for unrecognised
+   scope IDs; the client routes those through the invalid-scope tile
+   with a "Cockpit" action button (instead of a generic 500 or
+   wall-of-text).
+
+6. **Request-token pattern** for race-condition handling. Sort /
+   page-size / pager re-entries fire fresh fetches; stale responses
+   get dropped on token mismatch. Implemented uniformly across
+   gl_drill, party_list, drill panel.
+
+7. **CSV cells contain raw decimals** (e.g. `"500000.00"`, not
+   `"5,00,000.00"`). Indian-grouped pre-formatting would force visual
+   interpretation onto every CSV consumer and break sum/filter/pivot
+   in spreadsheet apps. Locale formatting happens on import.
+
+## Performance verification (5M-row scale)
+
+All 14 measured endpoints meet spec §10 targets at production scale.
+Canonical baseline JSON: [docs/perf/commit_9_baseline_5M.json](
+docs/perf/commit_9_baseline_5M.json). Re-runnable harness:
+[docs/perf/perf_harness.py](docs/perf/perf_harness.py).
+
+Notable p95 numbers (5M rows, 65 cos, KVM 4):
+
+| Endpoint × scope | p95 | Spec |
+|---|---:|---:|
+| `get_pivot_data` large (all cos) | 43 ms | <2 s |
+| `get_spotlight_cards` large | 0.2 ms | <400 ms |
+| `get_account_breakdown` large | 169 ms | <600 ms |
+| `get_party_breakdown[page]` large | 175 ms | <500 ms |
+| `get_gl_entries` medium (single trust × subtree, 1 co) | 65 ms | <500 ms |
+| `get_filter_metadata` medium (1 co) | 17 ms | <500 ms |
+| `get_focused_view` trust (multi-co) | 9 ms | <600 ms |
+| `export_gl_entries_csv` medium | 96 ms | <10 s |
+
+TB snapshot refresh at 5M: **59.156 s** (right at the <60 s line).
+Watch in ops; consider alerting if a scheduled refresh runs over 75 s.
+
+## Deferred to Phase 5
+
+- **Multi-company cross-scope GL drill** as a separate page or
+  feature flag, if real users request it (per v0.9 reframing,
+  this isn't a natural accounting workflow). Drill panel summary
+  already shows cross-company aggregates; one extra click to pick
+  a company before viewing transactions is low-friction.
+- **Cards editor** -- `FEATURE_REQUESTS.md` captured the RGI Interest
+  Paid card request. Plus the broader Phase 5 cards editor work
+  (configurable spotlight cards).
+- **Cosmetic walkthrough** (scenario 10 from commit 7 -- color
+  consistency, hover states, focus rings, empty-whitespace
+  judgments). Aditya's own browser pass.
+- **Configurable tiles** for focused view (currently fixed 5 tiles:
+  Assets / Liabilities / Income / Expenses / Net Surplus).
+- **Student debtor balances** -- waiting on Phase 1 migration
+  completion (separate from this app's scope but blocks one of the
+  RGI use cases).
+
+## Operational notes
+
+- **TB snapshot refresh at 60 s on 5M scale** -- right at the spec
+  line. Watch beyond 75 s as a slowdown signal.
+- **`focus_v1.summary_tiles` trips EXPLAIN §9.2 strict criterion**
+  at the 172-row scale (benign at 9 ms p95). Known divergence,
+  cost << value of fix, accepted. PHASE_LOG commit 9 entry has the
+  full diagnosis.
+- **Composite index CREATE on `tabGL Entry` @ 5M** ≈ 1 minute.
+  Phase 3 covering-index CREATE pinned at 45 s on the same table
+  at the same scale.
+- **Caddy serves `dux_groupview` assets without Cache-Control**;
+  Chrome heuristic-caches. Hard-reload usually busts; fresh
+  incognito always shows the latest deploy. Not a blocker (verified
+  during commit 10 smoke).
+- **Static-file deploys** (`scp` + `SIGHUP gunicorn`) reach users
+  on next page-load -- no `bench build` required for `public/js`
+  or `public/css` assets.
+
+## Test count at Phase 4 close
+
+**187 tests in `dux_groupview`** (target 182 + 5 added in commits 9
+and 10 = 187 hit exactly). All green at the time of this writing.
+
+## How to operate the system
+
+- **Refresh the TB snapshot on demand:** `bench --site <site> execute
+  dux_groupview.dux_groupview.snapshots.refresh._refresh_with_spotlight`
+- **Refresh the perf baseline:** copy `docs/perf/perf_harness.py` to
+  the dev's `apps/dux_groupview/dux_groupview/dux_groupview/test_data/`,
+  run via `bench execute`, save the JSON output back to `docs/perf/`.
+- **Deploy a static-file change:** `scp` the file + `kill -HUP
+  $(pgrep -of 'gunicorn -b')`. Hard-refresh in browser (or use
+  incognito) on first check.
+- **Run the test suite:** `bench --site <site> run-tests --app
+  dux_groupview`. Full suite ≈ 32 min on KVM 4.

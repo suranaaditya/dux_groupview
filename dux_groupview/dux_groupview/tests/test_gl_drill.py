@@ -816,9 +816,10 @@ class TestGlDrillPerCompanyAssertion(_GlDrillBase):
 
 	def test_get_gl_entries_raises_for_multi_company(self):
 		"""Calling get_gl_entries with companies spanning >1 entry
-		raises ValidationError with the verbatim per-company message
-		and sets the scope_multi_company response flag (so the client
-		can route through the picker / focus-mode nudge tile)."""
+		raises ValidationError with a terse exception message and
+		sets the scope_multi_company response flag with the verbatim
+		user-facing message (so the client can route through the
+		targeted tile)."""
 		with self.assertRaises(frappe.ValidationError) as ctx:
 			gl_drill_v1.get_gl_entries(
 				accounts=self._payable_leaves(*self.state["companies"]),
@@ -826,12 +827,10 @@ class TestGlDrillPerCompanyAssertion(_GlDrillBase):
 				companies=self.state["companies"],  # >1 -- must fail
 				page=1, page_size=50,
 			)
-		# The verbatim message is locked -- the client tile relies on
-		# matching this exactly when no scope_multi_company_message in
-		# the response (defensive fallback).
+		# Exception text is terse for log clarity (commit 10).
 		self.assertIn(
-			"GL drill is per-company", str(ctx.exception),
-			msg="ValidationError must carry the verbatim per-company message",
+			"GL drill requires a single company", str(ctx.exception),
+			msg="ValidationError must carry the terse per-company message",
 		)
 		# Response side-channel for the client error-tile classifier.
 		self.assertTrue(
@@ -841,6 +840,37 @@ class TestGlDrillPerCompanyAssertion(_GlDrillBase):
 		self.assertEqual(
 			frappe.local.response.get("scope_multi_company_message"),
 			gl_drill_v1.PER_COMPANY_ERROR_MESSAGE,
+		)
+
+	def test_get_gl_entries_multi_company_clears_server_messages(self):
+		"""Commit 10: _check_single_company clears _server_messages so
+		Frappe's default popup does NOT fire alongside the targeted
+		client error tile. Scoped suppression -- other frappe.throw
+		paths in this module retain default popup behavior."""
+		try:
+			gl_drill_v1.get_gl_entries(
+				accounts=self._payable_leaves(*self.state["companies"]),
+				as_of_date=today(),
+				companies=self.state["companies"],
+				page=1, page_size=50,
+			)
+			self.fail("Expected ValidationError for multi-company scope")
+		except frappe.ValidationError:
+			pass
+		# _server_messages must be an empty JSON array string. Frappe
+		# checks `len(json.loads(_server_messages))` before showing
+		# the popup; an empty array suppresses it without breaking
+		# the rest of Frappe's error response shape.
+		import json as _json
+		raw = frappe.local.response.get("_server_messages")
+		self.assertIsNotNone(
+			raw,
+			msg="_server_messages must be explicitly cleared (set to '[]')",
+		)
+		parsed = _json.loads(raw) if isinstance(raw, str) else raw
+		self.assertEqual(
+			parsed, [],
+			msg="_server_messages must be empty so Frappe popup is suppressed",
 		)
 
 	def test_get_gl_entries_single_company_returns_running_balance(self):
@@ -871,7 +901,7 @@ class TestGlDrillPerCompanyAssertion(_GlDrillBase):
 				as_of_date=today(),
 				companies=self.state["companies"],
 			)
-		self.assertIn("GL drill is per-company", str(ctx.exception))
+		self.assertIn("GL drill requires a single company", str(ctx.exception))
 
 	def test_get_filter_metadata_raises_for_multi_company(self):
 		"""Filter metadata shares the per-company constraint with the
@@ -883,4 +913,4 @@ class TestGlDrillPerCompanyAssertion(_GlDrillBase):
 				as_of_date=today(),
 				companies=self.state["companies"],
 			)
-		self.assertIn("GL drill is per-company", str(ctx.exception))
+		self.assertIn("GL drill requires a single company", str(ctx.exception))

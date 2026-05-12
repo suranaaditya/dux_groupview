@@ -1733,8 +1733,8 @@
 			// verbatim message and nudge back to the cockpit where the
 			// drill panel will show the picker.
 			message = info.message
-				|| 'GL drill is per-company. Use Focus mode for ' +
-				   'company-wide views.';
+				|| 'GL drill is per-company. Open from the cockpit ' +
+				   'drill panel and use the company picker.';
 			actionText = 'Open Cockpit';
 			actionFn = function () {
 				window.location.href = '/app/groupview';

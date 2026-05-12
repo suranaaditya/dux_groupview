@@ -78,7 +78,8 @@ REMARKS_TRUNCATE_LEN = 200
 # any of these endpoints; the server-side check is a defensive
 # guard against direct URL hits with `companies=` lists.
 PER_COMPANY_ERROR_MESSAGE = (
-	"GL drill is per-company. Use Focus mode for company-wide views."
+	"GL drill is per-company. Open from the cockpit drill panel "
+	"and use the company picker."
 )
 
 
@@ -94,7 +95,14 @@ def _check_single_company(allowed):
 	error tile renders identically regardless of which call surfaced
 	the error. `scope_multi_company` flag in the response lets the
 	classifier route to a dedicated tile category that nudges the user
-	toward the company picker / Focus mode.
+	toward the company picker. `_server_messages` is cleared so
+	Frappe's default popup doesn't fire alongside the targeted tile --
+	scope-multi-company is the ONLY known multi-popup overlap surfaced
+	in commit 10 smoke; other frappe.throw paths in this module retain
+	default popup behavior. The actual exception message is terse
+	("requires a single company") for log clarity; the user-facing
+	message lives in scope_multi_company_message and is the verbatim
+	text the client tile renders.
 	"""
 	if allowed and len(allowed) > 1:
 		frappe.local.response["scope_multi_company"] = True
@@ -102,7 +110,13 @@ def _check_single_company(allowed):
 			PER_COMPANY_ERROR_MESSAGE
 		)
 		frappe.local.response["scope_companies"] = list(allowed)
-		frappe.throw(_(PER_COMPANY_ERROR_MESSAGE), frappe.ValidationError)
+		# Scoped suppression of Frappe's default popup so the client
+		# renders its own classified error tile for this one case.
+		frappe.local.response["_server_messages"] = json.dumps([])
+		frappe.throw(
+			_("GL drill requires a single company in scope."),
+			exc=frappe.ValidationError,
+		)
 
 
 # ---------------------------------------------------------------------------
