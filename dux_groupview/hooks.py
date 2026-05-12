@@ -15,6 +15,10 @@ app_include_js = [
 	"/assets/dux_groupview/vendor/clusterize/clusterize.min.js",
 	"/assets/dux_groupview/js/pivot_grid.js",
 	"/assets/dux_groupview/js/trust_selector.js",
+	# account_drill.js loads before cockpit.js so groupview.js can call
+	# window.dgvOpenAccountDrillPanel during card-click / leaf-click
+	# handler wiring at boot time.
+	"/assets/dux_groupview/js/account_drill.js",
 	"/assets/dux_groupview/js/cockpit.js",
 ]
 app_include_css = [

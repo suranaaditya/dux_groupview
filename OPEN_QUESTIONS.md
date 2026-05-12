@@ -163,6 +163,22 @@ demands more.
 
 ---
 
+## Q22 — Heatmap toggle removed in commit 2.5
+**Asked by:** Cockpit visual redesign (commit 2.5)
+**Status:** Resolved
+
+The heatmap toggle was removed during the cockpit visual redesign.
+Rationale: low feature value, added visual complexity that fought
+the new executive-briefing aesthetic. Format pill (Cr/L/Full/Plain)
+now controls only number-formatting.
+
+If heatmap-style visualization is needed in the future, the right
+home is the focus mode introduced in commit 6 — a focused single-column
+view is a more natural place for color encoding than the multi-column
+pivot.
+
+---
+
 ## Closed
 
 ### Q3 — Default spotlight card set for owner role

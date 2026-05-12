@@ -70,6 +70,20 @@ def get_spotlight_cards(snapshot_date):
 	format, color) and server-rendered formatted strings for the value
 	and delta. Cards with no cache row (zero-match accounts on dev seed)
 	still appear with value=0 / delta=0 / sparkline_data=[].
+
+	Cache fallback (commit 7 F-3): scheduler-driven runs go through
+	`_refresh_with_spotlight()` (refresh.py) which chains the spotlight
+	cache after the TB snapshot, so under normal operation the cache
+	rows for a fresh snapshot are present. If the chained refresh
+	silently fails (caught and logged in `_refresh_with_spotlight`) OR
+	someone runs `refresh_tb_snapshot` manually without the wrapper,
+	the cache lags and this endpoint would return all-zero cards --
+	indistinguishable from a "no activity" cockpit. Defensive read-side
+	fallback: if no cache rows exist for `snapshot_date`, fall through
+	to the same live recomputation path that
+	`get_spotlight_cards_filtered` uses, scoped to the user's full
+	allowed company set. Logs to `frappe.log_error` so production
+	observability flags every fallback fire.
 	"""
 	_require_cockpit_role()
 	snapshot_date = getdate(snapshot_date)
@@ -83,7 +97,43 @@ def get_spotlight_cards(snapshot_date):
 		(snapshot_date,),
 		as_dict=True,
 	)
+
+	# Defensive fallback when the cache is empty for this date.
+	if not cache_rows:
+		frappe.log_error(
+			message=(
+				f"Spotlight cache empty for snapshot_date={snapshot_date}; "
+				"falling back to live recomputation. Either the chained "
+				"_refresh_with_spotlight failed silently for this date, or "
+				"refresh_tb_snapshot was run without the wrapper. Cockpit "
+				"is showing correct numbers via fallback."
+			),
+			title="Spotlight cache empty fallback",
+		)
+		# Live recompute scoped to user's full allowed companies, mirroring
+		# the no-explicit-scope path that `get_spotlight_cards_filtered`
+		# uses when companies=null. Reuses the same code path; no new
+		# helper needed.
+		allowed = _resolve_scope(None)
+		return _build_filtered_cards_payload(snapshot_date, allowed)
+
 	cache_by_id = {r["card_id"]: r for r in cache_rows}
+
+	# Phase 4 commit 2.5 fix 3: per-card has_prior_baseline. A card has
+	# a prior baseline iff a cache row exists for it at the prior month's
+	# snapshot date. Used by JS to render "First reported this month"
+	# instead of "Up ₹X Cr from <Month>" on cards with no MoM context.
+	prior_month_date = prior_month_snapshot_date(snapshot_date)
+	prior_card_ids = set()
+	if prior_month_date is not None:
+		prior_rows = frappe.db.sql(
+			"""
+			SELECT card_id FROM `tabDGV Spotlight Cache`
+			WHERE snapshot_date = %s
+			""",
+			(prior_month_date,),
+		)
+		prior_card_ids = {r[0] for r in prior_rows}
 
 	out = []
 	for card in CARDS:
@@ -96,6 +146,12 @@ def get_spotlight_cards(snapshot_date):
 		out.append({
 			"card_id": card["id"],
 			"label": card["label"],
+			# `match` exposes the card's predicate dict so the cockpit JS
+			# can hand it to `cards_v1.resolve_match_to_accounts` when
+			# opening the drill panel (Phase 4 commit 3). It carries no
+			# user-data sensitivity -- the predicate is a server-side
+			# constant from spotlight/cards.py.
+			"match": card["match"],
 			"polarity": card["polarity"],
 			"format": card["format"],
 			"color": card["color"],
@@ -103,6 +159,7 @@ def get_spotlight_cards(snapshot_date):
 			"delta": delta,
 			"delta_percent": delta_percent,
 			"sparkline_data": sparkline,
+			"has_prior_baseline": card["id"] in prior_card_ids,
 			"formatted_value": _format_value(value, card["format"]),
 			"formatted_delta": _format_delta(delta, card["format"]),
 		})
@@ -140,6 +197,19 @@ def get_spotlight_cards_filtered(snapshot_date, companies):
 	snapshot_date = getdate(snapshot_date)
 
 	allowed = _resolve_scope(companies)
+	return _build_filtered_cards_payload(snapshot_date, allowed)
+
+
+def _build_filtered_cards_payload(snapshot_date, allowed):
+	"""Live-recompute the 6 cards for an explicit company list.
+
+	Shared between `get_spotlight_cards_filtered` (always called) and
+	`get_spotlight_cards`'s defensive fallback (called when the cache
+	is empty for the requested date — commit 7 F-3 fix).
+
+	`allowed` is already permission-intersected (caller invokes
+	`_resolve_scope`).
+	"""
 	if not allowed:
 		# No accessible companies after intersection -- return zeroed
 		# cards in the same shape as get_spotlight_cards.
@@ -167,9 +237,18 @@ def get_spotlight_cards_filtered(snapshot_date, companies):
 				else None
 			)
 
+		# Phase 4 commit 2.5 fix 3: per-card has_prior_baseline. The
+		# cache doesn't apply when scope is filtered, so we check
+		# whether this card's predicate matches any snapshot rows in
+		# the requested companies at the prior month's date.
+		has_prior_baseline = _card_has_prior_baseline(
+			card, prior_month_date, allowed,
+		)
+
 		out.append({
 			"card_id": card["id"],
 			"label": card["label"],
+			"match": card["match"],
 			"polarity": card["polarity"],
 			"format": card["format"],
 			"color": card["color"],
@@ -177,6 +256,7 @@ def get_spotlight_cards_filtered(snapshot_date, companies):
 			"delta": delta,
 			"delta_percent": delta_percent,
 			"sparkline_data": sparkline,
+			"has_prior_baseline": has_prior_baseline,
 			"formatted_value": _format_value(value, card["format"]),
 			"formatted_delta": _format_delta(delta, card["format"]),
 		})
@@ -187,6 +267,7 @@ def _zero_card_payload(card):
 	return {
 		"card_id": card["id"],
 		"label": card["label"],
+		"match": card["match"],
 		"polarity": card["polarity"],
 		"format": card["format"],
 		"color": card["color"],
@@ -194,9 +275,47 @@ def _zero_card_payload(card):
 		"delta": 0.0,
 		"delta_percent": 0.0,
 		"sparkline_data": [],
+		"has_prior_baseline": False,
 		"formatted_value": _format_value(0.0, card["format"]),
 		"formatted_delta": _format_delta(0.0, card["format"]),
 	}
+
+
+def _card_has_prior_baseline(card, prior_month_date, allowed):
+	"""Did this card's leaves have any snapshot rows at prior_month_date
+	for the given company scope?
+
+	Used by the filtered spotlight endpoint and the cockpit headline,
+	which both bypass the cache. Returns False when prior_month_date
+	is None (no prior snapshot at all) or when the card's predicate
+	matches zero snapshot rows in the requested scope.
+	"""
+	from dux_groupview.dux_groupview.snapshots.spotlight_refresh import (
+		_match_clause,
+	)
+	if prior_month_date is None or not allowed:
+		return False
+	clause, params = _match_clause(card)
+	if clause is None:
+		return False
+	params["snapshot_date"] = prior_month_date
+	co_clause = ""
+	co_list = list(allowed)
+	if co_list:
+		ph = ", ".join(f"%(co_{i})s" for i in range(len(co_list)))
+		for i, c in enumerate(co_list):
+			params[f"co_{i}"] = c
+		co_clause = f" AND company IN ({ph})"
+	rows = frappe.db.sql(
+		f"""
+		SELECT 1 FROM `tabDGV TB Snapshot Row`
+		WHERE snapshot_date = %(snapshot_date)s
+		  AND ({clause}){co_clause}
+		LIMIT 1
+		""",
+		params,
+	)
+	return bool(rows)
 
 
 @frappe.whitelist()
@@ -279,3 +398,143 @@ def _format_delta(delta, fmt):
 	sign = "+" if delta > 0 else ("" if delta == 0 else "-")
 	formatted = _format_value(abs(delta), fmt)
 	return f"{sign}{formatted}" if delta != 0 else formatted
+
+
+# ---------------------------------------------------------------------------
+# Cockpit headline (Phase 4 commit 2.5)
+# ---------------------------------------------------------------------------
+#
+# Generates the one-sentence summary that sits above the spotlight grid
+# in the executive-briefing layout. Reads the same data as the spotlight
+# endpoints (cache when scope is full, recomputed when scoped) and
+# composes natural English from the largest month-over-month deltas.
+
+# Friendly card names for headline copy. Keys must match cards.py ids.
+HEADLINE_CARD_NAMES = {
+	"sundry_creditors":     "Sundry creditors",
+	"sundry_debtors":       "Sundry debtors",
+	"unsecured_loans":      "Unsecured loans",
+	"cash_and_bank":        "Cash position",
+	"inter_co_receivable":  "Inter-company receivables",
+	"fixed_deposits":       "Fixed deposits",
+}
+
+# Significance threshold for inclusion in the headline.
+HEADLINE_DELTA_THRESHOLD_RUPEES = 1_000_000.0  # ₹0.10 Cr
+
+
+@frappe.whitelist()
+def get_cockpit_headline(as_of_date, companies=None):
+	"""One-sentence MoM summary for the cockpit's headline section.
+
+	Reads spotlight values for `as_of_date` and the prior month-end,
+	picks the most significant deltas (abs >= 0.1 Cr) on cards that
+	have a real prior baseline, and composes a plain-English sentence.
+	Seven template branches:
+
+	  - All cards lack baseline (first snapshot for this scope):
+	    "First snapshot for this scope — no prior month to compare."
+	  - 0 significant deltas: "All key metrics held steady from <PrevMonth>."
+	  - 1 significant delta:  "<Name> [up|down] by ₹X.X Cr since <PrevMonth>."
+	  - 2 same sign:          "<Name1> and <Name2> both [rose|fell] over the
+	                           month, by ₹X1 Cr and ₹X2 Cr respectively."
+	  - 2 opposite signs:     "<UpName> strengthened by ₹X1 Cr; <DownName>
+	                           declined by ₹X2 Cr over the month."
+	  - 3+ deltas:            Falls into either "same sign" or "opposite
+	                           signs" template using the top two by
+	                           abs(delta).
+
+	Returns: { "headline": "<sentence>" } or { "headline": "" } when
+	the user has no companies in scope.
+	"""
+	_require_cockpit_role()
+	snapshot_date = getdate(as_of_date)
+
+	allowed = _resolve_scope(companies)
+	if not allowed:
+		return {"headline": ""}
+
+	prior_month_date = prior_month_snapshot_date(snapshot_date)
+
+	# Phase 4 commit 2.5 fix 3: filter out cards without a real prior
+	# baseline before significance evaluation. Cards where the prior
+	# month had no matching snapshot rows for this scope are excluded.
+	# If ALL cards lack baseline, emit the dedicated "first snapshot"
+	# template.
+	deltas = []
+	for card in CARDS:
+		has_baseline = _card_has_prior_baseline(card, prior_month_date, allowed)
+		if not has_baseline:
+			continue
+		current = aggregate_card_value(card, snapshot_date, companies=allowed)
+		prior = aggregate_card_value(card, prior_month_date, companies=allowed)
+		delta = round(flt(current) - flt(prior), 2)
+		deltas.append({
+			"card_id": card["id"],
+			"name": HEADLINE_CARD_NAMES.get(card["id"], card["label"]),
+			"delta": delta,
+		})
+
+	if not deltas:
+		# No card has a prior-month baseline in this scope. Cleanest:
+		# tell the operator that and skip the misleading per-card MoM
+		# template. (Distinct from "0 significant deltas" — there
+		# IS a prior month, just no movement worth reporting.)
+		return {"headline": "First snapshot for this scope — no prior month to compare."}
+
+	significant = [d for d in deltas if abs(d["delta"]) >= HEADLINE_DELTA_THRESHOLD_RUPEES]
+	significant.sort(key=lambda d: abs(d["delta"]), reverse=True)
+
+	prev_month_label = _month_long_name(prior_month_date)
+	headline = _compose_headline(significant, prev_month_label)
+	return {"headline": headline}
+
+
+def _compose_headline(significant, prev_month_label):
+	"""Render one of the six "real-comparison" template branches.
+
+	Caller (`get_cockpit_headline`) handles the seventh branch — "First
+	snapshot for this scope" — when no card has a prior baseline.
+	"""
+	if not significant:
+		return f"All key metrics held steady from {prev_month_label}."
+
+	if len(significant) == 1:
+		d = significant[0]
+		direction = "up" if d["delta"] > 0 else "down"
+		return (
+			f"{d['name']} {direction} by {_cr(d['delta'])} "
+			f"since {prev_month_label}."
+		)
+
+	# 2 or more — take top two by abs(delta).
+	first, second = significant[0], significant[1]
+	same_sign = (first["delta"] > 0) == (second["delta"] > 0)
+
+	if same_sign:
+		direction = "rose" if first["delta"] > 0 else "fell"
+		return (
+			f"{first['name']} and {second['name']} both {direction} "
+			f"over the month, by {_cr(first['delta'])} and "
+			f"{_cr(second['delta'])} respectively."
+		)
+
+	# Opposite signs.
+	up_card = first if first["delta"] > 0 else second
+	down_card = second if first["delta"] > 0 else first
+	return (
+		f"{up_card['name']} strengthened by {_cr(up_card['delta'])}; "
+		f"{down_card['name']} declined by {_cr(down_card['delta'])} "
+		f"over the month."
+	)
+
+
+def _cr(rupees):
+	"""Format an absolute rupee amount as ₹X.X Cr."""
+	cr = abs(flt(rupees)) / 10_000_000.0
+	return f"₹{cr:.1f} Cr"
+
+
+def _month_long_name(d):
+	"""Return the long English month name for a date (e.g. 'April')."""
+	return getdate(d).strftime("%B")

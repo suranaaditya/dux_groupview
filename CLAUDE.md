@@ -29,6 +29,31 @@ These are non-negotiable. They protect the project from drift.
    touches `tabGL Entry` is the background refresh function in
    `dux_groupview/snapshots/refresh.py`.
 
+   ### Phase 4 amendment — drill reads
+
+   > **Cockpit reads** (top-level pivot, spotlight cards, account drill,
+   > focus mode summary tiles) come from `DGV TB Snapshot Row` and
+   > `DGV Spotlight Cache` only.
+   >
+   > **Drill reads** may query `tabGL Entry` directly only when **ALL**
+   > of the following hold:
+   >
+   > (a) the API is named with a `_drill` suffix,
+   > (b) it respects User Permissions on Company at API entry,
+   > (c) it uses the existing covering index from Phase 3,
+   > (d) it paginates results > 100 rows (after grouping for aggregated reads),
+   > (e) it scopes to **a single account or single account-subtree** AND
+   >     a bounded set of companies (1 to N where N is the user's allowed
+   >     companies); never wildcards across accounts,
+   > (f) it is **read-only** — no INSERT, UPDATE, DELETE, or MERGE on
+   >     `tabGL Entry` is permitted under any circumstances,
+   > (g) every row returned passes `_allowed_companies()` check.
+   >
+   > Two `_drill` API modules will satisfy this rule in Phase 4:
+   > `gl_drill_v1` and `party_drill_v1`. Adding any further `_drill`
+   > module requires re-verifying all seven conditions and updating
+   > this rule block.
+
 2. **Never modify ERPNext doctype schemas** (no custom fields, links,
    child tables, or controller behavior). Adding helper indexes to
    stock tables IS permitted when justified by aggregation perf,

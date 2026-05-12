@@ -1,1 +1,3066 @@
-/* dux_groupview Phase 0 placeholder */
+/*
+ * dux_groupview cockpit — Phase 4 commit 2.5 (executive briefing)
+ *
+ * Color palette + typography expressed as CSS custom properties under
+ * :root so a future theme override commit can re-skin the cockpit
+ * without touching component selectors.
+ */
+
+:root {
+	--rgi-bg-page:        #FBF9F4;  /* warm cream page background */
+	--rgi-bg-surface:     #FFFFFF;  /* card / table / header / footer */
+	--rgi-bg-row-alt:     #FBF9F4;  /* table header row */
+	--rgi-text-primary:   #1B2845;  /* main numbers, headings, deep navy */
+	--rgi-text-secondary: #5A5147;  /* secondary text, muted body */
+	--rgi-text-tertiary:  #8B8378;  /* eyebrows, captions, italic notes */
+	--rgi-border:         #E8E2D5;  /* dividers, borders */
+	--rgi-border-light:   #D5CDB8;  /* lighter accent (secondary tier) */
+	--rgi-success:        #5A7C3D;  /* positive deltas (sage) */
+	--rgi-danger:         #A14B3C;  /* negative deltas (terracotta) */
+	--rgi-amber:          #BA7517;  /* synthetic-preview banner */
+
+	--rgi-font-serif:     Georgia, "Times New Roman", serif;
+	--rgi-font-sans:      "Geist", -apple-system, BlinkMacSystemFont,
+	                      "Segoe UI", Roboto, sans-serif;
+	--rgi-font-mono:      "Geist Mono", ui-monospace, "SF Mono",
+	                      "Cascadia Mono", "Consolas", monospace;
+}
+
+
+/* ===========================================================================
+ * Synthetic preview banner — thin amber strip above the header
+ * ======================================================================== */
+
+.dux-synthetic-banner {
+	background: var(--rgi-amber);
+	color: #FFFFFF;
+	font-family: var(--rgi-font-sans);
+	font-size: 11px;
+	font-weight: 500;
+	letter-spacing: 0.05em;
+	text-align: center;
+	padding: 5px 12px;
+	line-height: 1.3;
+}
+.dux-synthetic-banner[hidden] { display: none; }
+
+
+/* ===========================================================================
+ * Cockpit shell — overall page
+ * ======================================================================== */
+
+.dgv-cockpit-shell {
+	background: var(--rgi-bg-page);
+	color: var(--rgi-text-secondary);
+	font-family: var(--rgi-font-sans);
+	min-height: 100vh;
+}
+
+
+/* ===========================================================================
+ * Header — white card with logo + tagline (left) + date/scope (right)
+ * ======================================================================== */
+
+.rgi-header {
+	background: var(--rgi-bg-surface);
+	border-bottom: 1px solid var(--rgi-border);
+	padding: 22px 32px;
+	display: flex;
+	align-items: center;
+	gap: 20px;
+}
+
+.rgi-header-brand {
+	display: flex;
+	align-items: center;
+	gap: 18px;
+}
+
+.rgi-header-logo {
+	display: block;
+	width: auto;
+	height: 32px;
+}
+
+.rgi-header-rule {
+	width: 1px;
+	height: 36px;
+	background: var(--rgi-text-primary);
+	opacity: 0.3;
+}
+
+.rgi-header-tagline {
+	font-family: var(--rgi-font-serif);
+	font-style: italic;
+	font-size: 13px;
+	color: var(--rgi-text-secondary);
+	line-height: 1.25;
+}
+
+.rgi-header-meta {
+	margin-left: auto;
+	text-align: right;
+}
+
+.rgi-header-date {
+	font-family: var(--rgi-font-serif);
+	font-size: 16px;
+	color: var(--rgi-text-primary);
+	line-height: 1.2;
+}
+
+.rgi-header-caption {
+	font-family: var(--rgi-font-sans);
+	font-size: 11px;
+	color: var(--rgi-text-tertiary);
+	margin-top: 4px;
+	letter-spacing: 0.01em;
+}
+
+
+/* ===========================================================================
+ * Page body — wrapper around headline, spotlight, trial balance
+ * ======================================================================== */
+
+.rgi-body {
+	padding: 28px 32px;
+	max-width: 1320px;
+	margin: 0 auto;
+}
+
+
+/* ===========================================================================
+ * Header controls — trust selector, date, age pill
+ * (restyled but same component IDs as Phase 3.5)
+ * ======================================================================== */
+
+.rgi-header-controls {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	margin-left: 16px;
+}
+
+/* Restyle existing dgv-scope-pill */
+.dgv-scope-pill {
+	background: var(--rgi-bg-surface);
+	color: var(--rgi-text-secondary);
+	border: 1px solid var(--rgi-border);
+	border-radius: 3px;
+	padding: 6px 10px;
+	font-family: var(--rgi-font-sans);
+	font-size: 12px;
+	cursor: pointer;
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	transition: border-color 0.15s ease;
+}
+.dgv-scope-pill:hover { border-color: var(--rgi-text-tertiary); }
+.dgv-scope-pill[aria-expanded="true"] { border-color: var(--rgi-text-primary); }
+.dgv-scope-pill-prefix {
+	color: var(--rgi-text-tertiary);
+	font-size: 10px;
+	letter-spacing: 0.05em;
+	text-transform: uppercase;
+}
+.dgv-scope-pill-summary {
+	color: var(--rgi-text-primary);
+	font-weight: 500;
+}
+.dgv-scope-pill-caret { color: var(--rgi-text-tertiary); font-size: 10px; }
+
+.dgv-date-select {
+	background: var(--rgi-bg-surface);
+	color: var(--rgi-text-primary);
+	border: 1px solid var(--rgi-border);
+	border-radius: 3px;
+	padding: 5px 8px;
+	font-family: var(--rgi-font-sans);
+	font-size: 12px;
+	height: 30px;
+}
+
+.dgv-age-pill {
+	font-size: 10px;
+	letter-spacing: 0.05em;
+	text-transform: uppercase;
+	padding: 4px 8px;
+	border-radius: 3px;
+	font-weight: 500;
+}
+.dgv-age-pill.fresh    { background: #E8F0DA; color: var(--rgi-success); }
+.dgv-age-pill.stale    { background: #F5EBD8; color: var(--rgi-amber); }
+.dgv-age-pill.very-old { background: #F5DCDA; color: var(--rgi-danger); }
+
+
+/* ===========================================================================
+ * Headline section — eyebrow + serif sentence summarising MoM deltas
+ * ======================================================================== */
+
+.rgi-headline {
+	margin-bottom: 24px;
+	padding-bottom: 24px;
+	border-bottom: 1px solid var(--rgi-border);
+}
+
+.rgi-headline-eyebrow {
+	font-family: var(--rgi-font-sans);
+	font-size: 11px;
+	font-weight: 500;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--rgi-text-tertiary);
+	margin-bottom: 8px;
+}
+
+.rgi-headline-text {
+	font-family: var(--rgi-font-serif);
+	font-size: 22px;
+	font-weight: 400;
+	color: var(--rgi-text-primary);
+	line-height: 1.45;
+	max-width: 920px;
+}
+
+.rgi-headline[hidden] { display: none; }
+
+
+/* ===========================================================================
+ * Spotlight grid — two tiers (primary + secondary)
+ * ======================================================================== */
+
+.rgi-spotlight {
+	margin-bottom: 28px;
+	padding-bottom: 28px;
+	border-bottom: 1px solid var(--rgi-border);
+}
+
+.rgi-spotlight-tier-primary,
+.rgi-spotlight-tier-secondary {
+	display: grid;
+	grid-template-columns: repeat(3, 1fr);
+	gap: 24px;
+}
+
+.rgi-spotlight-tier-primary {
+	margin-bottom: 28px;
+}
+
+.rgi-spotlight-card {
+	background: var(--rgi-bg-surface);
+	padding: 18px 20px 18px 20px;
+	border-radius: 6px;
+	box-shadow: 0 1px 2px rgba(27, 40, 69, 0.04),
+	            0 1px 1px rgba(27, 40, 69, 0.03);
+	transition: box-shadow 0.15s ease, transform 0.15s ease,
+	            border-left-width 0.15s ease;
+	position: relative;
+	cursor: pointer;
+	min-height: 96px;
+	border-left-style: solid;
+	border-left-color: var(--rgi-text-primary);
+}
+
+.rgi-spotlight-card.rgi-tier-primary {
+	border-left-width: 2px;
+	border-left-color: var(--rgi-text-primary);
+}
+
+.rgi-spotlight-card.rgi-tier-secondary {
+	border-left-width: 1px;
+	border-left-color: var(--rgi-border-light);
+}
+
+.rgi-spotlight-card:hover {
+	box-shadow: 0 4px 12px rgba(27, 40, 69, 0.08),
+	            0 2px 4px rgba(27, 40, 69, 0.04);
+	transform: translateY(-1px);
+}
+.rgi-spotlight-card.rgi-tier-primary:hover  { border-left-width: 3px; }
+.rgi-spotlight-card.rgi-tier-secondary:hover { border-left-width: 2px; }
+
+/* Click affordance: chevron arrow in top-right, fades in on hover. */
+.rgi-card-chevron {
+	position: absolute;
+	top: 16px;
+	right: 16px;
+	width: 14px;
+	height: 14px;
+	color: var(--rgi-text-primary);
+	opacity: 0;
+	transition: opacity 0.15s ease;
+	pointer-events: none;
+}
+.rgi-spotlight-card:hover .rgi-card-chevron { opacity: 1; }
+.rgi-card-chevron svg {
+	display: block;
+	width: 100%;
+	height: 100%;
+	stroke: currentColor;
+	fill: none;
+	stroke-width: 2;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+}
+
+.rgi-spotlight-eyebrow {
+	font-family: var(--rgi-font-sans);
+	font-size: 11px;
+	font-weight: 500;
+	letter-spacing: 0.05em;
+	text-transform: uppercase;
+	color: var(--rgi-text-tertiary);
+	margin-bottom: 8px;
+}
+
+.rgi-spotlight-figure {
+	display: flex;
+	align-items: baseline;
+	gap: 4px;
+	margin-bottom: 6px;
+}
+
+.rgi-tier-primary .rgi-spotlight-figure {
+	font-family: var(--rgi-font-sans);
+	font-variant-numeric: tabular-nums lining-nums;
+	font-weight: 500;
+}
+.rgi-tier-primary .rgi-spotlight-amount {
+	font-size: 32px;
+	color: var(--rgi-text-primary);
+}
+.rgi-tier-primary .rgi-spotlight-unit {
+	font-size: 15px;
+	color: var(--rgi-text-tertiary);
+}
+
+.rgi-tier-secondary .rgi-spotlight-figure {
+	font-family: var(--rgi-font-sans);
+	font-variant-numeric: tabular-nums lining-nums;
+	font-weight: 500;
+}
+.rgi-tier-secondary .rgi-spotlight-amount {
+	font-size: 24px;
+	color: var(--rgi-text-secondary);
+}
+.rgi-tier-secondary .rgi-spotlight-unit {
+	font-size: 13px;
+	color: var(--rgi-text-tertiary);
+}
+
+/* "No activity recorded" placeholder for cards with value=0 AND delta=0 */
+.rgi-spotlight-empty {
+	font-family: var(--rgi-font-serif);
+	font-style: italic;
+	font-size: 14px;
+	color: var(--rgi-text-tertiary);
+	line-height: 1.4;
+	margin-bottom: 6px;
+}
+
+/* Delta line: italic serif. Sign drives color. */
+.rgi-spotlight-delta {
+	font-family: var(--rgi-font-serif);
+	font-style: italic;
+	font-size: 12px;
+	line-height: 1.3;
+}
+.rgi-spotlight-delta.up   { color: var(--rgi-success); }
+.rgi-spotlight-delta.down { color: var(--rgi-danger); }
+.rgi-spotlight-delta.flat { color: var(--rgi-text-tertiary); }
+
+
+/* ===========================================================================
+ * Trial balance section — heading + toolbar + table
+ * ======================================================================== */
+
+.rgi-tb {
+	background: transparent;
+}
+
+.rgi-tb-heading {
+	font-family: var(--rgi-font-serif);
+	font-size: 17px;
+	font-weight: 500;
+	color: var(--rgi-text-primary);
+	margin-bottom: 4px;
+}
+
+.rgi-tb-subtitle {
+	font-family: var(--rgi-font-serif);
+	font-style: italic;
+	font-size: 12px;
+	color: var(--rgi-text-tertiary);
+	margin-bottom: 12px;
+}
+
+
+/* Toolbar */
+
+.rgi-tb-toolbar {
+	display: flex;
+	align-items: center;
+	gap: 16px;
+	margin-bottom: 12px;
+	flex-wrap: wrap;
+}
+
+/* View buttons: Balance / Movement / Compare */
+.dgv-view-toggle {
+	display: inline-flex;
+	gap: 6px;
+}
+.dgv-view-btn {
+	background: var(--rgi-bg-surface);
+	color: var(--rgi-text-secondary);
+	border: 1px solid var(--rgi-border);
+	border-radius: 3px;
+	padding: 6px 14px;
+	font-family: var(--rgi-font-sans);
+	font-size: 12px;
+	font-weight: 500;
+	cursor: pointer;
+	transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+.dgv-view-btn:hover:not([disabled]) { border-color: var(--rgi-text-tertiary); }
+.dgv-view-btn.dgv-view-active {
+	background: var(--rgi-text-primary);
+	color: #FFFFFF;
+	border-color: var(--rgi-text-primary);
+}
+.dgv-view-btn[disabled] {
+	opacity: 0.55;
+	cursor: not-allowed;
+}
+
+/* Pill groups: Depth (1/2/3/All), Format (Cr/L/Full/Plain) */
+.dgv-depth-toggle,
+.dgv-format-toggle {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+}
+.dgv-depth-label,
+.dgv-format-label {
+	font-family: var(--rgi-font-sans);
+	font-size: 11px;
+	font-weight: 500;
+	letter-spacing: 0.05em;
+	text-transform: uppercase;
+	color: var(--rgi-text-tertiary);
+}
+.dgv-depth-toggle .dgv-depth-pill-group,
+.dgv-format-toggle .dgv-format-pill-group {
+	display: inline-flex;
+	border: 1px solid var(--rgi-border);
+	border-radius: 3px;
+	overflow: hidden;
+	background: var(--rgi-bg-surface);
+}
+.dgv-depth-btn,
+.dgv-format-btn {
+	background: transparent;
+	color: var(--rgi-text-secondary);
+	border: none;
+	padding: 0;
+	height: 26px;
+	font-family: var(--rgi-font-sans);
+	font-size: 11px;
+	font-weight: 500;
+	cursor: pointer;
+}
+.dgv-depth-btn { width: 28px; }
+.dgv-depth-btn[data-depth="all"] { width: 32px; }
+.dgv-format-btn { width: 30px; }
+.dgv-format-btn[data-format="full"],
+.dgv-format-btn[data-format="plain"] { width: 36px; }
+
+.dgv-depth-btn.active,
+.dgv-format-btn.active {
+	background: var(--rgi-text-primary);
+	color: #FFFFFF;
+}
+
+
+/* Search input — pushed to the far right */
+.dgv-pivot-search {
+	margin-left: auto;
+	width: 200px;
+	height: 30px;
+	background: var(--rgi-bg-surface);
+	color: var(--rgi-text-primary);
+	border: 1px solid var(--rgi-border);
+	border-radius: 3px;
+	padding: 0 10px;
+	font-family: var(--rgi-font-sans);
+	font-size: 12px;
+}
+.dgv-pivot-search::placeholder { color: var(--rgi-text-tertiary); }
+.dgv-pivot-search:focus {
+	outline: none;
+	border-color: var(--rgi-text-primary);
+}
+
+
+/* Table */
+
+#pivot-grid {
+	background: var(--rgi-bg-surface);
+	border: 1px solid var(--rgi-border);
+	border-radius: 3px;
+	overflow: hidden;
+}
+
+#pivot-grid table {
+	width: 100%;
+	border-collapse: collapse;
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+}
+
+#pivot-grid th {
+	background: var(--rgi-bg-row-alt);
+	color: var(--rgi-text-tertiary);
+	font-family: var(--rgi-font-sans);
+	font-size: 11px;
+	font-weight: 500;
+	letter-spacing: 0.05em;
+	text-transform: uppercase;
+	text-align: left;
+	padding: 11px 14px;
+	border-bottom: 1px solid var(--rgi-border);
+}
+#pivot-grid th.numeric { text-align: right; }
+
+#pivot-grid td {
+	padding: 8px 14px;
+	border-bottom: 1px solid var(--rgi-border);
+	color: var(--rgi-text-secondary);
+}
+#pivot-grid td.numeric {
+	font-family: var(--rgi-font-mono);
+	text-align: right;
+}
+
+#pivot-grid tr.parent-row td { color: var(--rgi-text-primary); font-weight: 500; }
+#pivot-grid tr.child-row  td { color: var(--rgi-text-secondary); font-weight: 400; }
+
+#pivot-grid th.col-account, #pivot-grid td.col-account { width: 240px; }
+#pivot-grid th.col-total,   #pivot-grid td.col-total   { width: 110px; }
+
+#pivot-grid tr:last-child td { border-bottom: none; }
+
+
+/* ===========================================================================
+ * Footer — confidentiality + provided-by Dux logo
+ * ======================================================================== */
+
+.rgi-footer {
+	background: var(--rgi-bg-surface);
+	border-top: 1px solid var(--rgi-border);
+	padding: 16px 32px;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 16px;
+}
+
+.rgi-footer-confidential {
+	font-family: var(--rgi-font-serif);
+	font-style: italic;
+	font-size: 11px;
+	color: var(--rgi-text-tertiary);
+}
+
+.rgi-footer-provider {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.rgi-footer-eyebrow {
+	font-family: var(--rgi-font-sans);
+	font-size: 10px;
+	font-weight: 500;
+	letter-spacing: 0.05em;
+	text-transform: uppercase;
+	color: var(--rgi-text-tertiary);
+}
+
+.rgi-footer-logo {
+	display: block;
+	width: auto;
+	height: 20px;
+}
+
+
+/* ===========================================================================
+ * Responsive — stack at narrow viewports
+ * ======================================================================== */
+
+@media (max-width: 900px) {
+	.rgi-header {
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 12px;
+		padding: 16px;
+	}
+	.rgi-header-meta {
+		margin-left: 0;
+		text-align: left;
+	}
+	.rgi-header-controls {
+		margin-left: 0;
+		flex-wrap: wrap;
+	}
+	.rgi-body {
+		padding: 20px 16px;
+	}
+	.rgi-spotlight-tier-primary,
+	.rgi-spotlight-tier-secondary {
+		grid-template-columns: 1fr;
+		gap: 16px;
+	}
+	.rgi-spotlight-tier-primary {
+		margin-bottom: 20px;
+	}
+	.rgi-headline-text {
+		font-size: 18px;
+	}
+	.rgi-tb-toolbar {
+		gap: 12px;
+	}
+	.dgv-pivot-search {
+		margin-left: 0;
+		width: 100%;
+	}
+	.rgi-footer {
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 12px;
+		padding: 16px;
+	}
+}
+
+
+/* ===========================================================================
+ * Account drill — slide-out panel (Phase 4 commit 3)
+ *
+ * Mounted at the top of the document body so it overlays the cockpit
+ * shell. The panel slides in from the right; backdrop dims the cockpit.
+ * The same component CSS classes (.dgv-drill-section, eyebrow, table
+ * styles) are reused on the full-page surface at /app/account-drill —
+ * size-specific rules live below the panel rules.
+ * ======================================================================== */
+
+.dgv-drill-overlay {
+	position: fixed;
+	inset: 0;
+	z-index: 1100;
+	pointer-events: auto;
+}
+.dgv-drill-overlay[hidden] { display: none; }
+
+.dgv-drill-backdrop {
+	position: absolute;
+	inset: 0;
+	background: rgba(27, 40, 69, 0.45);
+	opacity: 0;
+	transition: opacity 220ms ease-out;
+}
+.dgv-drill-overlay.dgv-drill-open .dgv-drill-backdrop { opacity: 1; }
+
+.dgv-drill-panel {
+	position: absolute;
+	top: 0;
+	right: 0;
+	width: 480px;
+	max-width: 100vw;
+	height: 100%;
+	background: var(--rgi-bg-page);
+	color: var(--rgi-text-secondary);
+	font-family: var(--rgi-font-sans);
+	display: flex;
+	flex-direction: column;
+	box-shadow: -8px 0 24px rgba(27, 40, 69, 0.12);
+	transform: translateX(100%);
+	/* Bumped from 220ms (HALT 6.3 spec): card → panel motion at 300ms
+	 * ease-out feels less abrupt and matches the cross-fade duration
+	 * paired with it (200ms fade-in for skeleton → content). */
+	transition: transform 300ms ease-out;
+}
+.dgv-drill-overlay.dgv-drill-open .dgv-drill-panel { transform: translateX(0); }
+
+/* Skeleton → content cross-fade. The host containers (.dgv-drill-hero,
+ * .dgv-drill-trend-host, .dgv-drill-company-host, .dgv-drill-party-host)
+ * get the `.dgv-fade-in` class applied right after their innerHTML is
+ * swapped from skeleton bars to real data, triggering a 200ms opacity
+ * fade-in. The class is force-reflowed off and on so re-renders within
+ * the same panel session re-trigger the animation. */
+@keyframes dgv-fade-in {
+	from { opacity: 0; }
+	to   { opacity: 1; }
+}
+.dgv-fade-in {
+	animation: dgv-fade-in 200ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.dgv-drill-panel { transition: none; }
+	.dgv-drill-backdrop { transition: none; }
+	.dgv-fade-in { animation: none; }
+}
+
+
+/* Panel header */
+
+.dgv-drill-panel-head {
+	background: var(--rgi-bg-surface);
+	border-bottom: 1px solid var(--rgi-border);
+	padding: 18px 22px;
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 12px;
+	flex-shrink: 0;
+}
+
+.dgv-drill-panel-meta { flex: 1; min-width: 0; }
+
+.dgv-drill-eyebrow {
+	font-family: var(--rgi-font-sans);
+	font-size: 10px;
+	font-weight: 500;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--rgi-text-tertiary);
+	margin-bottom: 6px;
+}
+
+.dgv-drill-title {
+	font-family: var(--rgi-font-serif);
+	font-size: 20px;
+	font-weight: 500;
+	color: var(--rgi-text-primary);
+	margin: 0 0 4px 0;
+	line-height: 1.2;
+	word-break: break-word;
+}
+
+.dgv-drill-scope-sub {
+	font-family: var(--rgi-font-serif);
+	font-style: italic;
+	font-size: 12px;
+	color: var(--rgi-text-tertiary);
+	line-height: 1.3;
+}
+
+.dgv-drill-panel-actions {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	flex-shrink: 0;
+}
+
+.dgv-drill-expand,
+.dgv-drill-close {
+	background: transparent;
+	border: 1px solid transparent;
+	color: var(--rgi-text-tertiary);
+	width: 30px;
+	height: 30px;
+	border-radius: 3px;
+	cursor: pointer;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.dgv-drill-expand:hover,
+.dgv-drill-close:hover {
+	background: var(--rgi-bg-row-alt);
+	color: var(--rgi-text-primary);
+	border-color: var(--rgi-border);
+}
+
+
+/* Panel body */
+
+.dgv-drill-body {
+	flex: 1;
+	overflow-y: auto;
+	padding: 0;
+}
+
+.dgv-drill-section {
+	padding: 18px 22px;
+	border-bottom: 1px solid var(--rgi-border);
+	background: var(--rgi-bg-surface);
+}
+.dgv-drill-section:last-child { border-bottom: none; }
+.dgv-drill-trend  { background: var(--rgi-bg-page); }
+.dgv-drill-by-party { background: var(--rgi-bg-page); }
+.dgv-drill-section[hidden] { display: none; }
+
+.dgv-section-eyebrow {
+	font-family: var(--rgi-font-sans);
+	font-size: 10px;
+	font-weight: 500;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--rgi-text-tertiary);
+	margin-bottom: 10px;
+}
+
+
+/* Hero (group total) */
+
+.dgv-drill-hero-eyebrow {
+	font-family: var(--rgi-font-sans);
+	font-size: 10px;
+	font-weight: 500;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--rgi-text-tertiary);
+	margin-bottom: 8px;
+}
+
+.dgv-drill-hero-figure {
+	display: flex;
+	align-items: baseline;
+	gap: 6px;
+	margin-bottom: 6px;
+}
+
+.dgv-drill-hero-amount {
+	font-family: var(--rgi-font-sans);
+	font-variant-numeric: tabular-nums lining-nums;
+	font-size: 36px;
+	font-weight: 500;
+	color: var(--rgi-text-primary);
+	line-height: 1;
+}
+
+.dgv-drill-hero-unit {
+	font-family: var(--rgi-font-sans);
+	font-size: 16px;
+	color: var(--rgi-text-tertiary);
+}
+
+.dgv-drill-hero-page .dgv-drill-hero-amount { font-size: 44px; }
+.dgv-drill-hero-page .dgv-drill-hero-unit   { font-size: 18px; }
+
+.dgv-drill-hero-delta {
+	font-family: var(--rgi-font-sans);
+	font-variant-numeric: tabular-nums lining-nums;
+	font-size: 13px;
+	line-height: 1.3;
+}
+.dgv-drill-hero-delta.up   { color: var(--rgi-success); }
+.dgv-drill-hero-delta.down { color: var(--rgi-danger); }
+.dgv-drill-hero-delta.flat { color: var(--rgi-text-tertiary); }
+
+.dgv-drill-hero-skeleton {
+	font-family: var(--rgi-font-serif);
+	font-style: italic;
+	font-size: 14px;
+	color: var(--rgi-text-tertiary);
+}
+
+.dgv-drill-empty {
+	font-family: var(--rgi-font-serif);
+	font-style: italic;
+	font-size: 13px;
+	color: var(--rgi-text-tertiary);
+	padding: 4px 0;
+}
+
+.dgv-drill-skel-line {
+	height: 12px;
+	background: var(--rgi-bg-row-alt);
+	border-radius: 3px;
+	margin-bottom: 8px;
+	opacity: 0.7;
+}
+
+
+/* Trend chart */
+
+.dgv-drill-trend-host {
+	display: block;
+	width: 100%;
+}
+.dgv-trend-svg {
+	display: block;
+	width: 100%;
+	height: auto;
+}
+.dgv-trend-line {
+	fill: none;
+	stroke: var(--rgi-text-primary);
+	stroke-width: 1.5;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+}
+.dgv-trend-endpoint {
+	fill: var(--rgi-text-primary);
+	stroke: var(--rgi-bg-surface);
+	stroke-width: 1.5;
+}
+.dgv-trend-grid {
+	stroke: var(--rgi-border);
+	stroke-width: 1;
+	stroke-dasharray: 2 3;
+}
+.dgv-trend-axis-label {
+	font-family: var(--rgi-font-sans);
+	font-size: 9px;
+	fill: var(--rgi-text-tertiary);
+	letter-spacing: 0.04em;
+}
+.dgv-trend-hit {
+	fill: transparent;
+	cursor: crosshair;
+}
+.dgv-drill-trend-empty {
+	font-family: var(--rgi-font-serif);
+	font-style: italic;
+	font-size: 12px;
+	color: var(--rgi-text-tertiary);
+	padding: 12px 0;
+}
+
+/* Tooltip — appended to <body> so positioning is viewport-relative */
+.dgv-drill-tooltip {
+	position: fixed;
+	z-index: 1200;
+	background: var(--rgi-text-primary);
+	color: #FFFFFF;
+	font-family: var(--rgi-font-sans);
+	font-size: 11px;
+	letter-spacing: 0.02em;
+	padding: 6px 9px;
+	border-radius: 3px;
+	pointer-events: none;
+	box-shadow: 0 4px 12px rgba(27, 40, 69, 0.18);
+	white-space: nowrap;
+}
+.dgv-drill-tooltip[hidden] { display: none; }
+
+
+/* By-company table */
+
+.dgv-drill-co-table {
+	width: 100%;
+	border-collapse: collapse;
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+}
+.dgv-drill-co-table td {
+	padding: 10px 0;
+	border-bottom: 1px solid #F0EBE0;
+	color: var(--rgi-text-secondary);
+	vertical-align: top;
+}
+.dgv-drill-co-table tr:last-child td { border-bottom: none; }
+
+.dgv-drill-co-name {
+	color: var(--rgi-text-primary);
+	font-weight: 400;
+	line-height: 1.35;
+	padding-right: 10px;
+}
+
+.dgv-drill-co-spark {
+	width: 90px;
+	padding-right: 10px;
+}
+.dgv-drill-spark { display: block; }
+.dgv-drill-spark-line {
+	fill: none;
+	stroke: var(--rgi-text-secondary);
+	stroke-width: 1.2;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+}
+
+.dgv-drill-co-value {
+	font-family: var(--rgi-font-mono);
+	font-size: 13px;
+	color: var(--rgi-text-primary);
+	text-align: right;
+	white-space: nowrap;
+	width: 1%;  /* shrink-to-fit */
+}
+.dgv-drill-co-unit {
+	color: var(--rgi-text-tertiary);
+	font-size: 11px;
+}
+
+
+/* By-party table */
+
+.dgv-drill-party-head {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 12px;
+	margin-bottom: 8px;
+}
+.dgv-drill-party-sub {
+	font-family: var(--rgi-font-serif);
+	font-style: italic;
+	font-size: 11px;
+	color: var(--rgi-text-tertiary);
+	margin-top: 2px;
+}
+.dgv-drill-view-all {
+	background: transparent;
+	border: 1px solid var(--rgi-border);
+	color: var(--rgi-text-primary);
+	font-family: var(--rgi-font-sans);
+	font-size: 11px;
+	font-weight: 500;
+	border-radius: 3px;
+	padding: 4px 10px;
+	cursor: pointer;
+	flex-shrink: 0;
+	transition: border-color 0.15s ease;
+}
+.dgv-drill-view-all:hover { border-color: var(--rgi-text-primary); }
+
+.dgv-drill-party-table {
+	width: 100%;
+	border-collapse: collapse;
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+}
+.dgv-drill-party-table td {
+	padding: 8px 0;
+	border-bottom: 1px solid #F0EBE0;
+	color: var(--rgi-text-secondary);
+}
+.dgv-drill-party-table tr:last-child td { border-bottom: none; }
+
+.dgv-drill-party-name {
+	color: var(--rgi-text-primary);
+	padding-right: 10px;
+	line-height: 1.3;
+}
+.dgv-drill-party-value {
+	font-family: var(--rgi-font-mono);
+	color: var(--rgi-text-primary);
+	text-align: right;
+	white-space: nowrap;
+	width: 1%;
+}
+.dgv-drill-party-unit {
+	color: var(--rgi-text-tertiary);
+	font-size: 11px;
+}
+.dgv-drill-party-group-badge {
+	display: inline-block;
+	margin-left: 8px;
+	padding: 1px 6px;
+	background: #E8F0DA;
+	color: var(--rgi-success);
+	font-family: var(--rgi-font-sans);
+	font-size: 10px;
+	font-weight: 500;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	border-radius: 2px;
+	vertical-align: 1px;
+}
+.dgv-drill-party-co-count {
+	display: inline-block;
+	margin-left: 8px;
+	font-family: var(--rgi-font-sans);
+	font-size: 11px;
+	color: var(--rgi-text-tertiary);
+}
+
+/* Em-dash rendering for sub-rupee balances (commit 3.1). The server's
+ * HAVING ABS(balance) >= 1 should drop these; this class is the
+ * defensive client-side fallback in formatRupeesIndian. */
+.dgv-zero-balance {
+	font-style: italic;
+	color: var(--rgi-text-tertiary);
+}
+
+
+/* Action bar */
+
+.dgv-drill-actions {
+	display: flex;
+	gap: 8px;
+	background: var(--rgi-bg-surface);
+	border-top: 1px solid var(--rgi-border);
+	padding: 12px 22px;
+	flex-shrink: 0;
+}
+.dgv-drill-action-primary,
+.dgv-drill-action-secondary {
+	font-family: var(--rgi-font-sans);
+	font-size: 12px;
+	font-weight: 500;
+	border-radius: 3px;
+	padding: 8px 14px;
+	cursor: pointer;
+	transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.dgv-drill-action-primary {
+	background: var(--rgi-text-primary);
+	color: #FFFFFF;
+	border: 1px solid var(--rgi-text-primary);
+	flex: 1;
+	text-align: center;
+}
+.dgv-drill-action-primary:hover:not([disabled]) {
+	background: #122039;
+	border-color: #122039;
+}
+.dgv-drill-action-secondary {
+	background: var(--rgi-bg-surface);
+	color: var(--rgi-text-primary);
+	border: 1px solid var(--rgi-border);
+}
+.dgv-drill-action-secondary:hover:not([disabled]) {
+	border-color: var(--rgi-text-primary);
+}
+.dgv-drill-action-primary[disabled],
+.dgv-drill-action-secondary[disabled] {
+	opacity: 0.55;
+	cursor: not-allowed;
+}
+
+
+/* Responsive — three breakpoints
+ *   Desktop      (default)        : 480px slide-out panel
+ *   iPad portrait ≤900 / ≥600     : 75% width, cockpit peeks behind backdrop
+ *   Phone        ≤600             : 100% width, no backdrop (panel IS the page)
+ */
+
+@media (max-width: 900px) and (min-width: 601px) {
+	.dgv-drill-panel { width: 75%; }
+}
+
+@media (max-width: 600px) {
+	.dgv-drill-panel {
+		width: 100%;
+		box-shadow: none;
+	}
+	.dgv-drill-backdrop { display: none; }
+}
+
+
+/* ===========================================================================
+ * Account drill — full page (/app/account-drill)
+ * ======================================================================== */
+
+.dgv-drill-page {
+	background: var(--rgi-bg-page);
+	color: var(--rgi-text-secondary);
+	font-family: var(--rgi-font-sans);
+	min-height: 100vh;
+}
+
+.dgv-drill-page-breadcrumb {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	background: var(--rgi-bg-surface);
+	border-bottom: 1px solid var(--rgi-border);
+	padding: 14px 32px;
+	font-size: 12px;
+	color: var(--rgi-text-secondary);
+}
+.dgv-drill-page-breadcrumb a {
+	color: var(--rgi-text-primary);
+	text-decoration: none;
+}
+.dgv-drill-page-breadcrumb a:hover { text-decoration: underline; }
+.dgv-bc-sep { color: var(--rgi-text-tertiary); }
+.dgv-bc-mid { color: var(--rgi-text-secondary); }
+.dgv-bc-current {
+	color: var(--rgi-text-primary);
+	font-weight: 500;
+}
+
+.dgv-drill-page-actions {
+	margin-left: auto;
+	display: flex;
+	gap: 8px;
+}
+.dgv-drill-page-actions button {
+	background: var(--rgi-bg-surface);
+	color: var(--rgi-text-secondary);
+	border: 1px solid var(--rgi-border);
+	border-radius: 3px;
+	padding: 5px 12px;
+	font-family: var(--rgi-font-sans);
+	font-size: 12px;
+	cursor: pointer;
+}
+.dgv-drill-page-actions button:hover { border-color: var(--rgi-text-primary); }
+
+.dgv-drill-page-body {
+	max-width: 1080px;
+	margin: 0 auto;
+	padding: 28px 32px;
+}
+
+.dgv-drill-page-hero {
+	background: var(--rgi-bg-surface);
+	border-radius: 6px;
+	padding: 28px 32px;
+	margin-bottom: 24px;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 32px;
+	box-shadow: 0 1px 2px rgba(27, 40, 69, 0.04);
+}
+.dgv-drill-page-hero-meta { flex: 1; min-width: 0; }
+.dgv-drill-page-hero-meta .dgv-drill-title { font-size: 26px; }
+.dgv-drill-page-hero-figure { flex-shrink: 0; text-align: right; }
+
+.dgv-drill-page-trend {
+	background: var(--rgi-bg-surface);
+	border-radius: 6px;
+	padding: 22px 32px;
+	margin-bottom: 24px;
+	box-shadow: 0 1px 2px rgba(27, 40, 69, 0.04);
+}
+
+.dgv-drill-page-tables {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 24px;
+	margin-bottom: 24px;
+}
+.dgv-drill-page-tables-card {
+	background: var(--rgi-bg-surface);
+	border-radius: 6px;
+	padding: 22px 24px;
+	box-shadow: 0 1px 2px rgba(27, 40, 69, 0.04);
+}
+
+.dgv-drill-page-actions-bar {
+	display: flex;
+	gap: 12px;
+	justify-content: flex-end;
+	padding: 0;
+	background: transparent;
+	border: none;
+}
+
+@media (max-width: 900px) {
+	.dgv-drill-page-tables { grid-template-columns: 1fr; }
+	.dgv-drill-page-hero {
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 16px;
+	}
+	.dgv-drill-page-hero-figure { text-align: left; }
+	.dgv-drill-page-body { padding: 20px 16px; }
+	.dgv-drill-page-breadcrumb { padding: 12px 16px; flex-wrap: wrap; }
+}
+
+
+/* Print styles — hide chrome, page-break-inside avoid */
+@media print {
+	.dgv-drill-page-actions,
+	.dgv-drill-page-actions-bar { display: none !important; }
+	.dgv-drill-page,
+	.dgv-drill-page-hero,
+	.dgv-drill-page-trend,
+	.dgv-drill-page-tables-card {
+		background: #FFFFFF !important;
+		box-shadow: none !important;
+		border: 1px solid #DDD;
+	}
+	.dgv-drill-page-hero,
+	.dgv-drill-page-trend,
+	.dgv-drill-page-tables { page-break-inside: avoid; }
+	.dgv-drill-page-breadcrumb {
+		border-bottom: 1px solid #DDD;
+		background: #FFFFFF !important;
+	}
+}
+
+
+/* ===========================================================================
+ * GL drill page — Phase 4 commit 4 HALT 1
+ * Reuses the .dgv-drill-page-breadcrumb and .dgv-drill-page-hero classes
+ * from account-drill page. New CSS below scopes everything else under
+ * .dgv-gl-page.
+ * ======================================================================== */
+
+.dgv-gl-page {
+	background: var(--rgi-bg-page);
+	color: var(--rgi-text-secondary);
+	font-family: var(--rgi-font-sans);
+	min-height: 100vh;
+	padding-bottom: 48px;
+}
+
+.dgv-gl-totals {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-end;
+	gap: 4px;
+}
+.dgv-gl-totals-num {
+	font-family: var(--rgi-font-sans);
+	font-variant-numeric: tabular-nums lining-nums;
+	font-weight: 500;
+	font-size: 32px;
+	font-weight: 600;
+	color: var(--rgi-text-primary);
+	line-height: 1;
+}
+.dgv-gl-totals-label {
+	font-family: var(--rgi-font-sans);
+	font-size: 11px;
+	letter-spacing: 0.05em;
+	text-transform: uppercase;
+	color: var(--rgi-text-tertiary);
+}
+.dgv-gl-party-chip {
+	margin-top: 6px;
+	background: #EAE3D2;
+	color: var(--rgi-text-primary);
+	font-family: var(--rgi-font-sans);
+	font-size: 12px;
+	padding: 4px 8px 4px 10px;
+	border-radius: 12px;
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+}
+.dgv-gl-party-clear {
+	background: transparent;
+	border: none;
+	color: var(--rgi-text-secondary);
+	font-size: 14px;
+	line-height: 1;
+	cursor: pointer;
+	padding: 0 2px;
+}
+.dgv-gl-party-clear:hover { color: var(--rgi-danger); }
+
+
+/* Banners (fanout + truncation) ----------------------------------------- */
+
+.dgv-gl-banner {
+	margin: 0 32px 12px;
+	padding: 10px 14px;
+	border-radius: 4px;
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+	background: #F5EBD8;
+	color: var(--rgi-text-primary);
+	border-left: 3px solid var(--rgi-amber);
+}
+.dgv-gl-banner-truncated {
+	background: #F5DCDA;
+	border-left-color: var(--rgi-danger);
+}
+.dgv-gl-banner[hidden] { display: none; }
+
+
+/* Toolbar --------------------------------------------------------------- */
+
+.dgv-gl-toolbar {
+	margin: 0 32px 12px;
+	padding: 12px 14px;
+	background: var(--rgi-bg-surface);
+	border: 1px solid var(--rgi-border);
+	border-radius: 4px;
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	gap: 16px;
+	flex-wrap: wrap;
+}
+.dgv-gl-toolbar-left,
+.dgv-gl-toolbar-right {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+}
+.dgv-gl-toolbar-field {
+	display: inline-flex;
+	flex-direction: column;
+	gap: 3px;
+	font-family: var(--rgi-font-sans);
+	font-size: 11px;
+	color: var(--rgi-text-tertiary);
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+}
+.dgv-gl-toolbar-field select {
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+	color: var(--rgi-text-primary);
+	background: var(--rgi-bg-surface);
+	border: 1px solid var(--rgi-border);
+	border-radius: 3px;
+	padding: 5px 8px;
+	min-width: 130px;
+}
+.dgv-gl-page-info {
+	font-family: var(--rgi-font-mono);
+	font-size: 12px;
+	color: var(--rgi-text-secondary);
+	min-width: 200px;
+	text-align: right;
+}
+.dgv-gl-pager-btn {
+	background: var(--rgi-bg-surface);
+	color: var(--rgi-text-primary);
+	border: 1px solid var(--rgi-border);
+	border-radius: 3px;
+	padding: 6px 12px;
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+	cursor: pointer;
+}
+.dgv-gl-pager-btn:hover:not(:disabled) {
+	background: var(--rgi-bg-row-alt);
+	border-color: var(--rgi-border-light);
+}
+.dgv-gl-pager-btn:disabled {
+	opacity: 0.4;
+	cursor: not-allowed;
+}
+
+.dgv-gl-export-btn {
+	background: var(--rgi-text-primary);
+	color: var(--rgi-bg-surface);
+	border: 1px solid var(--rgi-text-primary);
+	border-radius: 3px;
+	padding: 6px 12px;
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+	font-weight: 500;
+	cursor: pointer;
+	margin-right: 12px;
+}
+.dgv-gl-export-btn:hover {
+	background: var(--rgi-text-secondary);
+	border-color: var(--rgi-text-secondary);
+}
+
+
+/* Table ----------------------------------------------------------------- */
+
+.dgv-gl-table-wrap {
+	margin: 0 32px;
+	background: var(--rgi-bg-surface);
+	border: 1px solid var(--rgi-border);
+	border-radius: 4px;
+	overflow-x: auto;
+}
+.dgv-gl-skeleton,
+.dgv-gl-empty {
+	padding: 32px;
+	text-align: center;
+	color: var(--rgi-text-tertiary);
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+}
+.dgv-gl-error { color: var(--rgi-danger); }
+
+.dgv-gl-sort-note {
+	padding: 8px 14px;
+	background: var(--rgi-bg-row-alt);
+	border-bottom: 1px solid var(--rgi-border);
+	color: var(--rgi-text-tertiary);
+	font-family: var(--rgi-font-sans);
+	font-size: 12px;
+	font-style: italic;
+}
+
+.dgv-gl-table {
+	width: 100%;
+	border-collapse: collapse;
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+}
+.dgv-gl-table thead tr {
+	background: var(--rgi-bg-row-alt);
+	border-bottom: 1px solid var(--rgi-border);
+}
+.dgv-gl-table th {
+	font-weight: 500;
+	font-size: 11px;
+	letter-spacing: 0.05em;
+	text-transform: uppercase;
+	color: var(--rgi-text-tertiary);
+	text-align: left;
+	padding: 10px 12px;
+	white-space: nowrap;
+}
+.dgv-gl-table th.dgv-gl-th-amount,
+.dgv-gl-table th.dgv-gl-th-running {
+	text-align: right;
+}
+.dgv-gl-table tbody tr {
+	border-bottom: 1px solid var(--rgi-border);
+}
+.dgv-gl-table tbody tr:last-child { border-bottom: none; }
+.dgv-gl-table td {
+	padding: 8px 12px;
+	color: var(--rgi-text-primary);
+	vertical-align: top;
+}
+
+.dgv-gl-cell-date {
+	font-family: var(--rgi-font-mono);
+	font-size: 12px;
+	color: var(--rgi-text-secondary);
+	white-space: nowrap;
+}
+.dgv-gl-cell-voucher a {
+	font-family: var(--rgi-font-mono);
+	font-size: 12px;
+	color: var(--rgi-text-primary);
+	text-decoration: none;
+	border-bottom: 1px dotted var(--rgi-border-light);
+}
+.dgv-gl-cell-voucher a:hover {
+	border-bottom-style: solid;
+	color: var(--rgi-success);
+}
+.dgv-gl-voucher-type {
+	display: block;
+	font-size: 10px;
+	color: var(--rgi-text-tertiary);
+	margin-top: 2px;
+}
+.dgv-gl-cell-party {
+	font-size: 13px;
+	color: var(--rgi-text-primary);
+}
+.dgv-gl-party-type {
+	display: block;
+	font-size: 10px;
+	color: var(--rgi-text-tertiary);
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	margin-top: 1px;
+}
+.dgv-gl-empty-cell { color: var(--rgi-text-tertiary); }
+.dgv-gl-cell-amount,
+.dgv-gl-cell-running {
+	font-family: var(--rgi-font-mono);
+	font-size: 13px;
+	text-align: right;
+	white-space: nowrap;
+	color: var(--rgi-text-primary);
+}
+.dgv-gl-cell-amount[data-sign="neg"],
+.dgv-gl-cell-running[data-sign="neg"] {
+	color: var(--rgi-danger);
+}
+.dgv-gl-cell-remarks {
+	font-size: 12px;
+	color: var(--rgi-text-secondary);
+	max-width: 320px;
+}
+.dgv-gl-remarks {
+	display: -webkit-box;
+	-webkit-line-clamp: 2;
+	-webkit-box-orient: vertical;
+	overflow: hidden;
+	line-height: 1.4;
+}
+
+
+/* Group divider + chip --------------------------------------------------
+ * v0.5: visual context only -- chips label which (company, account)
+ * each row belongs to but no longer denote a balance reset (running
+ * balance now accumulates scope-wide). Styling softened: no
+ * background tint, single light border. The chip stays readable but
+ * doesn't shout "section break".
+ * ------------------------------------------------------------------- */
+
+.dgv-gl-group-divider td {
+	background: transparent;
+	border-top: 1px solid var(--rgi-border) !important;
+	border-bottom: none !important;
+	padding: 4px 12px 2px !important;
+}
+.dgv-gl-group-chip {
+	font-family: var(--rgi-font-mono);
+	font-size: 10px;
+	font-weight: 400;
+	color: var(--rgi-text-tertiary);
+	letter-spacing: 0.02em;
+}
+
+
+/* Responsive (≤ 800 px) ------------------------------------------------- */
+
+@media (max-width: 800px) {
+	.dgv-gl-banner,
+	.dgv-gl-toolbar,
+	.dgv-gl-table-wrap {
+		margin-left: 16px;
+		margin-right: 16px;
+	}
+	.dgv-gl-toolbar {
+		flex-direction: column;
+		align-items: stretch;
+	}
+	.dgv-gl-toolbar-left,
+	.dgv-gl-toolbar-right {
+		justify-content: space-between;
+		flex-wrap: wrap;
+	}
+	.dgv-gl-page-info {
+		min-width: auto;
+		text-align: left;
+	}
+	/* Table scrolls horizontally on narrow viewports rather than
+	   collapsing — accountants need every column visible. */
+	.dgv-gl-table {
+		min-width: 720px;
+	}
+	.dgv-gl-cell-remarks {
+		max-width: 200px;
+	}
+}
+
+
+/* ===========================================================================
+ * HALT 2.5 — Filter UI (gl-drill page)
+ * ======================================================================== */
+
+/* Filter row: inline at desktop, hidden in favor of mobile trigger ≤800px */
+.dgv-gl-filter-row {
+	margin: 0 32px 12px;
+	padding: 12px 14px;
+	background: var(--rgi-bg-surface);
+	border: 1px solid var(--rgi-border);
+	border-radius: 4px;
+	display: flex;
+	align-items: flex-end;
+	gap: 12px;
+	flex-wrap: wrap;
+}
+.dgv-gl-filter-row[hidden] { display: none; }
+.dgv-gl-filter-row-inline {
+	display: flex;
+	/* `flex-end` aligns inputs at the bottom so the labels-above
+	   pattern lines up cleanly across fields with different label
+	   heights (single-line "DATE RANGE" vs "ACCOUNTS"). */
+	align-items: flex-end;
+	gap: 16px;
+	flex-wrap: wrap;
+	flex: 1 1 auto;
+}
+.dgv-gl-filter-mobile-trigger {
+	display: none;  /* hidden at desktop, shown at ≤800px */
+	background: var(--rgi-bg-surface);
+	color: var(--rgi-text-primary);
+	border: 1px solid var(--rgi-border);
+	border-radius: 3px;
+	padding: 8px 14px;
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+	cursor: pointer;
+	gap: 8px;
+	align-items: center;
+}
+.dgv-gl-filter-mobile-badge {
+	background: var(--rgi-text-primary);
+	color: var(--rgi-bg-surface);
+	font-size: 11px;
+	font-weight: 600;
+	padding: 1px 6px;
+	border-radius: 10px;
+	margin-left: 6px;
+}
+
+/* Individual filter field (label + input) */
+.dgv-gl-filter-field {
+	display: inline-flex;
+	flex-direction: column;
+	gap: 3px;
+	font-family: var(--rgi-font-sans);
+}
+.dgv-gl-filter-field-label {
+	font-size: 11px;
+	color: var(--rgi-text-tertiary);
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+}
+
+/* Date range field */
+.dgv-gl-filter-daterange-inputs {
+	display: inline-flex;
+	gap: 6px;
+	align-items: center;
+}
+.dgv-gl-filter-from,
+.dgv-gl-filter-to {
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+	border: 1px solid var(--rgi-border);
+	border-radius: 3px;
+	padding: 4px 6px;
+	background: var(--rgi-bg-surface);
+	color: var(--rgi-text-primary);
+	width: 130px;
+	/* Native date inputs render taller in Chrome than custom
+	   dropdowns due to internal calendar-icon padding. Pin total
+	   height + box-sizing so the bottom edge aligns with the
+	   multi-select triggers and the party input across the row. */
+	height: 30px;
+	box-sizing: border-box;
+}
+.dgv-gl-filter-daterange-sep {
+	color: var(--rgi-text-tertiary);
+	font-size: 12px;
+}
+
+/* Party autocomplete input */
+.dgv-gl-filter-party-input {
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+	border: 1px solid var(--rgi-border);
+	border-radius: 3px;
+	padding: 4px 8px;
+	background: var(--rgi-bg-surface);
+	color: var(--rgi-text-primary);
+	width: 180px;
+	height: 30px;
+	box-sizing: border-box;
+}
+
+/* Multi-select dropdown */
+.dgv-gl-multiselect {
+	position: relative;
+}
+.dgv-gl-multiselect-trigger {
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+	background: var(--rgi-bg-surface);
+	color: var(--rgi-text-primary);
+	border: 1px solid var(--rgi-border);
+	border-radius: 3px;
+	padding: 4px 8px;
+	/* Uniform 180px matches the party-input width so the filter row
+	   reads as 4 equal-weight fields (Companies, Accounts, Party,
+	   Voucher type) plus the wider Date Range pair. */
+	width: 180px;
+	height: 30px;
+	box-sizing: border-box;
+	cursor: pointer;
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	justify-content: space-between;
+}
+.dgv-gl-multiselect-label {
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	min-width: 0;
+}
+.dgv-gl-multiselect-trigger:hover {
+	border-color: var(--rgi-border-light);
+}
+.dgv-gl-multiselect-caret {
+	font-size: 10px;
+	color: var(--rgi-text-tertiary);
+}
+.dgv-gl-multiselect-popup {
+	position: absolute;
+	top: 100%;
+	left: 0;
+	margin-top: 4px;
+	background: var(--rgi-bg-surface);
+	border: 1px solid var(--rgi-border);
+	border-radius: 4px;
+	box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+	z-index: 100;
+	/* `width: max-content` sizes the popup to its widest option
+	   (rather than fixed at trigger width). Bounded by min/max so
+	   short option lists still feel substantial and very-long ones
+	   don't blow off the right edge. 600px fits the longest RGI
+	   company name on dev (52 chars) on one line. */
+	width: max-content;
+	min-width: 240px;
+	max-width: 720px;
+	max-height: 360px;
+	display: flex;
+	flex-direction: column;
+}
+.dgv-gl-multiselect-popup[hidden] { display: none; }
+.dgv-gl-multiselect-popup-options {
+	overflow-y: auto;
+	padding: 8px 0;
+	flex: 1 1 auto;
+}
+.dgv-gl-multiselect-option {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 12px;
+	font-size: 13px;
+	color: var(--rgi-text-primary);
+	cursor: pointer;
+	line-height: 1.4;
+}
+.dgv-gl-multiselect-option input {
+	margin: 0;
+	flex-shrink: 0;
+}
+.dgv-gl-multiselect-option > span {
+	/* Force option text to a single line. Combined with
+	   `width: max-content` on the popup container, this makes the
+	   popup grow horizontally to fit the longest option's full
+	   name -- no mid-name wrapping for "Chaitanya Bahuudeshiya
+	   Sanstha Society" or "GH Raisoni College Of Business
+	   Management Khaparkheda". The popup's max-width caps the
+	   growth at 720px so a pathologically long name doesn't blow
+	   off the right edge of the page. */
+	white-space: nowrap;
+}
+.dgv-gl-multiselect-option:hover {
+	background: var(--rgi-bg-row-alt);
+}
+.dgv-gl-multiselect-option input { margin: 0; }
+.dgv-gl-multiselect-popup-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 6px;
+	padding: 8px 12px;
+	border-top: 1px solid var(--rgi-border);
+}
+.dgv-gl-multiselect-popup-actions button {
+	font-family: var(--rgi-font-sans);
+	font-size: 12px;
+	padding: 4px 10px;
+	border-radius: 3px;
+	cursor: pointer;
+	border: 1px solid var(--rgi-border);
+	background: var(--rgi-bg-surface);
+	color: var(--rgi-text-primary);
+}
+.dgv-gl-multiselect-apply {
+	background: var(--rgi-text-primary) !important;
+	color: var(--rgi-bg-surface) !important;
+	border-color: var(--rgi-text-primary) !important;
+}
+
+/* Advanced filters disclosure
+ * `flex-basis: 100%` forces it to its own line below the inline
+ * filter row -- per HALT 2.5 review: it was wrapping awkwardly on
+ * the right of the row when the toolbar got narrow. Always-on-its-
+ * own-line is cleaner. */
+.dgv-gl-filter-advanced {
+	flex: 0 0 100%;
+	display: block;
+	margin-top: 4px;
+}
+.dgv-gl-filter-advanced summary {
+	font-family: var(--rgi-font-sans);
+	font-size: 12px;
+	color: var(--rgi-text-tertiary);
+	cursor: pointer;
+	padding: 4px 0;
+	list-style: none;
+}
+.dgv-gl-filter-advanced summary::-webkit-details-marker { display: none; }
+.dgv-gl-filter-advanced summary::before {
+	content: '▸ ';
+	color: var(--rgi-text-tertiary);
+}
+.dgv-gl-filter-advanced[open] summary::before {
+	content: '▾ ';
+}
+.dgv-gl-filter-advanced[open] {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+/* Active filter chips row */
+.dgv-gl-filter-chips {
+	margin: 0 32px 12px;
+	display: flex;
+	gap: 8px;
+	align-items: center;
+	flex-wrap: wrap;
+}
+.dgv-gl-filter-chips[hidden] { display: none; }
+.dgv-gl-filter-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	background: #EAE3D2;
+	color: var(--rgi-text-primary);
+	font-family: var(--rgi-font-sans);
+	font-size: 12px;
+	padding: 4px 6px 4px 10px;
+	border-radius: 12px;
+	/* Spec amendment 2: 200px max-width + ellipsize. Tooltip on
+	   hover via the title attribute lets the user see the full
+	   selected value when it overflows. */
+	max-width: 200px;
+}
+.dgv-gl-filter-chip-label {
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	min-width: 0;
+}
+.dgv-gl-filter-chip-clear {
+	background: transparent;
+	border: none;
+	color: var(--rgi-text-secondary);
+	font-size: 14px;
+	line-height: 1;
+	cursor: pointer;
+	padding: 0 2px;
+	flex-shrink: 0;  /* keep × tappable even when label ellipsizes */
+}
+.dgv-gl-filter-chip-clear:hover { color: var(--rgi-danger); }
+.dgv-gl-filter-clear-all {
+	margin-left: auto;
+	background: transparent;
+	border: 1px solid var(--rgi-border);
+	color: var(--rgi-text-secondary);
+	font-family: var(--rgi-font-sans);
+	font-size: 12px;
+	padding: 4px 10px;
+	border-radius: 3px;
+	cursor: pointer;
+}
+.dgv-gl-filter-clear-all:hover {
+	background: var(--rgi-bg-row-alt);
+	border-color: var(--rgi-border-light);
+	color: var(--rgi-text-primary);
+}
+
+/* Bottom sheet (≤800px viewport, hidden by default) */
+.dgv-gl-bottom-sheet {
+	position: fixed;
+	inset: 0;
+	z-index: 1000;
+	display: flex;
+	align-items: flex-end;
+}
+.dgv-gl-bottom-sheet[hidden] { display: none; }
+.dgv-gl-bottom-sheet-backdrop {
+	position: absolute;
+	inset: 0;
+	background: rgba(0, 0, 0, 0.4);
+}
+.dgv-gl-bottom-sheet-panel {
+	position: relative;
+	width: 100%;
+	max-height: 85vh;
+	background: var(--rgi-bg-surface);
+	border-top-left-radius: 12px;
+	border-top-right-radius: 12px;
+	display: flex;
+	flex-direction: column;
+}
+.dgv-gl-bottom-sheet-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 14px 18px;
+	border-bottom: 1px solid var(--rgi-border);
+}
+.dgv-gl-bottom-sheet-head h3 {
+	margin: 0;
+	font-family: var(--rgi-font-serif);
+	font-size: 18px;
+	color: var(--rgi-text-primary);
+}
+.dgv-gl-bottom-sheet-close {
+	background: transparent;
+	border: none;
+	color: var(--rgi-text-secondary);
+	font-size: 24px;
+	line-height: 1;
+	cursor: pointer;
+	padding: 0 4px;
+}
+.dgv-gl-bottom-sheet-body {
+	overflow-y: auto;
+	padding: 18px;
+	display: flex;
+	flex-direction: column;
+	gap: 16px;
+}
+.dgv-gl-bottom-sheet-body .dgv-gl-filter-field {
+	width: 100%;
+}
+.dgv-gl-bottom-sheet-body .dgv-gl-multiselect-trigger {
+	width: 100%;
+}
+.dgv-gl-bottom-sheet-foot {
+	display: flex;
+	justify-content: space-between;
+	gap: 8px;
+	padding: 12px 18px;
+	border-top: 1px solid var(--rgi-border);
+}
+.dgv-gl-bottom-sheet-clear,
+.dgv-gl-bottom-sheet-apply {
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+	padding: 8px 16px;
+	border-radius: 3px;
+	cursor: pointer;
+}
+.dgv-gl-bottom-sheet-clear {
+	background: transparent;
+	color: var(--rgi-text-secondary);
+	border: 1px solid var(--rgi-border);
+}
+.dgv-gl-bottom-sheet-apply {
+	background: var(--rgi-text-primary);
+	color: var(--rgi-bg-surface);
+	border: 1px solid var(--rgi-text-primary);
+}
+
+/* ≤800px viewport: switch to mobile-trigger + bottom-sheet model */
+@media (max-width: 800px) {
+	.dgv-gl-filter-row {
+		margin-left: 16px;
+		margin-right: 16px;
+		padding: 12px 14px;
+	}
+	.dgv-gl-filter-row-inline {
+		display: none;  /* hide inline filters; bottom sheet takes over */
+	}
+	.dgv-gl-filter-mobile-trigger {
+		display: inline-flex;
+	}
+	.dgv-gl-filter-chips {
+		margin-left: 16px;
+		margin-right: 16px;
+	}
+}
+
+
+/* ===========================================================================
+ * HALT 4 — Party list page (/app/party-list)
+ * Mirrors the GL drill page chrome (toolbar, pager, table-wrap) but
+ * with party-row click-to-drill semantics + a slimmer column set.
+ * ======================================================================== */
+
+.dgv-pl-page {
+	background: var(--rgi-bg-page);
+	color: var(--rgi-text-secondary);
+	font-family: var(--rgi-font-sans);
+	min-height: 100vh;
+	padding-bottom: 48px;
+}
+
+.dgv-pl-totals {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-end;
+	gap: 4px;
+}
+.dgv-pl-totals-num {
+	font-family: var(--rgi-font-sans);
+	font-variant-numeric: tabular-nums lining-nums;
+	font-size: 32px;
+	font-weight: 600;
+	color: var(--rgi-text-primary);
+	line-height: 1;
+}
+.dgv-pl-totals-label {
+	font-family: var(--rgi-font-sans);
+	font-size: 11px;
+	letter-spacing: 0.05em;
+	text-transform: uppercase;
+	color: var(--rgi-text-tertiary);
+}
+
+/* Toolbar -- same shape as GL drill toolbar, separate selectors so
+ * future divergence (party-list-only filters in Phase 5) doesn't
+ * pollute GL drill styles.
+ */
+.dgv-pl-toolbar {
+	margin: 0 32px 12px;
+	padding: 12px 14px;
+	background: var(--rgi-bg-surface);
+	border: 1px solid var(--rgi-border);
+	border-radius: 4px;
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	gap: 16px;
+	flex-wrap: wrap;
+}
+.dgv-pl-toolbar-left,
+.dgv-pl-toolbar-right {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+}
+.dgv-pl-toolbar-field {
+	display: inline-flex;
+	flex-direction: column;
+	gap: 3px;
+	font-family: var(--rgi-font-sans);
+	font-size: 11px;
+	color: var(--rgi-text-tertiary);
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+}
+.dgv-pl-toolbar-field select {
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+	color: var(--rgi-text-primary);
+	background: var(--rgi-bg-surface);
+	border: 1px solid var(--rgi-border);
+	border-radius: 3px;
+	padding: 5px 8px;
+	min-width: 160px;
+	height: 30px;
+	box-sizing: border-box;
+}
+.dgv-pl-page-info {
+	font-family: var(--rgi-font-mono);
+	font-size: 12px;
+	color: var(--rgi-text-secondary);
+	min-width: 280px;
+	text-align: right;
+}
+.dgv-pl-pager-btn {
+	background: var(--rgi-bg-surface);
+	color: var(--rgi-text-primary);
+	border: 1px solid var(--rgi-border);
+	border-radius: 3px;
+	padding: 6px 12px;
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+	cursor: pointer;
+}
+.dgv-pl-pager-btn:hover:not(:disabled) {
+	background: var(--rgi-bg-row-alt);
+	border-color: var(--rgi-border-light);
+}
+.dgv-pl-pager-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.dgv-pl-export-btn {
+	background: var(--rgi-text-primary);
+	color: var(--rgi-bg-surface);
+	border: 1px solid var(--rgi-text-primary);
+	border-radius: 3px;
+	padding: 6px 12px;
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+	font-weight: 500;
+	cursor: pointer;
+	margin-right: 12px;
+}
+.dgv-pl-export-btn:hover {
+	background: var(--rgi-text-secondary);
+	border-color: var(--rgi-text-secondary);
+}
+
+/* Table */
+.dgv-pl-table-wrap {
+	margin: 0 32px;
+	background: var(--rgi-bg-surface);
+	border: 1px solid var(--rgi-border);
+	border-radius: 4px;
+	overflow-x: auto;
+}
+.dgv-pl-skeleton,
+.dgv-pl-empty {
+	padding: 32px;
+	text-align: center;
+	color: var(--rgi-text-tertiary);
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+}
+.dgv-pl-error { color: var(--rgi-danger); }
+.dgv-pl-table {
+	width: 100%;
+	border-collapse: collapse;
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+}
+.dgv-pl-table thead tr {
+	background: var(--rgi-bg-row-alt);
+	border-bottom: 1px solid var(--rgi-border);
+}
+.dgv-pl-table th {
+	font-weight: 500;
+	font-size: 11px;
+	letter-spacing: 0.05em;
+	text-transform: uppercase;
+	color: var(--rgi-text-tertiary);
+	text-align: left;
+	padding: 10px 12px;
+	white-space: nowrap;
+}
+.dgv-pl-table th.dgv-pl-th-balance { text-align: right; }
+.dgv-pl-table th.dgv-pl-th-cos { text-align: right; }
+.dgv-pl-table tbody tr {
+	border-bottom: 1px solid var(--rgi-border);
+	cursor: pointer;
+}
+.dgv-pl-table tbody tr:last-child { border-bottom: none; }
+.dgv-pl-table tbody tr:hover {
+	background: var(--rgi-bg-row-alt);
+}
+.dgv-pl-table td {
+	padding: 10px 12px;
+	color: var(--rgi-text-primary);
+	vertical-align: middle;
+}
+.dgv-pl-cell-party {
+	font-weight: 500;
+}
+.dgv-pl-group-badge {
+	display: inline-block;
+	margin-left: 8px;
+	padding: 1px 6px;
+	font-size: 10px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	background: #EAE3D2;
+	color: var(--rgi-text-secondary);
+	border-radius: 8px;
+	vertical-align: middle;
+}
+.dgv-pl-cell-party-type {
+	font-size: 12px;
+	color: var(--rgi-text-tertiary);
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+}
+.dgv-pl-cell-balance {
+	font-family: var(--rgi-font-mono);
+	font-size: 13px;
+	text-align: right;
+	white-space: nowrap;
+}
+.dgv-pl-cell-balance[data-sign="neg"] { color: var(--rgi-danger); }
+.dgv-pl-cell-cos {
+	text-align: right;
+	font-size: 12px;
+	color: var(--rgi-text-secondary);
+	white-space: nowrap;
+}
+
+/* Responsive (≤ 800 px) */
+@media (max-width: 800px) {
+	.dgv-pl-toolbar,
+	.dgv-pl-table-wrap {
+		margin-left: 16px;
+		margin-right: 16px;
+	}
+	.dgv-pl-toolbar {
+		flex-direction: column;
+		align-items: stretch;
+	}
+	.dgv-pl-toolbar-left,
+	.dgv-pl-toolbar-right {
+		justify-content: space-between;
+		flex-wrap: wrap;
+	}
+	.dgv-pl-page-info {
+		min-width: auto;
+		text-align: left;
+	}
+	.dgv-pl-table {
+		min-width: 600px;
+	}
+}
+
+
+/* ===========================================================================
+ * Skeletons + empty-state banners (Phase 4 commit 6)
+ *
+ * Shared primitives for loading and empty-data states across:
+ *   - cockpit spotlight cards
+ *   - drill panel (hero + by-company + by-party)
+ *   - GL drill page main table
+ *   - party-list page main table
+ *   - focus-mode tiles + accounts table
+ *
+ * Pulse animation respects `prefers-reduced-motion: reduce` per
+ * commit-6 spec category 5.d (animation polish bleeds into skeletons
+ * because both rely on the same keyframes; defining the guard here
+ * keeps both surfaces honest at HALT 6.1).
+ * ======================================================================== */
+
+@keyframes dgv-skeleton-pulse {
+	0%   { opacity: 0.55; }
+	50%  { opacity: 0.95; }
+	100% { opacity: 0.55; }
+}
+
+.dgv-skeleton-line,
+.dgv-skeleton-cell,
+.dgv-skeleton-bar {
+	display: block;
+	background: var(--rgi-border);
+	border-radius: 3px;
+	animation: dgv-skeleton-pulse 1.5s ease infinite;
+}
+
+.dgv-skeleton-line {
+	height: 12px;
+	margin: 6px 0;
+	width: 100%;
+}
+.dgv-skeleton-line.short    { width: 50%; }
+.dgv-skeleton-line.medium   { width: 75%; }
+.dgv-skeleton-line.tall     { height: 24px; }
+.dgv-skeleton-line.title    { height: 18px; width: 55%; }
+.dgv-skeleton-line.eyebrow  { height: 10px; width: 28%; }
+
+@media (prefers-reduced-motion: reduce) {
+	.dgv-skeleton-line,
+	.dgv-skeleton-cell,
+	.dgv-skeleton-bar {
+		animation: none;
+		opacity: 0.7;
+	}
+}
+
+/* Empty-state banner — block-level, consistent across surfaces. */
+.dgv-empty-banner {
+	padding: 20px 24px;
+	background: var(--rgi-bg-row-alt);
+	border: 1px solid var(--rgi-border);
+	border-radius: 6px;
+	color: var(--rgi-text-secondary);
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+	text-align: center;
+	margin: 12px 0;
+}
+
+/* Inline empty (within an existing section, e.g. by-party). */
+.dgv-empty-inline {
+	padding: 16px;
+	color: var(--rgi-text-tertiary);
+	font-family: var(--rgi-font-sans);
+	font-size: 12px;
+	font-style: italic;
+	text-align: center;
+}
+
+/* Skeleton row — table-like surfaces (GL drill, party list, drill
+ * panel by-company / by-party). */
+.dgv-skeleton-row {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	padding: 10px 16px;
+	border-bottom: 1px solid var(--rgi-border-light);
+}
+.dgv-skeleton-row:last-child { border-bottom: none; }
+
+.dgv-skeleton-cell {
+	flex: 1 1 auto;
+	height: 12px;
+}
+.dgv-skeleton-cell.narrow      { flex: 0 0 70px; }
+.dgv-skeleton-cell.wide        { flex: 0 0 200px; }
+.dgv-skeleton-cell.right-align { margin-left: auto; flex: 0 0 110px; }
+
+/* Skeleton tile — focus-mode summary tile loading state.
+ * Same dimensions as `.dgv-focus-tile` so the layout doesn't jump on
+ * fetch resolve. */
+.dgv-skeleton-tile {
+	background: var(--rgi-bg-surface);
+	border: 1px solid var(--rgi-border);
+	border-radius: 6px;
+	padding: 16px 18px;
+}
+
+/* Skeleton card — cockpit spotlight loading state.
+ * Reserve space matching `.rgi-spotlight-card`. */
+.dgv-skeleton-card {
+	background: var(--rgi-bg-surface);
+	border: 1px solid var(--rgi-border);
+	border-radius: 6px;
+	padding: 18px 20px;
+	min-height: 110px;
+}
+
+/* GL drill row-click filter cells (Phase 4 commit 7 F-7).
+ * Party / company / account names are clickable to add a filter.
+ * Subtle dotted underline shows the affordance without making the
+ * row look like a sea of links; hover brightens to make the
+ * clickability unmistakable. */
+.dgv-gl-filter-cell {
+	color: var(--rgi-text-primary);
+	text-decoration: none;
+	border-bottom: 1px dotted var(--rgi-text-tertiary);
+	cursor: pointer;
+	transition: color 0.1s ease, border-color 0.1s ease;
+}
+.dgv-gl-filter-cell:hover {
+	color: var(--rgi-text-primary);
+	border-bottom-color: var(--rgi-text-primary);
+}
+.dgv-gl-filter-cell:focus-visible {
+	outline: 2px solid var(--rgi-text-primary);
+	outline-offset: 2px;
+	border-radius: 2px;
+}
+
+/* Cockpit spotlight responsive at <=800px (commit 7 F-14 fix).
+ * Pre-fix the 3-column tier grid had no narrow-width override; cards
+ * compressed unevenly at narrow widths. Stack both tiers as a single
+ * column at <=800px; card internal padding stays the same. */
+@media (max-width: 800px) {
+	.rgi-spotlight-tier-primary,
+	.rgi-spotlight-tier-secondary {
+		grid-template-columns: 1fr;
+		gap: 12px;
+	}
+	.rgi-spotlight-tier-primary {
+		margin-bottom: 12px;
+	}
+}
+
+/* Hero (drill panel) skeleton */
+.dgv-drill-hero-skeleton-bars {
+	padding: 8px 0;
+}
+.dgv-drill-hero-skeleton-bars .dgv-skeleton-line { margin: 8px 0; }
+
+
+/* ===========================================================================
+ * Error tiles (Phase 4 commit 6 HALT 6.2)
+ *
+ * Four classes (network / permission / invalid / server) sharing a
+ * single visual treatment -- terracotta accent (NOT full red), a
+ * leading icon, the error message, and an optional action button
+ * ([Retry] for transient errors, [Cockpit] for invalid-scope, none
+ * for permission-denied).
+ *
+ * Error tile REPLACES the prior content host (skeleton or rendered
+ * content). Don't stack on top: the host's innerHTML is overwritten
+ * by `dgvRenderErrorTile`.
+ * ======================================================================== */
+
+.dgv-error-tile {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 12px;
+	padding: 28px 24px;
+	margin: 12px 0;
+	background: var(--rgi-bg-row-alt);
+	border: 1px solid var(--rgi-danger);
+	border-left-width: 4px;
+	border-radius: 6px;
+	color: var(--rgi-text-secondary);
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+	text-align: center;
+}
+
+.dgv-error-icon {
+	font-size: 22px;
+	color: var(--rgi-danger);
+	line-height: 1;
+}
+
+.dgv-error-message {
+	max-width: 480px;
+	color: var(--rgi-text-primary);
+	font-size: 14px;
+	line-height: 1.5;
+}
+
+.dgv-error-action {
+	margin-top: 4px;
+	padding: 7px 18px;
+	background: var(--rgi-bg-surface);
+	border: 1px solid var(--rgi-text-tertiary);
+	border-radius: 4px;
+	color: var(--rgi-text-primary);
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+	font-weight: 500;
+	cursor: pointer;
+	transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.dgv-error-action:hover {
+	background: var(--rgi-border);
+	border-color: var(--rgi-text-secondary);
+}
+
+.dgv-error-action:focus-visible {
+	outline: 2px solid var(--rgi-text-primary);
+	outline-offset: 2px;
+}
+
+/* Compact variant for narrow hosts (drill panel sections, GL drill
+ * table-wrap when the surrounding chrome already gives the user
+ * orientation). */
+.dgv-error-tile.dgv-error-compact {
+	padding: 18px 16px;
+	gap: 8px;
+}
+.dgv-error-tile.dgv-error-compact .dgv-error-icon { font-size: 18px; }
+.dgv-error-tile.dgv-error-compact .dgv-error-message { font-size: 13px; }
+
+
+/* ===========================================================================
+ * Company picker modal (Phase 4 commit 4 spec v0.9)
+ *
+ * Presented before navigating to /app/gl-drill from a multi-company
+ * scope. Vanilla modal -- no Frappe Dialog. Reuses cockpit's color
+ * tokens and border treatment to feel native.
+ * ======================================================================== */
+
+.dgv-cpicker-modal {
+	position: fixed;
+	inset: 0;
+	z-index: 1100;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+.dgv-cpicker-backdrop {
+	position: absolute;
+	inset: 0;
+	background: rgba(0, 0, 0, 0.4);
+}
+.dgv-cpicker-card {
+	position: relative;
+	background: var(--rgi-bg-surface, #fff);
+	border: 1px solid var(--rgi-border, #e5e5e5);
+	border-radius: 6px;
+	box-shadow: 0 12px 36px rgba(0, 0, 0, 0.18);
+	width: min(480px, calc(100vw - 32px));
+	max-height: calc(100vh - 64px);
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+}
+.dgv-cpicker-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 14px 18px 6px;
+}
+.dgv-cpicker-header h3 {
+	margin: 0;
+	font-size: 16px;
+	font-weight: 600;
+	color: var(--rgi-text-primary, #1a1a1a);
+	font-family: var(--rgi-font-sans);
+}
+.dgv-cpicker-close {
+	background: transparent;
+	border: none;
+	color: var(--rgi-text-tertiary, #666);
+	font-size: 22px;
+	line-height: 1;
+	cursor: pointer;
+	padding: 0 4px;
+}
+.dgv-cpicker-close:hover { color: var(--rgi-text-primary, #1a1a1a); }
+.dgv-cpicker-subtitle {
+	padding: 0 18px 12px;
+	color: var(--rgi-text-tertiary, #666);
+	font-family: var(--rgi-font-sans);
+	font-size: 12px;
+	font-style: italic;
+}
+.dgv-cpicker-search-wrap {
+	padding: 0 18px 10px;
+	border-bottom: 1px solid var(--rgi-border, #e5e5e5);
+}
+.dgv-cpicker-search {
+	width: 100%;
+	padding: 8px 10px;
+	border: 1px solid var(--rgi-border, #e5e5e5);
+	border-radius: 4px;
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+	color: var(--rgi-text-primary, #1a1a1a);
+	background: var(--rgi-bg-surface, #fff);
+}
+.dgv-cpicker-search:focus {
+	outline: 2px solid var(--rgi-accent, #1d9e75);
+	outline-offset: -1px;
+	border-color: transparent;
+}
+.dgv-cpicker-list {
+	overflow-y: auto;
+	padding: 6px 0;
+}
+.dgv-cpicker-empty {
+	padding: 24px 18px;
+	text-align: center;
+	color: var(--rgi-text-tertiary, #666);
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+	font-style: italic;
+}
+.dgv-cpicker-row {
+	display: block;
+	width: 100%;
+	padding: 10px 18px;
+	background: transparent;
+	border: none;
+	text-align: left;
+	font-family: var(--rgi-font-sans);
+	font-size: 14px;
+	color: var(--rgi-text-primary, #1a1a1a);
+	cursor: pointer;
+}
+.dgv-cpicker-row:hover,
+.dgv-cpicker-row:focus {
+	background: var(--rgi-bg-row-alt, #f6f6f7);
+	outline: none;
+}
+.dgv-cpicker-row:focus-visible {
+	outline: 2px solid var(--rgi-accent, #1d9e75);
+	outline-offset: -2px;
+}
+
+
+/* ===========================================================================
+ * Focus mode (Phase 4 commit 5)
+ *
+ * Single-scope vertical view of the cockpit data. Replaces the pivot grid
+ * + spotlight + headline sections while focus is active; the page header
+ * (logo, scope pill, date, age) is preserved unchanged so the user keeps
+ * orientation. See specs/phase-4-commit-5-focus-mode.md.
+ * ======================================================================== */
+
+.rgi-focus {
+	max-width: 1200px;
+	margin: 0 auto;
+	padding: 24px 32px 48px;
+	font-family: var(--rgi-font-sans);
+	color: var(--rgi-text-primary);
+}
+
+/* --- Banner ---------------------------------------------------------- */
+
+.dgv-focus-header {
+	display: flex;
+	align-items: center;
+	gap: 24px;
+	padding: 16px 0 20px;
+	border-bottom: 1px solid var(--rgi-border);
+	margin-bottom: 24px;
+}
+
+.dgv-focus-exit {
+	background: transparent;
+	border: 1px solid var(--rgi-border);
+	color: var(--rgi-text-primary);
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+	padding: 8px 14px;
+	border-radius: 4px;
+	cursor: pointer;
+	white-space: nowrap;
+	transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.dgv-focus-exit:hover {
+	background: var(--rgi-bg-row-alt);
+	border-color: var(--rgi-text-tertiary);
+}
+
+.dgv-focus-scope {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.dgv-focus-scope-title {
+	font-size: 18px;
+	font-weight: 600;
+}
+
+.dgv-focus-scope-prefix {
+	color: var(--rgi-text-tertiary);
+	font-weight: 400;
+	margin-right: 8px;
+}
+
+.dgv-focus-scope-name {
+	color: var(--rgi-text-primary);
+}
+
+.dgv-focus-scope-sub {
+	font-size: 12px;
+	color: var(--rgi-text-secondary);
+	margin-top: 2px;
+}
+
+.dgv-focus-toolbar {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+}
+
+.dgv-focus-export {
+	background: transparent;
+	border: 1px solid var(--rgi-border);
+	color: var(--rgi-text-primary);
+	font-family: var(--rgi-font-sans);
+	font-size: 13px;
+	padding: 8px 14px;
+	border-radius: 4px;
+	cursor: pointer;
+}
+
+.dgv-focus-export:hover:not(:disabled) {
+	background: var(--rgi-bg-row-alt);
+}
+
+.dgv-focus-export:disabled {
+	opacity: 0.45;
+	cursor: not-allowed;
+}
+
+.dgv-focus-close {
+	background: transparent;
+	border: 1px solid var(--rgi-border);
+	color: var(--rgi-text-secondary);
+	font-size: 22px;
+	line-height: 1;
+	width: 32px;
+	height: 32px;
+	border-radius: 4px;
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+
+.dgv-focus-close:hover {
+	background: var(--rgi-bg-row-alt);
+	color: var(--rgi-text-primary);
+}
+
+/* --- Summary tiles --------------------------------------------------- */
+
+.dgv-focus-tiles {
+	display: grid;
+	grid-template-columns: repeat(5, 1fr);
+	gap: 16px;
+	margin-bottom: 24px;
+}
+
+.dgv-focus-tile {
+	background: var(--rgi-bg-surface);
+	border: 1px solid var(--rgi-border);
+	border-radius: 6px;
+	padding: 16px 18px;
+}
+
+.dgv-focus-tile-label {
+	font-size: 11px;
+	font-weight: 600;
+	letter-spacing: 0.06em;
+	color: var(--rgi-text-tertiary);
+	margin-bottom: 8px;
+}
+
+.dgv-focus-tile-value {
+	font-family: var(--rgi-font-sans);
+	font-variant-numeric: tabular-nums lining-nums;
+	font-size: 22px;
+	font-weight: 500;
+}
+
+.dgv-focus-tile-positive .dgv-focus-tile-value {
+	color: var(--rgi-text-primary);
+}
+
+.dgv-focus-tile-negative .dgv-focus-tile-value {
+	color: var(--rgi-danger);
+}
+
+.dgv-focus-tile-zero .dgv-focus-tile-value {
+	color: var(--rgi-text-tertiary);
+}
+
+/* --- Per-company strip (trust focus) --------------------------------- */
+
+.dgv-focus-trust-strip {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	padding: 12px;
+	background: var(--rgi-bg-row-alt);
+	border: 1px solid var(--rgi-border);
+	border-radius: 6px;
+	margin-bottom: 24px;
+}
+
+.dgv-focus-strip-cell {
+	flex: 0 0 auto;
+	min-width: 140px;
+	padding: 8px 12px;
+	background: var(--rgi-bg-surface);
+	border: 1px solid var(--rgi-border-light);
+	border-radius: 4px;
+	cursor: pointer;
+	transition: border-color 0.12s ease, transform 0.05s ease;
+}
+
+.dgv-focus-strip-cell:hover {
+	border-color: var(--rgi-text-tertiary);
+	transform: translateY(-1px);
+}
+
+.dgv-focus-strip-name {
+	font-size: 11px;
+	color: var(--rgi-text-secondary);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	max-width: 200px;
+}
+
+.dgv-focus-strip-value {
+	font-family: var(--rgi-font-sans);
+	font-variant-numeric: tabular-nums lining-nums;
+	font-size: 15px;
+	font-weight: 500;
+	margin-top: 2px;
+}
+
+.dgv-focus-strip-positive .dgv-focus-strip-value { color: var(--rgi-text-primary); }
+.dgv-focus-strip-negative .dgv-focus-strip-value { color: var(--rgi-danger); }
+.dgv-focus-strip-zero     .dgv-focus-strip-value { color: var(--rgi-text-tertiary); }
+
+/* --- Account hierarchy table ----------------------------------------- */
+
+.dgv-focus-accounts {
+	background: var(--rgi-bg-surface);
+	border: 1px solid var(--rgi-border);
+	border-radius: 6px;
+	overflow: hidden;
+}
+
+.dgv-focus-table {
+	width: 100%;
+	border-collapse: collapse;
+	font-size: 13px;
+}
+
+.dgv-focus-table thead th {
+	background: var(--rgi-bg-row-alt);
+	border-bottom: 1px solid var(--rgi-border);
+	color: var(--rgi-text-tertiary);
+	font-size: 11px;
+	font-weight: 600;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	padding: 10px 16px;
+	text-align: left;
+}
+
+.dgv-focus-th-balance {
+	text-align: right !important;
+}
+
+.dgv-focus-table tbody tr {
+	border-bottom: 1px solid var(--rgi-border-light);
+}
+
+.dgv-focus-table tbody tr:last-child {
+	border-bottom: none;
+}
+
+.dgv-focus-table td {
+	padding: 8px 16px;
+	color: var(--rgi-text-primary);
+}
+
+.dgv-focus-row-group td {
+	font-weight: 600;
+	color: var(--rgi-text-primary);
+	background: var(--rgi-bg-row-alt);
+}
+
+.dgv-focus-row-leaf td {
+	font-weight: 400;
+}
+
+.dgv-focus-row-leaf {
+	cursor: pointer;
+	transition: background 0.08s ease;
+}
+
+.dgv-focus-row-leaf:hover {
+	background: var(--rgi-bg-row-alt);
+}
+
+.dgv-focus-account {
+	display: table-cell;
+}
+
+.dgv-focus-chevron,
+.dgv-focus-chevron-spacer {
+	display: inline-block;
+	width: 16px;
+	color: var(--rgi-text-tertiary);
+	font-size: 10px;
+	margin-right: 4px;
+}
+
+.dgv-focus-account-name {
+	color: var(--rgi-text-primary);
+}
+
+.dgv-focus-type {
+	color: var(--rgi-text-secondary);
+	font-size: 12px;
+}
+
+.dgv-focus-balance {
+	text-align: right;
+	font-family: var(--rgi-font-mono);
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+}
+
+.dgv-focus-negative {
+	color: var(--rgi-danger);
+}
+
+.dgv-focus-empty,
+.dgv-focus-loading,
+.dgv-focus-error {
+	padding: 32px;
+	text-align: center;
+	color: var(--rgi-text-secondary);
+	font-size: 14px;
+}
+
+.dgv-focus-error {
+	color: var(--rgi-danger);
+}
+
+/* --- "Focus →" trigger button injected on pivot column headers ------ */
+
+.dgv-focus-trigger {
+	display: inline-block;
+	margin-left: 8px;
+	padding: 2px 8px;
+	font-size: 10px;
+	line-height: 1.3;
+	font-weight: 500;
+	font-family: var(--rgi-font-sans);
+	color: var(--rgi-text-secondary);
+	background: var(--rgi-bg-surface);
+	border: 1px solid var(--rgi-border);
+	border-radius: 3px;
+	cursor: pointer;
+	opacity: 0.7;
+	transition: opacity 0.12s ease, background 0.12s ease, border-color 0.12s ease;
+	white-space: nowrap;
+	vertical-align: middle;
+}
+
+/* Brighten on header hover and on direct focus. */
+.pivot-trust-head:hover .dgv-focus-trigger,
+.pivot-company-head:hover .dgv-focus-trigger,
+.dgv-focus-trigger:focus,
+.dgv-focus-trigger:hover {
+	opacity: 1;
+}
+
+.dgv-focus-trigger:hover {
+	background: var(--rgi-bg-row-alt);
+	border-color: var(--rgi-text-tertiary);
+	color: var(--rgi-text-primary);
+}
+
+/* Trust Focus button: inherits the default `.dgv-focus-trigger`
+ * dark-text-on-light styling. Originally over-styled white-on-trust-
+ * colour expecting the trust band to be a deep coloured background;
+ * the band is actually cream (--rgi-bg-row-alt) so white-on-white
+ * was nearly invisible. The badge to the left (`.pivot-trust-abbr`)
+ * is the colour-coded element; the Focus button stays neutral. */
+
+/* Company columns are narrow (~120px) and their names typically
+ * truncate already -- an inline button beside the name would push
+ * the name off-screen. Stack the trigger below the name on a fresh
+ * line, centred in the column. */
+.dgv-focus-trigger-company {
+	display: block;
+	margin: 4px auto 0;
+	font-size: 9px;
+	padding: 1px 6px;
+}
+
+/* Trust selector locked state (during trust focus). */
+.dgv-scope-pill.dgv-locked {
+	opacity: 0.55;
+	cursor: not-allowed;
+	pointer-events: none;
+}
+
+/* When focus mode is active on the body, prevent accidental clicks on
+ * cockpit elements that may not be visible but still capture pointer
+ * events at edge cases (e.g. transition lag). */
+body.dgv-focus-active .rgi-tb,
+body.dgv-focus-active .rgi-spotlight,
+body.dgv-focus-active .rgi-headline {
+	pointer-events: none;
+}
+
+/* --- Responsive: stack tiles vertically at narrow viewport ----------- */
+
+@media (max-width: 800px) {
+	.rgi-focus {
+		padding: 16px 16px 32px;
+	}
+	.dgv-focus-header {
+		flex-wrap: wrap;
+		gap: 12px;
+	}
+	.dgv-focus-toolbar {
+		flex: 1 1 100%;
+		justify-content: flex-end;
+	}
+	.dgv-focus-tiles {
+		grid-template-columns: 1fr;
+		gap: 8px;
+	}
+	.dgv-focus-tile-value {
+		font-size: 18px;
+	}
+	.dgv-focus-trust-strip {
+		flex-direction: column;
+	}
+	.dgv-focus-strip-cell {
+		min-width: 100%;
+	}
+	.dgv-focus-accounts {
+		overflow-x: auto;
+	}
+	.dgv-focus-table {
+		min-width: 480px;
+	}
+}
+

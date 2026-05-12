@@ -24,6 +24,7 @@ from dux_groupview.dux_groupview.snapshots.refresh import refresh_tb_snapshot
 from dux_groupview.dux_groupview.snapshots.backfill import backfill_snapshots
 from dux_groupview.dux_groupview.snapshots.spotlight_refresh import (
 	CARD_DEFINITION_HASH,
+	SPARKLINE_LENGTH,
 	refresh_spotlight_cache,
 )
 from dux_groupview.dux_groupview.spotlight.cards import CARDS, by_id
@@ -193,9 +194,12 @@ class TestSpotlightCache(FrappeTestCase):
 		)
 		parsed = json.loads(raw)
 		self.assertIsInstance(parsed, list)
-		self.assertEqual(len(parsed), 6)
-		# Should have at least the 3 backfilled month-ends; older 3 may
-		# be None depending on whether the dev site has older snapshots.
+		# SPARKLINE_LENGTH bumped 6 -> 12 in Phase 4 commit 2 to match
+		# account drill's by-company sparkline length (spec §4.1).
+		self.assertEqual(len(parsed), SPARKLINE_LENGTH)
+		# Should have at least the 3 backfilled month-ends; older slots
+		# may be None depending on whether the dev site has older
+		# snapshots.
 		non_null = [v for v in parsed if v is not None]
 		self.assertGreaterEqual(len(non_null), 3)
 

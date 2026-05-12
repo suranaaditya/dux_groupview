@@ -404,8 +404,19 @@ def _insert_gl_entries(plan, rng):
 		co = a["company"]
 		if co in creditors_by_co:
 			continue
-		creditors_by_co[co] = _resolve_account_by_type(co, "Payable")
-		debtors_by_co[co]   = _resolve_account_by_type(co, "Receivable")
+		# AP/AR transactions must land on Liability/Asset-rooted leaves
+		# respectively so the drill API's sign flip renders "we owe" /
+		# "owed to us" as positive natural-side balances. Without
+		# prefer_root_type, ORDER BY lft on a standard COA picks
+		# Employee Advances (Payable + Asset root) for the AP path and
+		# similar for AR -- producing sign-flipped panel display.
+		# Phase 4 commit 3.1 fix.
+		creditors_by_co[co] = _resolve_account_by_type(
+			co, "Payable", prefer_root_type="Liability",
+		)
+		debtors_by_co[co]   = _resolve_account_by_type(
+			co, "Receivable", prefer_root_type="Asset",
+		)
 		expense_by_co[co]   = _resolve_account_by_root_type(co, "Expense")
 		income_by_co[co]    = _resolve_account_by_root_type(co, "Income")
 		bank_by_co[co]      = _resolve_bank_or_cash(co)
@@ -565,8 +576,45 @@ def _emit_party_run(aff, party_type, party_account, bill_counter, payment_counte
 # Account resolution
 # ---------------------------------------------------------------------------
 
-def _resolve_account_by_type(company, account_type):
-	"""First leaf account in this company with given account_type."""
+def _resolve_account_by_type(company, account_type, prefer_root_type=None):
+	"""First leaf account in this company with given account_type.
+
+	When `prefer_root_type` is given, prefer a leaf whose root_type also
+	matches; fall back to first-by-lft of any account_type match if no
+	root_type-matching leaf exists.
+
+	Why this matters
+	----------------
+	`account_type` and `root_type` can disagree on real ERPNext charts.
+	Standard COA examples:
+
+	    "Creditors"         account_type=Payable    root_type=Liability
+	    "Employee Advances" account_type=Payable    root_type=Asset
+
+	Both are leaf "Payable" accounts but the cockpit's drill API applies
+	a sign flip per `root_type` (FLIP_ROOT_TYPES), so a transaction
+	intended as AP that lands on Employee Advances renders with the
+	opposite sign in the panel. The seeder's intent is "trade payables"
+	-- prefer_root_type="Liability" disambiguates. AR mirrors with
+	prefer_root_type="Asset" against the analogous "Customer Deposits"
+	(account_type=Receivable, root_type=Liability) hazard.
+
+	Discovered via Phase 4 commit 3.1 sign-investigation: see commit
+	message for the full chain of cause + effect.
+	"""
+	if prefer_root_type:
+		row = frappe.db.sql(
+			"""
+			SELECT name FROM `tabAccount`
+			WHERE company = %s AND is_group = 0 AND disabled = 0
+			  AND account_type = %s AND root_type = %s
+			ORDER BY lft LIMIT 1
+			""",
+			(company, account_type, prefer_root_type),
+		)
+		if row:
+			return row[0][0]
+	# Fallback: any account_type match, first-by-lft (original behaviour).
 	row = frappe.db.sql(
 		"""
 		SELECT name FROM `tabAccount`

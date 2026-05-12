@@ -27,14 +27,24 @@ import frappe
 from frappe import _
 from frappe.utils import flt, getdate, now_datetime, today
 
+from dux_groupview.dux_groupview.api.utils import FLIP_ROOT_TYPES
 from dux_groupview.dux_groupview.spotlight.cards import CARDS
 
 
 CARD_DEFINITION_HASH = "phase2-hardcoded"
-SPARKLINE_LENGTH = 6
 
-# root_types whose balance is naturally Cr (negative when stored as Dr - Cr).
-FLIP_ROOT_TYPES = ("Liability", "Equity", "Income")
+# Phase 4 commit 2 bumped 6 -> 12 to match account drill's by-company
+# sparkline length (spec §4.1, "Sparkline length: 12 points"). After
+# merge, regenerate the cache via `bench --site <site> execute
+# dux_groupview.dux_groupview.snapshots.spotlight_refresh.refresh_spotlight_cache`
+# so existing rows pick up the new length; otherwise cards keep
+# rendering 6 points until the next scheduled refresh.
+SPARKLINE_LENGTH = 12
+
+# Sign convention: see api/utils.FLIP_ROOT_TYPES. Imported so this
+# module and the drill modules share a single source of truth -- party
+# drill aggregation in api/party_drill_v1.py and snapshot aggregation
+# here must agree per spec §4.2 sign-convention parity.
 
 
 # ---------------------------------------------------------------------------

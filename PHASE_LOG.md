@@ -790,3 +790,1292 @@ before resuming Phase 4 work.
   trust subset and the function refuses to run if those companies
   don't exist; production would need an explicit `companies=` list
   to run, which is unlikely.
+
+---
+
+## Phase 4 — Commit 4 — GL drill page + CSV export + filter UI + view all parties
+
+**Status:** Done -- 2026-05-09. Branch `phase-4-drills` (single
+bundled commit covering HALT 1 + HALT 2 + HALT 2.5 + HALT 4 of the
+master commit-4 sequence).
+
+**Goal:** Wire the three stub buttons left over from commit 3 into
+real functionality. After commit 4, every "→" or "View all" affordance
+in the account drill panel and full page produces a working
+destination: a paginated GL drill page, downloadable CSVs of
+account-breakdown / GL-entries / party-list shapes, in-page filter
+UI on the GL drill page, and a paginated party list page with
+click-row-to-drill into GL filtered by party.
+
+**Deliverables:**
+- [x] `api/gl_drill_v1.py` -- new whitelisted `get_gl_entries`
+  (paginated GL entries with SQL window function for running balance,
+  50K hard cap with `is_truncated` flag), `get_filter_metadata`
+  (HALT 2.5 dropdown population), `export_gl_entries_csv` (50K cap,
+  raw decimal cells, ISO dates, `_filtered` filename infix when
+  HALT 2.5 filters active)
+- [x] `page/gl_drill/` -- new Frappe page at `/app/gl-drill?scope=...`,
+  toolbar with sort/page-size/Export-CSV/pager, table with party
+  cells + voucher links + running-balance column, scope-fanout +
+  truncation banners, filter row (Companies / Accounts / Date Range
+  / Party / Voucher type) + chips + bottom-sheet on ≤800px
+- [x] `api/account_drill_v1.py` -- new `export_account_breakdown_csv`
+  (per-(company, account) shape with currency)
+- [x] `api/party_drill_v1.py` -- extended `get_party_breakdown` with
+  `mode='card'` (default, byte-identical to HALT 1+2 wire shape) and
+  new `mode='page'` (max page_size 500, adds `name_desc` sort,
+  `total_pages` + scope echo); new `export_party_list_csv` (50K cap)
+- [x] `page/party_list/` -- new Frappe page at `/app/party-list?scope=...`,
+  paginated party table with click-row-to-drill into GL filtered
+  by party (uses the `?party=&party_type=` URL params HALT 1's
+  gl-drill page already supports)
+- [x] `public/js/account_drill.js` -- all three commit-3 stubs
+  (`stubGlDrill`, `stubExportCsv`, `stubViewAllParties`) wired with
+  three new URL builders (`buildGlDrillUrl`, `buildAccountBreakdownCsvUrl`,
+  `buildPartyListUrl`); each handles both panel-args and page-state
+  arg shapes
+- [x] `public/css/cockpit.css` -- ~1,850 new lines covering the
+  GL drill page chrome, HALT 2.5 filter UI (multi-select + chips +
+  bottom sheet), and party-list page chrome
+- [x] 30 new tests across `test_gl_drill.py` (new file, 25 tests)
+  + `test_account_drill.py` (+2 CSV tests) + `test_party_drill.py`
+  (+8 HALT 4 tests). Suite at 163 / 163 green (1 pre-existing skip).
+- [x] `specs/phase-4-commit-4-gl-drill.md` (v0.1 → v0.6) +
+  `specs/phase-4-commit-4-filters.md` (HALT 2.5 spec). Already
+  committed in the spec-evolution sequence preserved on the branch.
+
+**Spec evolution (visible in git log):**
+
+| Version | Commit  | Driver |
+|---------|---------|--------|
+| v0.1    | (in-chat only, not committed) | Initial draft surfaced at spec halt |
+| v0.2    | 4d2bd11 | 5 Q's resolved + 2 mode-args contracts (commit subject doesn't include version; subsequent commits adopted "v0.X" naming) |
+| v0.3    | 5ad7f50 | Page-size 100/1000, posting_date_* sort keys, 50K cap on get_gl_entries, EXPLAIN softening |
+| v0.4    | 282a226 | Sort default flip (asc), HALT 2.5 insertion, filters open question |
+| v0.5    | 016b8bf | Drop running balance partition (scope-wide accumulation) |
+| v0.6    | 2f5bca7 | Filter UI spec + account-breakdown CSV column alignment |
+| v0.6.1  | 860de01 | Filter spec amendments (EXPLAIN criterion + chip max-width + reset on scope change) |
+
+**Halt-point cadence (visible in commit hashes between halts):**
+
+- HALT 1 -- GL drill page + window function + pagination. Perf: 32-90s
+  on huge subtree-of-root scopes (203K-431K rows); accepted as a known
+  v1 limitation per the closing decisions (real users drill into
+  specific accounts; the fanout banner warns).
+- HALT 2 -- CSV export. Three new endpoints, three "Export CSV"
+  buttons wired, raw-decimal cell format, slugified filenames.
+- HALT 2.5 -- Filter UI (gl-drill page only). Five filters: Companies
+  multi-select, Account-name multi-select, Date range, Party
+  autocomplete, Voucher type (collapsed under "Advanced"). Filter
+  state persists in URL; resets on cross-scope navigation.
+- HALT 4 (renumbered from HALT 3 after HALT 2.5 insertion) --
+  View All Parties. mode='page' on get_party_breakdown +
+  /app/party-list page + export_party_list_csv. stubViewAllParties
+  wired in account_drill.js.
+
+**Architectural decisions:**
+
+- **Running balance is scope-wide, not per-(company, account).**
+  v0.5 dropped the `PARTITION BY company, account` clause from the
+  window function. Reason: every other cockpit surface (pivot, cards,
+  account-drill panel) treats a scope as one aggregated thing.
+  Per-account-ledger view interleaves curves by date and reads as
+  jumble. Per-account ledger is achievable in HALT 2.5 by filtering
+  the scope to a single account_name. Mixed-root-type scopes get a
+  scope-activity figure rather than a real financial total --
+  documented in spec §13.2 known limitation.
+- **CSV cells are raw decimals, not Indian-grouped strings.** Locked
+  at HALT 2 across all three CSV endpoints. Reason: CSV is data-
+  interchange; Indian-grouping forces visual interpretation onto
+  every importer and breaks numerical typing in spreadsheet apps.
+  Indian grouping stays in the rendered UI surfaces only.
+- **Filters reset on cross-scope navigation.** Per spec §5
+  amendment 3: filters are per-scope. `account_drill.js`'s
+  `buildGlDrillUrl` deliberately doesn't emit any filter params
+  even when called from a context that has filter state. A future
+  Phase 5 sticky-pref doctype could opt back into carry-over;
+  v1 keeps the URL contract simple.
+- **`?scope=<scope_id>` URL contract for `/app/party-list`.** HALT 4
+  instruction proposed `?account=<id>` but the implementation uses
+  `?scope=<scope_id>` to (a) handle card-resolved scopes that span
+  multiple accounts cleanly, and (b) reuse the gl-drill page's URL
+  parser (`window.dgvParseAccountDrillHash`). Approved on review.
+- **`mode='page'` as a parameter extension to `get_party_breakdown`,
+  not a new function.** Per spec v0.6 §5.4. card mode (default)
+  stays byte-identical for the panel + account-drill page; page
+  mode adds the new knobs needed by `/app/party-list`. Pinned by
+  the regression test `test_get_party_breakdown_mode_card_defaults_unchanged`.
+- **Filter UI: SQL-narrow over client-side post-filter** (spec §4
+  Q1). Reason: client-side filter would break pagination math
+  (`total_entries` reported by server vs displayed by client) and
+  running-balance cumulative semantics. Server-side WHERE folded
+  cleanly into the existing JOIN -- HALT 2.5.3 EXPLAIN check
+  confirmed no `Using temporary` / `Using filesort` regression
+  vs HALT 1 baseline.
+- **Filter UI: URL-persisted, not localStorage-sticky** (spec §4
+  Q2). Shareability + refresh-safety > stickiness. Phase 5 may
+  layer localStorage on top via `DGV User Preferences` doctype.
+
+**Stub wiring (commit 3 → commit 4):**
+
+| Stub | Wired to | URL builder |
+|---|---|---|
+| `stubGlDrill` | `/app/gl-drill?scope=...` | `buildGlDrillUrl` |
+| `stubExportCsv` | `/api/method/...export_account_breakdown_csv` | `buildAccountBreakdownCsvUrl` |
+| `stubViewAllParties` | `/app/party-list?scope=...` | `buildPartyListUrl` |
+
+The function NAMES (`stub*`) were retained -- they're consumed by
+`window.dgvDrill` exports + `bindActionBar` / `bindPartyViewAll`
+wirings + the account-drill page's own click handlers. Renaming
+would have rippled with no test gain. Comment block at the top of
+the section documents the transition for future maintainers.
+
+**Tests (163 total, 1 pre-existing skip):**
+
+- `test_gl_drill.py` (new) -- 25 tests:
+  - 5 pagination + truncation: offset, total_count, truncation cap
+  - 2 running balance: correctness on single-account scope, continuous
+    across (company, account) partitions (gold-standard for v0.5
+    partition removal)
+  - 1 sort options: posting_date_asc/desc + amount_asc/desc
+  - 1 party filter
+  - 5 CSV (HALT 2): columns, 50K cap throw, party filter applied,
+    raw decimals, ISO dates
+  - 6 filter (HALT 2.5): account_names, from_date, to_date,
+    to_date clamp, voucher_types, combined intersection
+  - 2 export filter (HALT 2.5): honors filters in CSV body, filename
+    `_filtered_` infix marker
+  - 3 misc shape (e.g., scope_fanout in response)
+- `test_account_drill.py` (+2): account-breakdown CSV columns,
+  raw decimals
+- `test_party_drill.py` (+8): mode='page' total_pages, max_page_size
+  500, name_desc sort, scope echo, mode-invalid raises, card-mode
+  regression, party-list CSV columns, party-list raw decimals
+
+EXPLAIN check (HALT 1 baseline + HALT 2.5.3 re-verify): both passed
+the spec §10 / §4 Q1 fail criterion. Optimizer picked
+`dgv_party_drill` index for the inner JOIN, no `Using temporary` /
+`Using filesort`. New `account_names` + `voucher_types` predicates
+folded into the existing `Using where` -- byte-identical plan to
+HALT 1 baseline.
+
+**Performance:**
+
+| Operation | Scope | Median ms | Notes |
+|---|---|---:|---|
+| `get_gl_entries` p1 size=100 | account-leaf, single co (~9K rows) | 26-300 | Well within <500ms target |
+| `get_gl_entries` p1 size=100 | subtree, all 20 cos (~50K-100K rows) | 25,000-31,000 | Truncated; fanout banner warns. Documented v1 limitation |
+| `get_filter_metadata` first paint | SGR Current Liabilities (21 accts × 1 co) | 1,120 | Cached client-side per page load |
+| `get_gl_entries` with `account_names` filter | same scope | 68 | Filter narrows; perf improves |
+| `export_gl_entries_csv` (1,728 rows) | filtered scope | <2,000 | Single-pass windowed read |
+| `get_party_breakdown` mode='page' | subtree, single co | <100 | Same shape as mode='card'; just different knobs |
+| `export_party_list_csv` (7 parties) | small scope | <500 | Cap at 50K -- party lists are small |
+| Test suite | trust-subset seed | ~430s (8 min) | Snapshot/refresh tests dominate |
+
+**Carryover (visual-only, non-blocking):**
+
+- Filter row alignment + popup wrap of long company names on the
+  GL drill page were iterated through several CSS rounds during
+  HALT 2.5. Final pass: native date inputs pinned to `height: 30px`
+  with `box-sizing: border-box` to match custom dropdowns; popup
+  uses `width: max-content` capped at 720px with `white-space:
+  nowrap` on option text so long names display single-line.
+  Aditya signed off the functionality but didn't have time for a
+  final visual confirm; deferred to follow-up. See cockpit.css
+  `.dgv-gl-filter-from` / `.dgv-gl-filter-to` (date inputs at
+  `height: 30px`), `.dgv-gl-multiselect-popup` (max-content sizing
+  + 720px cap), and `.dgv-gl-multiselect-option > span`
+  (`white-space: nowrap`) rules.
+
+**Gotchas surfaced:**
+
+- **Page-record registration without `bench migrate`.** The dev's
+  `bench migrate` is blocked by an unrelated `vehicle_no` custom-
+  field collision on Sales Invoice (from a different installed app).
+  New Frappe pages defined by `<page>.json` files are NOT
+  auto-registered into `tabPage` from a clear-cache or bench build
+  alone -- normally `bench migrate` does the sync. Workaround used
+  during HALT 1 + HALT 4: a one-off `bench execute` calling
+  `frappe.get_doc({...}).insert()` to insert the Page row directly
+  with the same metadata as the JSON file. The unrelated
+  `vehicle_no` collision needs to be fixed before the next
+  production rollout that adds new doctypes / pages -- track as a
+  side issue.
+- **`loadFilterMetadata` race for card scopes.** Initial HALT 2.5.2
+  implementation called `loadFilterMetadata()` immediately at page
+  boot. For card-kind scopes, that fired BEFORE `resolveCardScope`
+  populated `state.resolvedAccounts`, so the function returned early
+  without making the API call -- filter row stayed hidden. Fix
+  moved the call into the same Promise chain as `fetchAndRender`
+  so it runs after card resolution.
+- **`_count_entries` JOIN missing.** When HALT 2.5 added the
+  `account_names` filter (which references `a.account_name` in the
+  WHERE clause), the count query (which previously didn't JOIN
+  `tabAccount`) started failing with "Unknown column 'a.account_name'".
+  Fix added the JOIN to `_count_entries`. Caught by tests on first
+  run after the WHERE-clause extension.
+- **Frappe response handling for binary downloads.** All three CSV
+  endpoints set `frappe.local.response.filename` + `filecontent`
+  + `type='binary'`. The `filecontent` must be bytes (encoded
+  UTF-8). Frappe sends `Content-Disposition: attachment` based on
+  `filename` and the browser triggers the download.
+
+**`tabGL Entry` audit:** `grep -rn "tabGL Entry"` across `gl_drill_v1.py`,
+`party_drill_v1.py`, all the page JS, and the new tests returns only
+the `_drill`-suffixed APIs as actual queries. Cockpit reads
+(`account_drill_v1.export_account_breakdown_csv`, page Python stubs)
+read snapshot tables only. Architecture rule preserved.
+
+**Open follow-ups (Phase 5 candidates):**
+
+- Filter UI alignment + popup wrap visual confirmation (carryover).
+- Saved filter presets backed by a `DGV User Preferences` doctype.
+- Card-id stability across Phase 5 editor changes (see master spec
+  §13.1 known limitation; `# TODO(phase-5)` markers in
+  `cards_v1.resolve_match_to_accounts` + `account_drill.js` URL
+  builders).
+- Index choice (`dgv_party_drill` vs `dgv_snapshot_aggregation`)
+  perf sweep against real production click data after 6 weeks of
+  usage.
+- Fanout-banner threshold tuning based on real usage (currently
+  `N_accounts > 20 OR N_companies > 5`).
+- The unrelated `vehicle_no` migrate block on dev -- fix separately
+  before next prod rollout.
+
+
+## Phase 4 — Commit 5 — Focus mode (company + trust)
+
+**Status:** Done -- 2026-05-10. Branch `phase-4-drills` (single
+bundled commit covering HALT 5.1 spec + 5.2 endpoint + 5.3 UI +
+5.4 CSV export of the master commit-5 sequence).
+
+**Goal:** Give the cockpit a single-scope vertical view that answers
+"show me everything inside this one company / trust at full account
+depth" -- distinct from the cockpit pivot's wide cross-company view.
+Click a `Focus →` button on a company column header or trust group
+header in the pivot; the cockpit reflows into a banner + 5 summary
+tiles + (for trust focus) a per-company strip + an indented account
+hierarchy. Read-only reflow of existing snapshot data; no new
+doctypes, no schema changes.
+
+**Deliverables:**
+- [x] `api/focus_v1.py` -- new whitelisted `get_focused_view(scope_type,
+  scope_value, as_of_date)` and `export_focused_view_csv(...)`. Reads
+  `tabDGV TB Snapshot Row` joined to `tabAccount` only -- no
+  `tabGL Entry` access, per spec §4.5 / CLAUDE.md hard rule 1.
+- [x] `tests/test_focus.py` -- new file, 12 tests across 7 classes
+  (shape, ordering, depth, trust resolution, trust aggregation,
+  validation, sign convention, tile invariants, CSV columns + raw
+  decimals + sub-rupee filter).
+- [x] `page/groupview/groupview.js` -- ~620 new lines: focus banner +
+  tile rendering + per-company strip + account hierarchy table +
+  drill-panel integration + URL handling + popstate + pivot-header
+  `Focus →` button injection (via MutationObserver on `#pivot-grid`).
+  Trust-selector behaviour amended for focus mode (lock during trust
+  focus, auto-exit on change during company focus).
+- [x] `public/css/cockpit.css` -- ~420 new lines for focus mode UI:
+  banner, 5-tile grid, per-company strip, account table with
+  depth-padded rows, `Focus →` triggers (always-visible at idle
+  opacity 0.7/0.85, fully visible on hover; company triggers
+  stacked below name to fit narrow columns), responsive breakpoint
+  at ≤800px.
+- [x] `specs/phase-4-commit-5-focus-mode.md` (v0.1 + asymmetry
+  amendment). Already committed at `3f884c3` and `5e6b75a` in the
+  spec-evolution sequence preserved on the branch.
+- [x] Suite at 175 / 175 green (was 163 before commit 5; +12 new).
+
+**Spec evolution (visible in git log):**
+
+| Version | Commit  | Driver |
+|---------|---------|--------|
+| v0.1    | 3f884c3 | Initial draft + 6 questions resolved (5 from brief + Q6 emerged at drafting) |
+| v0.1.1  | 5e6b75a | EXPLAIN-criterion amendment: aggregation-query carve-out + stock-table asymmetry note |
+
+**Halt-point cadence (visible in commit hashes between halts):**
+
+- HALT 5.1 -- Spec sign-off. v0.1 + 6 resolved questions. Trigger
+  mechanism (explicit `Focus →` button, not single-click); trust
+  visual model (aggregated body + per-company strip); always-full
+  depth (depth control hidden during focus); 5 fixed tiles; snapshot-
+  only reads with empirical EXPLAIN check; drill panel from leaf row.
+- HALT 5.2 -- Server endpoint + tests + EXPLAIN. `get_focused_view`
+  returns scope, summary tiles, accounts list ordered by lft.
+  Sign-flip via `FLIP_ROOT_TYPES` from `api/utils.py` (single source
+  of truth). Trust resolution via `pivot.trust_groups.TRUSTS`.
+  9 server tests passing.
+- HALT 5.3 -- Page implementation + UI + browser verification.
+  Both flavours render correctly; drill panel inherits focused
+  scope; auto-exit on trust-selector change during company focus
+  works; trust selector locks during trust focus.
+- HALT 5.4 -- CSV export + final tests + commit prep. CSV columns:
+  Account, Root Type, Depth, Balance. Sub-rupee leaf filter. 3 new
+  tests for shape, raw decimals, sub-rupee. Total +12 tests.
+
+**Architectural decisions:**
+
+- **Snapshot-only reads** -- no `tabGL Entry` access in focus_v1.
+  The cockpit pivot already serves this data shape via
+  `get_pivot_data`; focus mode is a reflow at request time, not a
+  deeper read. Sidesteps the GL-drill partition discussion entirely
+  (CLAUDE.md hard rule 1 unmodified).
+- **Dedicated endpoint, not pivot reuse.** Master spec §4.4 sketched
+  reusing `get_pivot_data` with `companies=[<one>]`; v0.1 instead
+  introduces `get_focused_view`. Cleaner separation, lets tile
+  aggregation happen server-side in one round-trip rather than
+  client computing tiles from a pivot payload.
+- **URL query params, not hash.** Master spec §4.4 said hash
+  (`#focus_company=`); v0.1 picks `?focus=` / `?focus_trust=`.
+  Matches cockpit's existing URL state, copy-paste shareable, server
+  can read them on direct-URL entry.
+- **5 fixed tiles, not configurable.** Master spec §4.4 listed 4
+  (Assets, Liabilities, Net surplus, Cash & bank); v0.1 uses 5
+  symmetric P&L+BS top-lines (Assets, Liabilities, Income, Expenses,
+  Net Surplus). Cash & bank dropped because it's already a
+  spotlight card -- duplicating felt redundant. Configurability
+  deferred to Phase 5 alongside the spotlight-card editor.
+- **CSV columns: Account, Root Type, Depth, Balance.** The brief's
+  initial column list included Currency; dropped in spec drafting
+  because every snapshot row in scope is INR for RGI -- column
+  adds noise without info. Replaced with Depth (int) which enables
+  Excel outline grouping. Balance is raw decimal (no Indian
+  grouping) consistent with commit 4 CSV exports.
+- **EXPLAIN criterion: aggregation-query carve-out.** Spec
+  amendment `5e6b75a` after empirical measurement at HALT 5.2.
+  Tile query (4-row aggregation by root_type) trips
+  `Using temporary; Using filesort` against `tabDGV TB Snapshot Row`
+  but cost is microseconds at production scale (~9K rows × 4
+  groups). Adding a composite index `(snapshot_date, company,
+  root_type)` would eliminate it but add write cost to every
+  snapshot refresh -- bad trade. Accepted per spec §9.2 amendment.
+  Also: criterion applies only to our own snapshot table;
+  `tabAccount`-side temp/filesort on the accounts query is
+  accepted (CLAUDE.md hard rule 2 forbids index changes there).
+- **Sub-rupee filter on CSV leaves only.** Commit 3.1 convention
+  applied: leaves with `abs(balance) < 1` dropped. Group rows
+  pass through regardless because they aggregate subtree balances
+  (their own row may legitimately be zero even when the subtree
+  has activity). Pinned by
+  `test_export_focused_view_csv_excludes_subrupee_leaf_rows`.
+- **Trust-selector behaviour split** (spec §8.5). Trust focus
+  locks the selector; company focus leaves it live but auto-exits
+  focus mode when the selector changes. Reasoning: trust selector
+  is cockpit-level state; if a user changes it while focused on a
+  company that may not even belong to the new trust, the on-screen
+  state would be incoherent. Auto-exit keeps the interaction model
+  clean.
+
+**Bugs caught + fixed during implementation:**
+
+- **`has_children` wrong for trust focus.** Initial implementation
+  computed `has_children` from `MAX(rgt) - MIN(lft) > 1`. For trust
+  focus across N companies, each company's nested-set has its own
+  (lft, rgt) range -- `MAX(rgt) - MIN(lft)` straddles unrelated
+  ranges and falsely returns True even on true leaves. Surfaced via
+  HALT 5.2 smoke testing on Trust=GHREMF showing `Debtors` with
+  `is_group=False, has_children=True`. Fixed by computing
+  `has_children` from the response's own `parent_account` graph (a
+  row is a parent iff some other row names it). Pinned by
+  `test_get_focused_view_trust_has_children_only_for_groups`.
+- **MutationObserver missed initial pivot render.** Observer first
+  attached to `#pivot-head`, but pivot grid lazily creates its
+  `<thead>` only after the first `frappe.call` returns -- so
+  `wireFocusModeChrome` ran before `pivot-head` existed and the
+  observer was never attached. Fixed by watching the always-present
+  `#pivot-grid` container's subtree.
+- **Drill panel scope value mismatch.** Initial leaf-row click
+  passed the full company-suffixed name (`Debtors - GHRPSP`); the
+  pivot drill convention is the stripped form (`Debtors`). Fixed
+  to match the existing pivot-drill contract.
+- **`Focus →` button discoverability.** v0.1 had `opacity: 0` at
+  idle and `opacity: 1` on hover -- effectively invisible. User
+  feedback during HALT 5.3 review: "where is the focus button?".
+  Bumped to `opacity: 0.7` / `0.85` at idle, fully opaque on hover.
+  Company triggers stacked below the name (display:block) because
+  inline placement next to truncated company names didn't fit.
+- **Frappe Desk scroll quirk.** `window.scrollTo()` is a no-op on
+  Desk pages -- the actual scroll container is internal to the
+  desk chrome, not `window`/`documentElement`. Fixed by switching
+  to `Element.scrollIntoView({block: 'start'})` which walks up the
+  DOM to find whichever ancestor is the actual scroller. Captured
+  in user memory for future sessions.
+- **Tile aggregation EXPLAIN regression.** First version of the
+  summary-tile query JOINed `tabAccount` for `root_type`; the
+  EXPLAIN tripped on the JOIN side. Rewrote to read `r.root_type`
+  directly from the snapshot row (already populated at refresh
+  time). Filesort/temporary still appears (no index covers the
+  GROUP BY column) but cost is microseconds; accepted per the
+  amendment above.
+
+**Test count:** 175 / 175 green (108 + 67 across the two test
+categories). +12 from the 163 baseline at end of commit 4: 8 from
+the brief's planned test list + 1 regression test for the
+`has_children` bug + 3 CSV tests at HALT 5.4.
+
+**`tabGL Entry` audit:** `grep -rn "tabGL Entry" focus_v1.py
+test_focus.py` returns zero matches. Architecture rule preserved.
+
+**Synthetic seed artefact note:** RGI-DEMO seed produces a
+non-realistic balance sheet shape. Trust focus on GHREMF shows
+Net Surplus = -₹500.68 Cr (Income ₹222 Cr - Expenses ₹723 Cr); a
+real audited TB would not have this signature. Surfaced during
+browser verification; **not a focus-mode bug**, just a property of
+the augmented synthetic data. Production data on
+`ghraisoni.frappe.cloud` will show realistic shapes.
+
+**Polish round during commit 5 review (bundled into this commit):**
+
+Surfaced during browser verification, addressed before push so the
+final commit ships a coherent visual language across all card
+surfaces, not a focus-mode that diverges from the rest.
+
+- **Card figure typography across the dashboard.** The cockpit's
+  numeric values were rendering in Georgia oldstyle figures
+  (text figures with descending `4`/`7`/`9` and short `1`) --
+  editorial typography that read as informal in a financial cockpit.
+  Switched the figure-rendering selectors to `var(--rgi-font-sans)`
+  (Geist) with `font-variant-numeric: tabular-nums lining-nums`.
+  Selectors changed (CSS-only, no test impact):
+    - `.rgi-tier-primary .rgi-spotlight-figure` (Phase 2)
+    - `.rgi-tier-secondary .rgi-spotlight-figure` (Phase 2)
+    - `.dgv-drill-hero-amount` / `.dgv-drill-hero-unit` /
+      `.dgv-drill-hero-delta` (Phase 4 commit 3)
+    - `.dgv-gl-totals-num` (Phase 4 commit 4)
+    - `.dgv-pl-totals-num` (Phase 4 commit 4)
+    - `.dgv-focus-tile-value` / `.dgv-focus-strip-value` (commit 5)
+  Editorial elements (taglines, headline prose, "First reported
+  this month", trial-balance heading + subtitle, footer
+  confidential notice) deliberately keep the serif -- those are
+  prose, not figures.
+- **Trust `Focus →` button visibility fix.** Initial styling
+  assumed the trust band background was navy and used white-on-
+  trust-colour. The band is actually cream
+  (`var(--rgi-bg-row-alt)`), so the button rendered white-on-
+  white -- nearly invisible. Aditya called this out: "i get the
+  focus view of one company but how to get this view"
+  (referring to trust focus). Dropped the trust-specific override
+  so the trust button inherits the same neutral dark-text-on-light
+  styling as the per-company buttons. Trust focus entry is now
+  discoverable at a glance.
+
+**Open follow-ups (Phase 5 candidates):**
+
+- Per-company strip data inline in `get_focused_view` response
+  (currently fanned out client-side via parallel `frappe.call`
+  per company; works for ≤13-company trusts but a future trust
+  with many more companies should serve the data inline).
+- Configurable summary tiles backed by a doctype editor (bundled
+  with the spotlight-card editor planned for Phase 5).
+- Tile click → drill panel scoped to the tile's root subtree
+  (out of scope for v1 per spec §2 non-goals).
+- Period comparison column ("vs last quarter" / "vs last year")
+  on rows + tiles.
+- Sticky last-focus across page reloads (per-user pref).
+- "Wide" CSV export for trust focus that includes per-company
+  columns alongside the aggregated balance.
+- A composite index `(snapshot_date, company, root_type)` on
+  `tabDGV TB Snapshot Row` would eliminate the tile query's
+  temp/filesort -- not warranted at current scale, but the
+  threshold for "warranted" is somewhere; revisit after 6 months
+  of production data on a trust with 20+ companies.
+
+
+## Phase 4 — Commit 6 — Spotlight click polish + edge cases
+
+**Status:** Done -- 2026-05-10. Branch `phase-4-drills` (single
+bundled commit covering HALT 6.1 + 6.2 + 6.3 + 6.4 of the master
+commit-6 sequence).
+
+**Goal:** Harden every cockpit surface against the four classes of
+"things that look broken but aren't bugs in the data layer":
+empty-data states, in-flight loading, fetch failure, and rapid
+user-input race conditions. Plus one polish pass on card→panel
+animation. After commit 6, every click in the cockpit produces a
+deliberate visual response — skeleton during load, classified
+error tile on failure, no flashes of stale content on rapid
+re-clicks, smooth slide-in / cross-fade transitions. The cockpit
+went from "works when everything responds" to "looks intentional
+even when something goes sideways".
+
+**Deliverables:**
+- [x] `public/css/cockpit.css` -- skeleton primitives (line / row /
+  cell / tile / card / hero variants), `dgv-empty-banner` +
+  `dgv-empty-inline`, `dgv-error-tile` + 4 category variants +
+  compact mode, panel slide-in transition (300ms ease-out),
+  skeleton→content cross-fade keyframes (200ms), and a single
+  `prefers-reduced-motion: reduce` block that zeroes pulse +
+  slide + fade. ~+224 lines.
+- [x] `public/js/account_drill.js` -- `window.dgvRenderErrorTile`
+  + `window.dgvClassifyError` exposed for cross-page use; proper
+  multi-bar skeleton in `showSkeleton`; staged by-party reveal
+  with skeleton during in-flight party fetch; section-scoped
+  compact error tile for party-fetch failure; request-token
+  pattern + same-key lock for race conditions; `fadeInHost(el)`
+  helper called on every host innerHTML swap. ~+325 lines.
+- [x] `page/groupview/groupview.js` -- skeleton cards on cockpit
+  load, defensive zero-cards empty banner, focus-mode skeleton
+  tiles + rows, all-zero `Math.abs(tile) < 1` banner, classified
+  error tiles on cards / focus / per-company strip with retry
+  semantics, focusFetchToken + cardsFetchToken for race-condition
+  guarding. ~+232 lines.
+- [x] `page/gl_drill/gl_drill.js` -- 10-row skeleton in initial
+  HTML, error-tile wiring on `get_gl_entries`, malformed-scope
+  routing for missing / invalid scope URLs, `state.fetchToken`
+  guard. ~+94 lines.
+- [x] `page/party_list/party_list.js` -- 8-row skeleton in initial
+  HTML, error-tile wiring on `get_party_breakdown`, malformed-
+  scope routing, `state.fetchToken` guard, stale-card_id error
+  tile. ~+89 lines.
+- [x] `api/cards_v1.py` -- `resolve_match_to_accounts` raises
+  `frappe.DoesNotExistError` with `frappe.local.response[
+  "malformed_scope"] = True` when the predicate is missing /
+  empty (distinguishes from "predicate well-formed, matches zero
+  leaves" which stays 200 + empty list). ~+18 lines.
+- [x] `tests/test_cards_v1.py` -- new
+  `test_resolve_match_to_accounts_malformed_scope_raises` (covers
+  `match=None` and `match={}`); new
+  `test_get_spotlight_cards_zero_cards_returns_empty_array`
+  (skipped with explanatory comment -- CARDS list hard-coded to
+  6 entries, zero-cards path reachable only after Phase 5
+  cards-editor; defensive JS empty-banner branch verified at
+  HALT 6.1).
+- [x] `tests/test_account_drill.py` -- new
+  `test_get_party_breakdown_zero_parties_returns_empty_array_not_404`
+  pinning the empty-vs-missing distinction on the party-list
+  endpoint.
+- [x] Suite at 178 / 178 green (was 175 before commit 6; +3 new,
+  1 documented skip).
+
+**Spec evolution:** none. No spec round for commit 6 -- the brief
+described five well-bounded categories; halt-points were linear
+within implementation. Spec drafting would have added overhead
+without surfacing new questions.
+
+**Halt-point cadence:**
+
+- **HALT 6.1** -- Empty states + skeletons (categories 1 + 2).
+  Cockpit zero-cards banner, drill-panel zero-parties inline
+  message, focus-mode all-zero banner, GL drill / party-list
+  zero-row paths verified. Skeleton primitives + per-surface
+  skeletons for cockpit cards, drill panel, focus mode, GL drill,
+  party list. 5 surfaces, single CSS source of truth.
+- **HALT 6.2** -- Error states (category 3). 4-category classifier
+  (`network` / `permission` / `invalid` / `server`) exposed as
+  `window.dgvClassifyError` + `window.dgvRenderErrorTile`. Each
+  surface routes its `error` callback through the helper; retry
+  re-fires the same fetch. Permission-denied tile has no retry
+  button (sticky); invalid-scope tile has [Cockpit] button
+  instead.
+- **HALT 6.3** -- Race conditions + animation polish (categories
+  4 + 5). Request-token pattern for stale-callback rejection
+  (substituted for native AbortController -- see decisions
+  below). Same-key lock prevents same-card double-click duplicate
+  fetches. Panel slide bumped 220ms→300ms; skeleton→content
+  cross-fade at 200ms; both respect `prefers-reduced-motion`.
+- **HALT 6.4** -- Tests + commit prep. 3 new server-side tests
+  (1 of which is a documented skip), PHASE_LOG entry, commit
+  message draft, push.
+
+**Architectural decisions:**
+
+- **Request-token pattern instead of native `AbortController`.**
+  Frappe's `frappe.call` returns a Promise (v15+ wraps the
+  underlying jqXHR in a Promise) rather than a directly-abortable
+  XHR. Native AbortController integration would require either
+  bypassing `frappe.call` (replacing every call with raw `fetch`
+  + manual session/CSRF headers) or unwrapping Frappe's
+  promise chain. Both are mechanical but invasive across 20+
+  call sites. The token pattern (monotonic counter; callback
+  short-circuits on `myToken !== currentToken`) delivers the
+  exact user-visible behavior the brief asked for -- no flash
+  of stale content, no setState-on-unmounted-equivalent errors --
+  without that refactor. Trade-off: late-arriving HTTP responses
+  still complete on the server (small server-side waste at
+  single-user click rates; negligible). If true network-level
+  cancellation is needed in the future, the migration is
+  mechanical: replace each `frappe.call({...})` with `fetch(...,
+  {signal: controller.signal})` plus manual auth headers.
+- **Single source of truth for error classification.**
+  `window.dgvClassifyError(xhr)` and `window.dgvRenderErrorTile(
+  xhr, hostEl, retryFn, opts)` live in `account_drill.js` (which
+  is loaded via `app_include_js` so it's available everywhere).
+  Cockpit, focus mode, drill panel, GL drill page, and party-list
+  page all route through the same classifier. Adding a new error
+  category is a single edit to `classifyError`'s switch.
+- **`malformed_scope` server flag distinguishes 404 from 200 +
+  empty.** A predicate that's well-formed but matches zero
+  leaves stays a 200 + empty list (correct -- `Inter-co
+  receivable` legitimately matches zero leaves on the dev seed).
+  A predicate that's `None` / empty dict / not-a-dict is a
+  stale-deep-link case and 404s with `malformed_scope: true` so
+  gl-drill / party-list pages can show the targeted "this link
+  is no longer valid" tile + [Cockpit] button instead of a
+  generic 500.
+- **`prefers-reduced-motion` respected end-to-end.** Both
+  skeleton pulse (HALT 6.1) and panel slide-in / fade-in (HALT
+  6.3) zero their animation under
+  `@media (prefers-reduced-motion: reduce)`. Same media query
+  block in `cockpit.css` for both, so accessibility setting
+  propagates to every surface uniformly.
+- **Drill-panel by-party section is staged.** Initial skeleton
+  hides the by-party section (we don't know yet if the scope is
+  trackable). After the breakdown returns and indicates
+  trackability, the section reveals with its own 5-row skeleton
+  while the party fetch is in flight. Section-scoped errors
+  (party fetch fails after breakdown succeeds) render a
+  *compact* error tile in the by-party host alone -- hero /
+  trend / by-company stay rendered. Panel-wide errors
+  (breakdown itself fails) replace the entire body.
+
+**Bug discoveries during implementation:**
+
+- **Trust-focus per-company strip masked failures (HALT 6.3
+  carryover 1).** Pre-fix, a failed `get_focused_view` call for a
+  per-company cell silently resolved to `{ net_surplus: 0 }`,
+  rendering as `₹0.00 Cr` -- indistinguishable from a real zero.
+  Production users would see a working-looking cockpit with a
+  silent missing-data hole. Fix: each promise resolves with `ok:
+  false` on error; if any cell fails the strip swaps to a single
+  compact error tile + retry (rest of the focused view stays
+  rendered correctly from the main fetch).
+- **`resolve_match_to_accounts` silently returned empty list for
+  missing predicates (HALT 6.3 carryover 2).** Pre-fix,
+  `match=None` after JSON parse returned 200 + empty accounts.
+  A stale deep-link to a deleted card landed on the gl-drill /
+  party-list page with no scope, hit "no data returned" code
+  path, and showed a generic message. Fix: server raises
+  `frappe.DoesNotExistError` with `malformed_scope: true`; client
+  routes through the new error tile with [Cockpit] button.
+- **MutationObserver race in commit-5 carry-forward.** Already
+  fixed in commit 5 but worth noting commit 6's skeleton wiring
+  benefits from the same `#pivot-grid` observer pattern; no new
+  surface re-introduced the race.
+- **Frappe Desk scroll quirk** (already in user memory from
+  commit 5): `window.scrollTo()` is a no-op on Desk pages.
+  Commit 6's empty-banner placement at the top of focused view
+  doesn't need scroll handling because the all-zero banner
+  inserts before tiles in the existing layout flow.
+
+**Test count:** 178 / 178 green (was 175 before commit 6; +3 new).
+Breakdown: 1 in `test_cards_v1.py` (malformed_scope raise), 1
+documented skip in `test_cards_v1.py` (zero-cards path), 1 in
+`test_account_drill.py` (zero-parties trackable scope returns
+200 + empty). Browser smoke covered the full skeleton / error /
+race-condition / animation matrix at each halt point.
+
+**Cache caveat (single mention):** MCP testing required
+cache-bust gymnastics (dynamic `fetch + eval` of `account_drill.js`,
+`?bust=` query strings on `cockpit.css`) to pick up the new code
+within the same browser session. Real users get fresh assets via
+Frappe's standard asset-versioning path on next page load -- no
+intervention required.
+
+**`tabGL Entry` audit:** none of commit 6's changes introduce new
+`tabGL Entry` reads. Architecture rule preserved.
+
+**Open follow-ups (Phase 5 candidates):**
+
+- Cards-editor backed by `DGV Cockpit Settings` doctype; will
+  unblock the documented-skip `test_get_spotlight_cards_zero_
+  cards_returns_empty_array` test.
+- Migrate `frappe.call` to native `fetch + AbortController` if /
+  when true network-level cancellation becomes a measurable
+  concern (today: invisible to users at single-user click rates).
+- Tile click → drill panel scoped to the tile's root subtree
+  (carried over from commit 5).
+- Per-company strip data inline in `get_focused_view` response
+  (carried over from commit 5).
+
+
+## Phase 4 — Commit 7 — End-to-end walkthrough + bug bash
+
+**Status:** Done -- 2026-05-10. Branch `phase-4-drills` (single
+commit covering Phase A discovery walkthrough + Phase B targeted
+fixes).
+
+**Goal:** Walk the full cockpit user flow systematically, log every
+paper cut / functional gap / visual oddity uncovered, triage with
+Aditya, then land the bundled fixes in one commit. Commit 7 is
+maintenance / polish on top of the commit 4–6 feature set, not net
+new functionality.
+
+**Phase A walkthrough method:** Claude in Chrome MCP-driven
+walkthrough of all 10 scenarios from the original brief (cockpit
+landing → spotlight cards → pivot interaction → drill panel → GL
+drill → party list → focus mode → cross-page navigation → edge
+cases → cosmetic). 14 findings logged in `.claude/scratch/
+COMMIT_7_FINDINGS.md`. Scenario 10 cosmetic deferred to standalone
+fresh-eyes pass after commit 7 ships (automation can't reliably
+judge subjective polish).
+
+**Triage decisions** (Aditya, end of Phase A):
+
+- 10 findings to fix in commit 7 (F-1, F-3, F-5, F-7, F-9, F-10,
+  F-11, F-12, F-13, F-14)
+- 4 findings deferred (F-2: dev seed only has 4 of 10 trusts --
+  prod fixes; F-4: synthetic-seed noisy Cash & Bank numbers; F-6:
+  GL drill default-sort flip kept oldest-first per HALT 1
+  decision; F-8: voucher click 404 on dev because synthetic seed
+  has no real Journal Entry records -- fine in prod)
+
+**Deliverables (Phase B):**
+
+- [x] `api/cockpit.py` -- F-3 Layer 1 defensive fallback in
+  `get_spotlight_cards`. When no cache rows exist for the
+  requested snapshot_date, log a `frappe.log_error` and fall back
+  to live recomputation via the new helper
+  `_build_filtered_cards_payload` (extracted from
+  `get_spotlight_cards_filtered` so both endpoints share the same
+  per-card logic).
+- [x] `api/focus_v1.py` -- F-12 part A. `_resolve_focused_companies`
+  now sets `frappe.local.response["malformed_scope"] = True`
+  before raising `DoesNotExistError` for unknown company / trust
+  names. Routes the JS classifier to the "invalid scope" tile
+  instead of the generic "network" or "server" branch.
+- [x] `api/gl_drill_v1.py` -- F-11 fix. `get_filter_metadata`
+  response shape extended with `companies_in_scope` (explicit list
+  of permission-allowed companies). Lets the GL drill page render
+  the COMPANIES filter dropdown when the URL has no `companies=`
+  param.
+- [x] `page/groupview/groupview.js` -- F-1 (skip delta line on
+  empty cards), F-13 (guard `loadHeadline` callback against
+  un-hiding the headline when focus mode is active).
+  `renderFocusError` also dismisses any Frappe default error modal
+  via `frappe.hide_msgprint()` + manual `.modal('hide')` for F-12
+  part B.
+- [x] `page/gl_drill/gl_drill.js` -- F-5 (unify page labels to
+  "GL Entries" everywhere), F-7 (clickable party / company /
+  account names with delegated click handler routing through
+  `applyFilterChange`), F-9 (sort URL parse validation against
+  the 4 known values), F-10 (remove duplicate hero party chip --
+  the active-filter-chip row below is the spec §7.3 single source
+  of truth), F-11 (populate `state.companiesUniverse` from the
+  server's `companies_in_scope` when not seeded from URL).
+- [x] `public/js/account_drill.js` -- F-12 part A. Classifier
+  short-circuits to `invalid` if `responseJSON.malformed_scope`
+  is true, regardless of status code. Compensates for Frappe's
+  error pipeline stripping `xhr.status` to 0 on some exception
+  classes.
+- [x] `public/css/cockpit.css` -- F-7 (`.dgv-gl-filter-cell`
+  styling: subtle dotted underline + brighter on hover + focus
+  ring) and F-14 (`@media (max-width: 800px)` rules for cockpit
+  spotlight tiers: stack to 1 column at narrow widths).
+- [x] `tests/test_focus.py` -- 1 new test
+  (`test_get_focused_view_invalid_scope_sets_malformed_scope_flag`)
+  pinning F-12 part A server behaviour.
+- [x] `tests/test_cockpit.py` -- 1 new test
+  (`test_get_spotlight_cards_falls_back_when_cache_empty`)
+  pinning F-3 fallback shape.
+- [x] `tests/test_gl_drill.py` -- 2 new tests in
+  `TestGlDrillFilterMetadataCompaniesInScope` pinning F-11
+  response-shape + count invariant.
+- [x] Suite at 182 / 182 green (was 178 before commit 7;
+  +4 new, 2 documented skips carrying over).
+
+**Architectural decisions:**
+
+- **F-3 layered fix.** Layer 2 (preventative chaining) was
+  ALREADY in place via `snapshots/refresh.py::_refresh_with_spotlight`
+  -- both scheduler entries (`refresh_tb_snapshot_business_hours`
+  and `_off_hours`) call the wrapper, which runs TB refresh →
+  spotlight cache refresh in sequence with error logging on
+  spotlight failure. The dev gap that surfaced the bug was a
+  manual `bench execute refresh_tb_snapshot` (bypassing the
+  wrapper) during commit 5/6 testing. Layer 1 (defensive read-
+  side fallback) is still worth adding for resilience against
+  silent spotlight failures (caught and logged in the wrapper)
+  or future manual invocation paths. Layer 1 chosen over a
+  scheduler-coupling change because it's defensive at the read
+  path (always safe) rather than dependent on the
+  write/scheduler path (which can fail).
+- **`companies_in_scope` returned by get_filter_metadata.**
+  Considered alternatives: (1) re-call `get_scope_options` from
+  the GL drill page after boot -- adds a round-trip, requires
+  separate permission scoping; (2) parse the company list from
+  the `get_gl_entries` rows themselves -- works only when there's
+  data, fails on zero-row scopes. The chosen path (server
+  returns the resolved scope directly) is single-source-of-truth
+  and the same logic the SQL already runs.
+- **F-7 row-click filter additions use existing
+  `applyFilterChange` plumbing.** Per Aditya's triage:
+  party = single-select replace, company = multi-select toggle,
+  account = multi-select toggle. `applyFilterChange` already
+  resets pagination to page 1 and pushes URL state, so no new
+  helpers needed -- just call it with the patched state. Single
+  delegated click handler on `document` keeps the row-render
+  template clean (no inline onclick).
+- **F-12 classifier check on `responseJSON.malformed_scope`
+  regardless of status code.** Frappe's error pipeline
+  occasionally surfaces `DoesNotExistError` responses to the
+  JS-side error callback with `xhr.status = 0` (likely because
+  Frappe's default modal handler captures and re-emits the
+  response). Trusting the body flag rather than the status code
+  is more robust against Frappe-internal changes.
+
+**Findings deferred (NOT in commit 7):**
+
+| ID | Title | Reason |
+|----|-------|--------|
+| F-2 | Pivot trust list shows only 4 of 10 configured trusts | Dev seed limitation; production has 10 trusts |
+| F-4 | Cash & Bank renders -₹11,076 Cr on full-scope live recompute | Synthetic seed quirk; not a code bug |
+| F-6 | GL drill default sort = "Date (oldest first)" | Spec v0.4 deliberate decision; kept per HALT 1 |
+| F-8 | Voucher click 404s on dev (synthetic seed) | Real ERPNext production data has the voucher records |
+| (cosmetic scenario 10) | Visual polish walkthrough | Deferred to standalone fresh-eyes pass; automation can't reliably judge "feels off" |
+
+**Test count:** 182 / 182 green (was 178 before commit 7; +4 new).
+- `test_focus.py`: +1
+  (test_get_focused_view_invalid_scope_sets_malformed_scope_flag)
+- `test_cockpit.py`: +1
+  (test_get_spotlight_cards_falls_back_when_cache_empty)
+- `test_gl_drill.py`: +2 in TestGlDrillFilterMetadataCompaniesInScope
+
+**`tabGL Entry` audit:** No new `tabGL Entry` reads introduced.
+Architecture rule preserved.
+
+**Open follow-ups (Phase 5 candidates / not commit 7):**
+
+- Scenario 10 cosmetic polish walkthrough by Aditya in his own
+  browser (color consistency, hover states, focus rings,
+  empty whitespace judgments).
+- Voucher row click currently goes to `/app/<voucher-type>/<voucher_no>`
+  which works in production but 404s on dev synthetic seed.
+  Consider a "voucher resolver" middleware that pre-checks
+  existence and shows a friendly message on miss -- not worth
+  the complexity today.
+- Auditing all server endpoints for the `malformed_scope` flag
+  pattern: `cards_v1`, `focus_v1` set it; `gl_drill_v1`,
+  `party_drill_v1`, `account_drill_v1` may have similar
+  stale-scope cases that would benefit from the same treatment.
+
+
+## Phase 4 commit 9 — Performance verification at 5M-row scale
+
+**Branch:** `phase-4-drills` (continuing).
+**Spec:** `specs/phase-4-commit-4-gl-drill.md` revised v0.6 → v0.7
+→ v0.8 → **v0.9** under measurement pressure (see iteration history
+below).
+**Goal:** measure every Phase 4 endpoint at production scale (5M+ GL
+entries, 65 companies), capture EXPLAIN baselines, fix anything that
+fails the spec §10 targets.
+
+### Setup at production scale
+
+| Stage | Outcome |
+|---|---|
+| Branch reset of `claude/nice-satoshi-dfdfcf` to `origin/phase-4-drills` | `7a48841` (commit 7) |
+| Full RGI seed via `seed_rgi_named_data()` (all 10 trusts) | 5,015,000 RGI GL rows + 5 Test Co + Dux residuals = **5,070,740 total**, 65 cos; **17.1 min** |
+| Dev deploy of `phase-4-drills` (was on `main`); `bench migrate` | **139 sec total**; CREATE INDEX patches all pre-existed from earlier deploy. **No fresh CREATE INDEX timing pinned**: Phase 3's 45 sec for `dgv_snapshot_aggregation` on the same table at the same scale is the canonical reference; expect composite CREATE INDEX on `tabGL Entry` @ 5M ≈ 1 minute. |
+| TB snapshot refresh @ 5M | 5,440 rows, **59.156 sec** — right at the spec's <60 sec line. |
+| Spotlight cache refresh | 6 cards, **0.188 sec**. |
+
+### Phase A baseline (uncapped harness, before Phase B fixes)
+
+42-cell harness — 14 endpoints × 3 scope variants (small/medium/large)
+× 100 iters (20 for CSV exports). Results in
+`.claude/tmp/commit_9_perf_baseline.json` (uncommitted, ephemeral).
+
+12 of 14 endpoints passed spec §10. The two failures:
+
+| Endpoint | small p95 | medium p95 | large p95 | Spec | Status |
+|---|---:|---:|---:|---|---|
+| `get_gl_entries` | 19 ms | **30 766 ms** | **316 565 ms** | <500 ms | ✗ 62×/633× over |
+| `get_filter_metadata` | 11 ms | **10 926 ms** | **101 956 ms** | <500 ms (implied) | ✗ 21×/204× over |
+
+All other 12 endpoints under spec: `get_pivot_data` p95 large 43 ms
+(target <2 s, **47× under**), `get_focused_view` trust p95 9 ms (target
+<600 ms), account/party drills all <200 ms, exports all under their
+respective sub-second / few-second caps.
+
+### EXPLAIN diagnosis — what went wrong
+
+EXPLAIN of `get_gl_entries` at large scope showed MariaDB picking the
+single-column `posting_date` BTREE (scanning ~2.6M rows) instead of
+the Phase 4 commit 2 `dgv_party_drill` composite index. Smoking gun:
+the optimizer's cost model flips index choice when the `account IN
+(...)` list grows beyond a few dozen values.
+
+**ANALYZE TABLE diagnostic** (run during Phase A): the wrong index
+choice persists post-ANALYZE — this is a cost-model issue, not stale
+statistics. `dgv_party_drill` correctly chosen for small IN-lists
+(5 leaves → `type=ref, rows=69`); flips to `posting_date` for large
+IN-lists (>~50 leaves).
+
+### Phase B — three iterations under perf pressure
+
+The running-balance design + the gl-drill scoping went through three
+fix attempts, each measurement-driven:
+
+**Iteration 1 — spec v0.7: restore PARTITION BY (company, account)
+on the window function.** Hypothesis: the v0.5 scope-wide accumulator
+required a global sort of the entire filter set before LIMIT could
+short-circuit, dominating wall time. Restoring partitioning would let
+MariaDB stream-process per partition. Tested with `FORCE INDEX
+(dgv_party_drill)` added. **Result: 30.6 sec at medium — worse than
+the 10.6 sec measured with FORCE INDEX alone.** Hypothesis wrong;
+PARTITION BY introduced a second sort (per-partition + outer global)
+where the unpartitioned shape could share one sort with the LIMIT.
+
+**Iteration 2 — spec v0.8: conditional running_balance.** New
+hypothesis: the window function is the bottleneck regardless of
+PARTITION BY. Branch the SQL — single-leaf scope keeps the window
+(meaningful running balance, fast at 1 partition); multi-leaf drops
+the window entirely (plain SELECT, no running_balance). UI suppresses
+the column when absent. **Result: 30 sec at medium — also no help.**
+Isolation diagnostic showed why: `_count_entries` (9.5 s), `_voucher_
+types_in_scope` (10 s), and the paginated SELECT (10 s) each have to
+fetch the row data for the 87,309 matching rows in scope (every leaf
+account in "Current Assets" across 16 cos averages ~780 rows). The
+window function was **never** the bottleneck; row materialisation cost
+is. No SQL-level fix can help — the data volume is the cost.
+
+**Iteration 3 — spec v0.9: per-company by design.** Aditya proposed
+the reframing during the Phase B halt: GL drill is per-company by
+design, like Tally / ERPNext stock ledger / audit-review tools.
+Multi-company GL drill isn't a natural accounting workflow — the
+drill panel summary already shows cross-company aggregates; the GL
+drill page is for entity-level transactional detail. With this
+constraint, row count is bounded by construction (one company's
+slice typically <10K rows); the windowed query becomes fast; the
+running balance becomes semantically meaningful again (one company's
+account ledger). v0.5's "scope-wide accumulator" was an aesthetic
+call that broke the model under data volume.
+
+### Phase B v0.9 — implementation
+
+**Spec:** [phase-4-commit-4-gl-drill.md](specs/phase-4-commit-4-gl-drill.md)
+revised v0.8 → v0.9. Spec amendments committed standalone:
+- `e3f2de9` v0.7 (PARTITION BY restore — superseded)
+- `0b16317` v0.8 (conditional running_balance — superseded)
+- `39ee745` v0.9 (per-company reframing — shipped)
+
+**Server (`api/gl_drill_v1.py`):**
+- `_check_single_company(allowed)` helper raises ValidationError
+  when the resolved permission-allowed set has >1 company. Message
+  is verbatim `"GL drill is per-company. Use Focus mode for
+  company-wide views."` and the response carries
+  `scope_multi_company=True` + `scope_multi_company_message` +
+  `scope_companies` for the client error-tile classifier.
+- Applied at three entry points: `get_gl_entries`,
+  `export_gl_entries_csv`, `get_filter_metadata`.
+- `_fetch_windowed_page` restored to always-windowed with `PARTITION
+  BY (company, account)` (v0.5 reverted, v0.7's restore retained).
+  Outer ORDER BY shared with the window's `(posting_date, name)`
+  ordering — one sort.
+- `FORCE INDEX (dgv_party_drill)` retained as safety hint on the four
+  `tabGL Entry`-touching queries. Non-load-bearing under the per-
+  company constraint but cheap to keep.
+- `_row_to_entry` always includes `running_balance` (v0.8 conditional
+  omission reverted).
+- `_build_gl_csv` always includes the Running Balance column.
+- `_voucher_types_in_scope` reverted to v0.7 always-JOIN shape;
+  `LIMIT 1000` retained as a safety guard on the DISTINCT result.
+- `MAX_LEAVES_HARD_CAP` and `_check_leaves_cap` removed.
+
+**Client (`public/js/account_drill.js`, `page/gl_drill/gl_drill.js`,
+`public/css/cockpit.css`):**
+- New company picker modal: `openCompanyPickerForGlDrill(companies,
+  onPick)`. Presented in `stubGlDrill` when `args.companies.length > 1`
+  before navigating to `/app/gl-drill`. Vanilla DOM modal, no Frappe
+  Dialog dependency, reuses cockpit color tokens. Keyboard: Esc
+  closes, Enter picks (first visible row when focused on search),
+  ArrowUp/Down navigate between search input and rows. Includes a
+  live-filter search input (autofocused on open) — type-ahead filters
+  the row list by case-insensitive substring; empty-state message
+  shown when no match.
+- Classifier `scope-multi-company` category added to `dgvClassifyError`
+  with verbatim server message + "Open Cockpit" action.
+- `filter_metadata` fetch silences popups on `scope_multi_company` /
+  `malformed_scope` (main fetch's tile is the user-actionable surface).
+- v0.8's `dgv-gl-scope-note` removed.
+- v0.8's conditional column rendering in `renderTable` removed.
+
+### Phase B v0.9 — measured results (5M scale)
+
+42-cell harness re-run after v0.9 deploy:
+
+| Endpoint × scope | p95 (post-fix) | Spec | Status |
+|---|---:|---:|---|
+| `get_gl_entries` small (1 leaf, 1 co) | **25 ms** | <500 ms | ✓ 20× under |
+| `get_gl_entries` medium (subtree, 1 co) | **65 ms** | <500 ms | ✓ 7.7× under |
+| `get_gl_entries` large (multi-co) | ValidationError | — | ✓ by design |
+| `get_filter_metadata` small | **8 ms** | <500 ms | ✓ |
+| `get_filter_metadata` medium | **17 ms** | <500 ms | ✓ |
+| `get_filter_metadata` large | ValidationError | — | ✓ by design |
+| `export_gl_entries_csv` small | **46 ms** | <10 s | ✓ |
+| `export_gl_entries_csv` medium | **96 ms** | <10 s | ✓ |
+| `export_gl_entries_csv` large | ValidationError | — | ✓ by design |
+| All 11 other endpoints | unchanged | unchanged | ✓ no regression |
+
+Total harness wall: **69.5 sec** (from 633 sec on Phase A baseline).
+
+### Operational notes for Phase 9 / future ops
+
+- **CREATE INDEX timing on `tabGL Entry` @ 5M not freshly captured.**
+  All four `dgv_*` indexes pre-existed from prior Phase 4 deploys, so
+  the migrate's CREATE INDEX path didn't fire. Phase 3's covering-
+  index CREATE at 45 sec on `tabGL Entry` @ 5M is the canonical
+  reference. Operational expectation: composite index CREATE on
+  `tabGL Entry` @ 5M ≈ 1 minute.
+- **TB snapshot refresh @ 5M = 59.156 sec** — single sample on KVM 4.
+  At the <60 sec spec line. Future ops should monitor; consider a
+  perf alert if a scheduled refresh runs over 75 sec.
+
+### Test changes
+
+- `test_gl_drill.py` — multi-company tests adapted to single-company:
+  `companies=self.state["companies"]` → `companies=[self._A()]`;
+  `accounts=self._payable_leaves()` (all cos) →
+  `accounts=self._payable_leaves(self._A())` (one co);
+  similar for `_all_fixture_leaves()` via new
+  `_all_fixture_leaves_for(company)` helper. Numeric assertions for
+  filter / pagination tests updated (3 single-co rows instead of
+  6 multi-co rows). 26 tests in module, all green.
+- New tests in `TestGlDrillPerCompanyAssertion`:
+  - `test_get_gl_entries_raises_for_multi_company` — pins the
+    ValidationError + response side-channel flags.
+  - `test_get_gl_entries_single_company_returns_running_balance` —
+    inverse of the above; confirms `running_balance` always present
+    when scope is single-company.
+  - `test_export_gl_entries_csv_raises_for_multi_company`.
+  - `test_get_filter_metadata_raises_for_multi_company`.
+- The original `test_get_gl_entries_running_balance_continuous_across_partitions`
+  (v0.5 scope-wide accumulator) renamed to
+  `test_get_gl_entries_running_balance_resets_per_account_v09` and
+  rewritten to verify per-partition behavior on a single-company,
+  single-leaf scope.
+
+### Files changed in this commit (beyond the three standalone spec commits)
+
+- `dux_groupview/dux_groupview/api/gl_drill_v1.py` — server changes
+- `dux_groupview/public/js/account_drill.js` — classifier + picker modal
+- `dux_groupview/dux_groupview/page/gl_drill/gl_drill.js` — filter-fetch popup silence
+- `dux_groupview/public/css/cockpit.css` — picker modal styles
+- `dux_groupview/dux_groupview/tests/test_gl_drill.py` — single-co adaptation + new tests
+- `PHASE_LOG.md` — this entry
+
+### Honest narrative
+
+The first three iterations addressed query structure. The fourth
+addressed user-flow. Phase A measurement at 5M scale was the
+discipline that surfaced the issue — without it we'd have shipped
+30-second loads to production. The right answer ("GL drill is
+per-company") was always there in conventional accounting tools but
+we didn't see it because the original v0.4 design didn't constrain
+entry to single-company scopes. Worth recording: spec iterations
+under perf pressure are not failure, they're how the design finds
+the actual user-flow.
+
+
+## Phase 4 commit 10 — Multi-company popup suppression + Phase 4 close
+
+**Branch:** `phase-4-drills` (continuing to PR review for merge to `main`).
+**Spec:** no further amendments; v0.9 stands.
+
+Commit 10 ships a small, targeted server fix and consolidates Phase 4
+into a closing summary in this PHASE_LOG.
+
+### Bug B — Frappe `_server_messages` popup fires alongside the targeted error tile
+
+Surfaced during commit 10's pre-commit browser smoke (see
+`.claude/scratch/COMMIT_10_SMOKE.md` -- ephemeral, not tracked).
+When a user lands on `/app/gl-drill?...&companies=co1,co2` (direct URL
+with multi-company scope), the server raises `frappe.throw(...)` from
+`_check_single_company`. Frappe's default error handler then renders
+a generic popup ("Message: GL drill is per-company...") on top of the
+client-side targeted error tile, producing visible double-error UX.
+
+**Fix:** `_check_single_company` clears `frappe.local.response[
+"_server_messages"] = json.dumps([])` after setting the
+`scope_multi_company` side-channel flags. Frappe's popup-rendering
+code checks `len(json.loads(_server_messages))` before showing the
+popup -- empty array suppresses it without breaking the rest of the
+error response shape.
+
+Scoped suppression: this clear only fires inside `_check_single_company`.
+Other `frappe.throw()` calls in `gl_drill_v1.py` (CSV-too-large,
+malformed scope, etc.) retain default popup behavior.
+
+**User-facing message text tweaked** alongside this fix: was "GL
+drill is per-company. Use Focus mode for company-wide views." which
+implied the user should switch to Focus mode (which doesn't solve
+multi-company GL drill -- the answer is the picker). Now reads "GL
+drill is per-company. Open from the cockpit drill panel and use the
+company picker." Matching update in `account_drill.js`'s
+`renderErrorTile` fallback case.
+
+**Exception text** also separated from the user-facing text. The
+exception's `_(...)` argument is "GL drill requires a single company
+in scope." (terse, log-friendly); the user-facing text lives in
+`scope_multi_company_message` and is what the client tile renders.
+
+### Test
+
+- `test_get_gl_entries_multi_company_clears_server_messages` in
+  `TestGlDrillPerCompanyAssertion`. Asserts that after a multi-company
+  `get_gl_entries` raises, `frappe.local.response["_server_messages"]`
+  parses to an empty list (`json.loads("[]") == []`).
+- Existing `test_*_raises_for_multi_company` updated to assert the
+  new exception text ("GL drill requires a single company").
+- Full test_gl_drill module: **27 tests OK** (was 26 + 1 new).
+
+### Files changed in commit 10
+
+- `dux_groupview/dux_groupview/api/gl_drill_v1.py` -- `_check_single_company`
+  updated (`_server_messages` clear + new message text + terse
+  exception). `PER_COMPANY_ERROR_MESSAGE` constant text updated.
+- `dux_groupview/public/js/account_drill.js` -- `renderErrorTile`
+  fallback text updated to match.
+- `dux_groupview/dux_groupview/tests/test_gl_drill.py` -- new test +
+  updated existing test assertions.
+- `PHASE_LOG.md` -- this entry + Phase 4 Summary below.
+
+**Trailer convention:** simple form (`Claude <noreply@anthropic.com>`)
+restored after drift to extended form in commits 9 and 9-follow-up.
+Forward commits use simple form.
+
+
+# Phase 4 Summary
+
+## What shipped
+
+The cockpit supports the full account-drill flow at production scale
+(5M+ GL entries, 65 companies on the RGI seed):
+
+- **Drill into account aggregates** -- click a pivot cell or a
+  spotlight card to open the drill panel. Panel shows group total,
+  12-month trend, by-company breakdown, and (for party-trackable
+  accounts) top parties.
+- **Per-company GL transaction views** -- click "View GL entries"
+  from the drill panel; for multi-company scopes, a company picker
+  modal asks which company first. GL drill page shows paginated
+  ledger with running balance per `(company, account)` partition,
+  group divider chips, sort options, and HALT 2.5 filters
+  (account_names, date range, voucher types).
+- **CSV exports** for every drill surface (account breakdown,
+  party list, GL entries, focused view). Raw decimals + ISO dates
+  for spreadsheet locale compatibility; 50K-row cap on the GL drill
+  export with helpful "scope too large" error.
+- **Focus mode** -- per-company or per-trust focused vertical view
+  with summary tiles + account-hierarchy listing. Replaces the
+  pivot grid; "Back to cockpit" returns with prior state restored.
+
+## Architectural decisions
+
+1. **Snapshot-only reads** for cockpit + focus mode; drill APIs
+   (account_drill_v1, party_drill_v1, gl_drill_v1) read `tabGL Entry`
+   directly under the CLAUDE.md commit 1 amendment for `_drill`-suffixed
+   APIs. Covering indexes ensure perf: `dgv_pivot`, `dgv_account_drill`,
+   `dgv_company_drill` on snapshot row; `dgv_snapshot_aggregation`,
+   `dgv_party_drill` on `tabGL Entry`.
+
+2. **GL drill is per-company by design** (spec v0.9) -- matches
+   conventional accounting workflow scoping (Tally, ERPNext stock
+   ledger, audit-review tools). Bounds row count by construction;
+   single-company scopes resolve to <10K rows even at production
+   scale. Multi-company entry paths get a picker modal first.
+
+3. **Sign convention** `FLIP_ROOT_TYPES = ('Liability', 'Equity',
+   'Income')` applied in SQL `CASE` expressions throughout the
+   drill APIs. Single source of truth in `api/utils.py`, pinned by
+   sign-convention parity tests.
+
+4. **Single source of truth for client error classification**
+   (`dgvClassifyError` + `dgvRenderErrorTile` in
+   `public/js/account_drill.js`). Every page (cockpit, focus, GL
+   drill, party list) routes its `error:` callbacks through the
+   same helper. Adding a new category is a single switch entry.
+
+5. **`malformed_scope` response flag** distinguishes 404 from 200+
+   empty. Server endpoints set
+   `frappe.local.response["malformed_scope"] = True` for unrecognised
+   scope IDs; the client routes those through the invalid-scope tile
+   with a "Cockpit" action button (instead of a generic 500 or
+   wall-of-text).
+
+6. **Request-token pattern** for race-condition handling. Sort /
+   page-size / pager re-entries fire fresh fetches; stale responses
+   get dropped on token mismatch. Implemented uniformly across
+   gl_drill, party_list, drill panel.
+
+7. **CSV cells contain raw decimals** (e.g. `"500000.00"`, not
+   `"5,00,000.00"`). Indian-grouped pre-formatting would force visual
+   interpretation onto every CSV consumer and break sum/filter/pivot
+   in spreadsheet apps. Locale formatting happens on import.
+
+## Performance verification (5M-row scale)
+
+All 14 measured endpoints meet spec §10 targets at production scale.
+Canonical baseline JSON: [docs/perf/commit_9_baseline_5M.json](
+docs/perf/commit_9_baseline_5M.json). Re-runnable harness:
+[docs/perf/perf_harness.py](docs/perf/perf_harness.py).
+
+Notable p95 numbers (5M rows, 65 cos, KVM 4):
+
+| Endpoint × scope | p95 | Spec |
+|---|---:|---:|
+| `get_pivot_data` large (all cos) | 43 ms | <2 s |
+| `get_spotlight_cards` large | 0.2 ms | <400 ms |
+| `get_account_breakdown` large | 169 ms | <600 ms |
+| `get_party_breakdown[page]` large | 175 ms | <500 ms |
+| `get_gl_entries` medium (single trust × subtree, 1 co) | 65 ms | <500 ms |
+| `get_filter_metadata` medium (1 co) | 17 ms | <500 ms |
+| `get_focused_view` trust (multi-co) | 9 ms | <600 ms |
+| `export_gl_entries_csv` medium | 96 ms | <10 s |
+
+TB snapshot refresh at 5M: **59.156 s** (right at the <60 s line).
+Watch in ops; consider alerting if a scheduled refresh runs over 75 s.
+
+## Deferred to Phase 5
+
+- **Multi-company cross-scope GL drill** as a separate page or
+  feature flag, if real users request it (per v0.9 reframing,
+  this isn't a natural accounting workflow). Drill panel summary
+  already shows cross-company aggregates; one extra click to pick
+  a company before viewing transactions is low-friction.
+- **Cards editor** -- `FEATURE_REQUESTS.md` captured the RGI Interest
+  Paid card request. Plus the broader Phase 5 cards editor work
+  (configurable spotlight cards).
+- **Cosmetic walkthrough** (scenario 10 from commit 7 -- color
+  consistency, hover states, focus rings, empty-whitespace
+  judgments). Aditya's own browser pass.
+- **Configurable tiles** for focused view (currently fixed 5 tiles:
+  Assets / Liabilities / Income / Expenses / Net Surplus).
+- **Student debtor balances** -- waiting on Phase 1 migration
+  completion (separate from this app's scope but blocks one of the
+  RGI use cases).
+
+## Operational notes
+
+- **TB snapshot refresh at 60 s on 5M scale** -- right at the spec
+  line. Watch beyond 75 s as a slowdown signal.
+- **`focus_v1.summary_tiles` trips EXPLAIN §9.2 strict criterion**
+  at the 172-row scale (benign at 9 ms p95). Known divergence,
+  cost << value of fix, accepted. PHASE_LOG commit 9 entry has the
+  full diagnosis.
+- **Composite index CREATE on `tabGL Entry` @ 5M** ≈ 1 minute.
+  Phase 3 covering-index CREATE pinned at 45 s on the same table
+  at the same scale.
+- **Caddy serves `dux_groupview` assets without Cache-Control**;
+  Chrome heuristic-caches. Hard-reload usually busts; fresh
+  incognito always shows the latest deploy. Not a blocker (verified
+  during commit 10 smoke).
+- **Static-file deploys** (`scp` + `SIGHUP gunicorn`) reach users
+  on next page-load -- no `bench build` required for `public/js`
+  or `public/css` assets.
+
+## Test count at Phase 4 close
+
+**187 tests in `dux_groupview`** (target 182 + 5 added in commits 9
+and 10 = 187 hit exactly). All green at the time of this writing.
+
+## How to operate the system
+
+- **Refresh the TB snapshot on demand:** `bench --site <site> execute
+  dux_groupview.dux_groupview.snapshots.refresh._refresh_with_spotlight`
+- **Refresh the perf baseline:** copy `docs/perf/perf_harness.py` to
+  the dev's `apps/dux_groupview/dux_groupview/dux_groupview/test_data/`,
+  run via `bench execute`, save the JSON output back to `docs/perf/`.
+- **Deploy a static-file change:** `scp` the file + `kill -HUP
+  $(pgrep -of 'gunicorn -b')`. Hard-refresh in browser (or use
+  incognito) on first check.
+- **Run the test suite:** `bench --site <site> run-tests --app
+  dux_groupview`. Full suite ≈ 32 min on KVM 4.
