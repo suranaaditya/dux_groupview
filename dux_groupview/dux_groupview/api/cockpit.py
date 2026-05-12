@@ -411,12 +411,14 @@ def _format_delta(delta, fmt):
 
 # Friendly card names for headline copy. Keys must match cards.py ids.
 HEADLINE_CARD_NAMES = {
-	"sundry_creditors":     "Sundry creditors",
-	"sundry_debtors":       "Sundry debtors",
-	"unsecured_loans":      "Unsecured loans",
-	"cash_and_bank":        "Cash position",
-	"inter_co_receivable":  "Inter-company receivables",
-	"fixed_deposits":       "Fixed deposits",
+	"sundry_creditors":       "Sundry creditors",
+	"sundry_debtors":         "Sundry debtors",
+	"unsecured_loans":        "Unsecured loans",
+	"cash_and_bank":          "Cash position",
+	"inter_co_receivable":    "Inter-company receivables",
+	"fixed_deposits":         "Fixed deposits",
+	"financial_exp_to_bank":  "Bank finance costs",
+	"financial_exp_to_other": "Other finance costs",
 }
 
 # Significance threshold for inclusion in the headline.

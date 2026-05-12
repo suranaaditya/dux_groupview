@@ -94,6 +94,32 @@ CARDS = [
 		"format": "crore",
 		"color": "#534AB7",
 	},
+	{
+		"id": "financial_exp_to_bank",
+		"label": "Financial Exp — Bank",
+		"match": {
+			"by_root_type_and_name_pattern": {
+				"root_type": "Expense",
+				"name_pattern": "%Financial Exp To Bank%",
+			},
+		},
+		"polarity": "bad_up",
+		"format": "crore",
+		"color": "#A33B3B",
+	},
+	{
+		"id": "financial_exp_to_other",
+		"label": "Financial Exp — Other",
+		"match": {
+			"by_root_type_and_name_pattern": {
+				"root_type": "Expense",
+				"name_pattern": "%Financial Exp To Other%",
+			},
+		},
+		"polarity": "bad_up",
+		"format": "crore",
+		"color": "#C46A1F",
+	},
 ]
 
 
