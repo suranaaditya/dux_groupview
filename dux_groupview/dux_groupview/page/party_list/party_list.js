@@ -492,16 +492,35 @@ frappe.pages['party-list'].on_page_load = function(wrapper) {
 			row.addEventListener('click', function () {
 				const party = row.getAttribute('data-party');
 				const ptype = row.getAttribute('data-party-type');
-				const coCount = parseInt(
-					row.getAttribute('data-company-count') || '1', 10);
 				if (!party || !ptype) return;
 
-				// Spec v0.9: GL drill is per-company. If the row's
-				// party spans multiple companies under the current
-				// scope, ask the user which company to view before
-				// navigating -- mirrors the picker pattern from the
-				// cockpit drill-panel "View GL entries" path.
-				if (coCount > 1 && window.dgvOpenCompanyPickerForGlDrill) {
+				// Spec v0.9: GL drill is per-company. Two cases:
+				//   - Party in 1 company under the current scope:
+				//     navigate directly to GL drill with that single
+				//     company in the URL.
+				//   - Party in >1 companies: open the picker so the
+				//     user picks one before navigating.
+				//
+				// The row carries `data-company-count` but NOT the
+				// company name(s), so even the single-co case needs a
+				// server fetch to learn which company. Both paths
+				// route through `openPickerForParty` → `get_party_
+				// company_breakdown`; `openPickerWithCompanies`'s
+				// defensive check at the join point auto-navigates
+				// when the resolved company list has length ≤ 1 (no
+				// picker rendered). Multi-co goes through the picker.
+				//
+				// Cost vs the original direct-nav was one extra ~100ms
+				// roundtrip on single-co clicks; the prior path
+				// stripped the company from the URL (state.companies
+				// is empty on a scope-less party-list landing) which
+				// tripped the server-side per-company assertion.
+				//
+				// `window.dgvOpenCompanyPickerForGlDrill` gate is a
+				// defensive check against older cached `account_drill.js`
+				// that doesn't expose the helper; falls back to
+				// (broken) direct nav rather than failing silently.
+				if (window.dgvOpenCompanyPickerForGlDrill) {
 					openPickerForParty(party, ptype);
 					return;
 				}
