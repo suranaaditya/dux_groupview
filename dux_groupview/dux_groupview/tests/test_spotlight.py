@@ -59,10 +59,10 @@ class TestSpotlightCache(FrappeTestCase):
 		frappe.db.commit()
 
 	# ------------------------------------------------------------------
-	# 1 -- six rows created
+	# 1 -- one row per card
 	# ------------------------------------------------------------------
 
-	def test_refresh_spotlight_cache_creates_six_rows(self):
+	def test_refresh_spotlight_cache_creates_one_row_per_card(self):
 		refresh_spotlight_cache()
 		rows = frappe.db.sql(
 			"""
@@ -73,7 +73,7 @@ class TestSpotlightCache(FrappeTestCase):
 			(getdate(today()),),
 			as_dict=True,
 		)
-		self.assertEqual(len(rows), 6)
+		self.assertEqual(len(rows), len(CARDS))
 		ids = sorted(r["card_id"] for r in rows)
 		self.assertEqual(ids, sorted(c["id"] for c in CARDS))
 		for r in rows:
@@ -105,7 +105,7 @@ class TestSpotlightCache(FrappeTestCase):
 		}
 		# Same set of rows (no duplicates).
 		self.assertEqual(set(first.keys()), set(second.keys()))
-		self.assertEqual(len(second), 6)
+		self.assertEqual(len(second), len(CARDS))
 		# Each row was actually re-run (computed_at advanced).
 		for name in first:
 			self.assertGreater(second[name], first[name])

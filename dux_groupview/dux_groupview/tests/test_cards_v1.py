@@ -135,9 +135,10 @@ class TestResolveMatchToAccounts(FrappeTestCase):
 		groupview.js's renderCards but isn't reachable from the
 		existing endpoints today.
 
-		The CARDS constant in spotlight/cards.py is hard-coded to 6
-		entries; `get_spotlight_cards` always returns 6 cards (with
-		zero values when the predicate matches nothing in scope).
+		The CARDS constant in spotlight/cards.py is the source of
+		truth for built-in cards; `get_spotlight_cards` always
+		returns one entry per built-in card (with zero values when
+		the predicate matches nothing in scope).
 
 		Once Phase 5's cards-editor ships, this test should exercise
 		the actual zero-cards path (e.g. user disables all cards for
@@ -147,7 +148,7 @@ class TestResolveMatchToAccounts(FrappeTestCase):
 		(commit-6 HALT 6.1).
 		"""
 		self.skipTest(
-			"CARDS list hard-coded to 6 entries; zero-cards path "
+			"CARDS list is hard-coded; zero-cards path "
 			"reachable only after Phase 5 cards-editor. Defensive "
 			"JS empty-banner branch verified at HALT 6.1."
 		)

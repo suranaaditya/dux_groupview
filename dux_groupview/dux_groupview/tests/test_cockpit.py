@@ -293,12 +293,13 @@ class TestSpotlightCacheEmptyFallback(FrappeTestCase):
 			(self.test_date,),
 		)
 		frappe.db.commit()
-		# Endpoint should not raise; should return the 6-card list
+		# Endpoint should not raise; should return one entry per card
 		# in the same shape as the cached path. Values may be zero
 		# (no snapshot rows for that date on dev) -- what we're
 		# testing is the SHAPE, not the magnitude.
+		from dux_groupview.dux_groupview.spotlight.cards import CARDS
 		out = cockpit.get_spotlight_cards(self.test_date)
-		self.assertEqual(len(out), 6)
+		self.assertEqual(len(out), len(CARDS))
 		for card in out:
 			self.assertIn("card_id", card)
 			self.assertIn("value", card)
