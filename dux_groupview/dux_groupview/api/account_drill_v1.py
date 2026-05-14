@@ -162,6 +162,233 @@ def get_account_breakdown(scope=None, accounts=None, scope_label=None,
 
 
 # ---------------------------------------------------------------------------
+# Per-company per-account breakdown  (per spec/per-account-drill-expand.md)
+# ---------------------------------------------------------------------------
+
+# Cap per-company per-account rows. Mirrors the party-list cap so the
+# panel's two lazy-fetch boundaries share an order-of-magnitude. When
+# the query returns more than this, `truncated=True` and the response
+# carries the true `total_accounts`; the CSV export is the escape
+# hatch for the full list.
+PER_COMPANY_ACCOUNT_CAP = 200
+
+
+@frappe.whitelist()
+def get_account_breakdown_for_company(scope=None, accounts=None,
+                                       scope_label=None, company=None,
+                                       as_of_date=None):
+	"""Per-account breakdown within one company for a card / pivot scope.
+
+	Output shape (per spec §5.2):
+
+	    {
+	      "company": str,
+	      "scope_label": str,
+	      "as_of_date": "YYYY-MM-DD",
+	      "company_total": float,           # natural-side, sign-flipped
+	      "accounts": [
+	        {"account": str,                # full FK ("Sundry Cr - GHRCE")
+	         "account_name": str,           # stripped ("Sundry Cr")
+	         "balance": float,
+	         "currency": str},
+	        ...
+	      ],
+	      "total_accounts": int,            # count BEFORE truncation
+	      "truncated": bool,
+	    }
+
+	Cap: at most `PER_COMPANY_ACCOUNT_CAP` (200) accounts in `accounts`.
+	When the underlying query returns more, `truncated` is True and a
+	second SQL pass populates the true `total_accounts` and
+	`company_total` over the full set.
+
+	Sort: `abs(balance) DESC, account_name ASC`.
+
+	Two entry shapes mirror `get_account_breakdown`:
+	  - `scope`:    ScopeSpec dict, resolved server-side via
+	                `_resolve_scope_to_leaves(scope, [company])`.
+	  - `accounts`: pre-resolved leaf list. `scope_label` required.
+
+	Permission: `company` must be in the user's User-Permission-allowed
+	companies; otherwise `PermissionError`. A missing `company` or
+	missing-both-of-scope-and-accounts sets
+	`frappe.local.response["malformed_scope"]` and raises
+	`DoesNotExistError` -- matches the cards_v1 stale-deep-link pattern
+	so the panel's invalid-scope tile renders consistently.
+	"""
+	from dux_groupview.dux_groupview.api.pivot import (
+		_require_cockpit_role,
+		_resolve_scope,
+	)
+
+	_require_cockpit_role()
+
+	scope = _ensure_dict(scope)
+	accounts = _ensure_list(accounts)
+
+	# --- Malformed-scope checks (stale-deep-link path) ---
+	if not isinstance(company, str) or not company.strip():
+		frappe.local.response["malformed_scope"] = True
+		frappe.throw(
+			_("`company` is required."),
+			frappe.DoesNotExistError,
+		)
+	company = company.strip()
+
+	if scope is None and accounts is None:
+		frappe.local.response["malformed_scope"] = True
+		frappe.throw(
+			_("Either `scope` or `accounts` must be provided."),
+			frappe.DoesNotExistError,
+		)
+
+	# --- Permission check on the requested company ---
+	allowed = _resolve_scope(None)
+	if company not in allowed:
+		frappe.throw(
+			_("You do not have permission to view company '{0}'.").format(company),
+			frappe.PermissionError,
+		)
+
+	target_date = getdate(as_of_date) if as_of_date else getdate(today())
+
+	# --- Resolve leaves + label, scoped to this one company ---
+	# Passing `[company]` (rather than the full allowed list) keeps
+	# subtree walks tight: only this company's tree is walked, fewer
+	# leaves flow into the SQL IN-clause. For "account" / "name_pattern"
+	# scopes the leaf set is unchanged; for "subtree" it is narrower.
+	if accounts is not None:
+		if not scope_label:
+			frappe.throw(_("scope_label is required when accounts is provided"))
+		leaves = [a for a in accounts if isinstance(a, str)]
+	else:
+		if not isinstance(scope, dict):
+			frappe.throw(_("scope or accounts is required"))
+		leaves, default_label = _resolve_scope_to_leaves(scope, [company])
+		if not scope_label:
+			scope_label = default_label
+
+	snap_date = _latest_snapshot_le(target_date)
+
+	# Defensive empty: no leaves resolved or no snapshot at/before
+	# target. Both legitimate runtime cases (e.g. predicate matches
+	# nothing in this company, or pre-Phase-1 historical date).
+	if not leaves or snap_date is None:
+		return {
+			"company": company,
+			"scope_label": scope_label or "",
+			"as_of_date": str(snap_date) if snap_date else str(target_date),
+			"company_total": 0.0,
+			"accounts": [],
+			"total_accounts": 0,
+			"truncated": False,
+		}
+
+	# --- Per-account aggregation ---
+	# LIMIT cap+1: fetch one extra row to detect truncation in a single
+	# round-trip (cheaper than a separate COUNT(*) for the common
+	# untruncated case).
+	a_ph, a_params = _named_in("a", leaves)
+	f_ph, f_params = _named_in("f", FLIP_ROOT_TYPES)
+
+	rows = frappe.db.sql(
+		f"""
+		SELECT
+		  s.account,
+		  a.account_name,
+		  COALESCE(SUM(
+		    CASE WHEN a.root_type IN ({f_ph})
+		         THEN -s.balance
+		         ELSE s.balance
+		    END
+		  ), 0) AS balance,
+		  COALESCE(MAX(a.account_currency), '') AS currency
+		FROM `tabDGV TB Snapshot Row` s
+		JOIN `tabAccount` a ON a.name = s.account
+		WHERE s.snapshot_date = %(snap_date)s
+		  AND s.company = %(company)s
+		  AND s.account IN ({a_ph})
+		GROUP BY s.account, a.account_name
+		HAVING ABS(balance) >= 0.01
+		ORDER BY ABS(balance) DESC, a.account_name ASC
+		LIMIT %(limit)s
+		""",
+		{
+			**a_params,
+			**f_params,
+			"snap_date": snap_date,
+			"company": company,
+			"limit": PER_COMPANY_ACCOUNT_CAP + 1,
+		},
+		as_dict=True,
+	)
+
+	truncated = len(rows) > PER_COMPANY_ACCOUNT_CAP
+	visible_rows = rows[:PER_COMPANY_ACCOUNT_CAP]
+
+	accounts_out = [
+		{
+			"account": r["account"],
+			"account_name": r["account_name"],
+			"balance": round(flt(r["balance"]), 2),
+			"currency": r.get("currency") or "",
+		}
+		for r in visible_rows
+	]
+
+	if truncated:
+		# Second query: true total_accounts and company_total over the
+		# full set (not just the visible 200). Nested subquery applies
+		# the same HAVING ABS(balance) >= 0.01 filter so the count
+		# matches what the user would see if cap were unbounded.
+		total_row = frappe.db.sql(
+			f"""
+			SELECT COUNT(*) AS total_accounts,
+			       COALESCE(SUM(balance), 0) AS company_total
+			FROM (
+			    SELECT
+			      s.account,
+			      SUM(
+			        CASE WHEN a.root_type IN ({f_ph})
+			             THEN -s.balance
+			             ELSE s.balance
+			        END
+			      ) AS balance
+			    FROM `tabDGV TB Snapshot Row` s
+			    JOIN `tabAccount` a ON a.name = s.account
+			    WHERE s.snapshot_date = %(snap_date)s
+			      AND s.company = %(company)s
+			      AND s.account IN ({a_ph})
+			    GROUP BY s.account
+			    HAVING ABS(balance) >= 0.01
+			) t
+			""",
+			{
+				**a_params,
+				**f_params,
+				"snap_date": snap_date,
+				"company": company,
+			},
+			as_dict=True,
+		)[0]
+		total_accounts = int(total_row["total_accounts"])
+		company_total = round(flt(total_row["company_total"]), 2)
+	else:
+		total_accounts = len(accounts_out)
+		company_total = round(sum(a["balance"] for a in accounts_out), 2)
+
+	return {
+		"company": company,
+		"scope_label": scope_label or "",
+		"as_of_date": str(snap_date),
+		"company_total": company_total,
+		"accounts": accounts_out,
+		"total_accounts": total_accounts,
+		"truncated": truncated,
+	}
+
+
+# ---------------------------------------------------------------------------
 # Internals
 # ---------------------------------------------------------------------------
 

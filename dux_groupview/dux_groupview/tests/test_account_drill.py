@@ -158,6 +158,327 @@ class TestAccountDrillEntryShapes(FrappeTestCase):
 			account_drill_v1.get_account_breakdown()
 
 
+class TestGetAccountBreakdownShapeStability(FrappeTestCase):
+	"""Regression pin for `get_account_breakdown` response shape.
+
+	Per spec `specs/per-account-drill-expand.md` §5.1: the new
+	`get_account_breakdown_for_company` endpoint deliberately does NOT
+	extend `get_account_breakdown`. Lazy-loaded per-account data
+	deserves its own fetch boundary, and response stability for the
+	existing endpoint matters more than DRY. This test pins the shape
+	so a future refactor can't silently fold per-account fields into
+	the by-company response.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		_ensure_today_data()
+
+	def test_top_level_response_keys_unchanged(self):
+		out = account_drill_v1.get_account_breakdown(
+			scope={"type": "account", "value": "Sundry Creditors"},
+		)
+		self.assertEqual(
+			set(out.keys()),
+			{"scope_label", "group_total", "is_party_trackable",
+			 "trend_12mo", "by_company"},
+		)
+
+	def test_by_company_entry_keys_unchanged(self):
+		out = account_drill_v1.get_account_breakdown(
+			scope={"type": "account", "value": "Sundry Creditors"},
+		)
+		if not out["by_company"]:
+			self.skipTest("No by_company rows on this dev seed.")
+		# Pin the per-company-row shape: company + value + sparkline.
+		# Explicitly NOT carrying `accounts`, `total_accounts`, or
+		# `truncated` fields -- those live on the new endpoint.
+		self.assertEqual(
+			set(out["by_company"][0].keys()),
+			{"company", "value", "sparkline"},
+		)
+
+	def test_trend_12mo_entry_keys_unchanged(self):
+		out = account_drill_v1.get_account_breakdown(
+			scope={"type": "account", "value": "Sundry Creditors"},
+		)
+		for entry in out["trend_12mo"]:
+			self.assertEqual(set(entry.keys()), {"month", "value"})
+
+	def test_by_company_sort_order_abs_value_desc(self):
+		# `get_account_breakdown` sort: abs(value) descending. Pin this
+		# so the panel's "largest contributors first" reading stays
+		# accurate when the new per-account endpoint lands.
+		out = account_drill_v1.get_account_breakdown(
+			scope={"type": "account", "value": "Sundry Creditors"},
+		)
+		if len(out["by_company"]) < 2:
+			self.skipTest("Need >= 2 by_company rows to verify sort.")
+		values = [abs(r["value"]) for r in out["by_company"]]
+		for i in range(len(values) - 1):
+			self.assertGreaterEqual(values[i], values[i + 1])
+
+	def test_group_total_equals_sum_of_by_company_values(self):
+		# Same invariant as test_group_total_equals_sum_of_by_company_values
+		# in TestAccountDrillSparklineLength, repeated here so this
+		# regression class is self-contained.
+		out = account_drill_v1.get_account_breakdown(
+			scope={"type": "account", "value": "Sundry Creditors"},
+		)
+		summed = round(sum(r["value"] for r in out["by_company"]), 2)
+		self.assertEqual(out["group_total"], summed)
+
+
+class TestGetAccountBreakdownForCompany(FrappeTestCase):
+	"""Tests for the new per-company per-account endpoint.
+
+	Per spec `specs/per-account-drill-expand.md` §10.1. Mirrors the
+	`TestAccountDrillEntryShapes` structure but exercises the lazy-
+	loaded per-account drill. Truncation tests patch
+	`PER_COMPANY_ACCOUNT_CAP` rather than seeding 200+ accounts of
+	synthetic data -- the truncation LOGIC is what we're pinning, not
+	the specific cap value.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		_ensure_today_data()
+		# Pick the company with the most snapshot rows so name_pattern
+		# scopes have something to match.
+		row = frappe.db.sql(
+			"""
+			SELECT company, COUNT(*) AS c
+			FROM `tabDGV TB Snapshot Row`
+			WHERE snapshot_date = %s
+			GROUP BY company
+			ORDER BY c DESC LIMIT 1
+			""",
+			(getdate(today()),),
+		)
+		cls.dev_company = row[0][0] if row else None
+
+	def setUp(self):
+		if not self.dev_company:
+			self.skipTest("No snapshot rows on this site.")
+
+	# --- Happy-path shape ---
+
+	def test_response_keys(self):
+		out = account_drill_v1.get_account_breakdown_for_company(
+			scope={"type": "account", "value": "Sundry Creditors"},
+			company=self.dev_company,
+		)
+		self.assertEqual(
+			set(out.keys()),
+			{"company", "scope_label", "as_of_date", "company_total",
+			 "accounts", "total_accounts", "truncated"},
+		)
+		self.assertEqual(out["company"], self.dev_company)
+		self.assertIsInstance(out["accounts"], list)
+		self.assertIsInstance(out["total_accounts"], int)
+		self.assertIsInstance(out["truncated"], bool)
+
+	def test_account_row_shape(self):
+		# "%" wildcard matches all leaves; we just need a non-empty
+		# result set to assert per-row shape. Truncation is tested
+		# separately via patched cap, not via large fixture set.
+		out = account_drill_v1.get_account_breakdown_for_company(
+			scope={"type": "name_pattern", "value": "%"},
+			company=self.dev_company,
+		)
+		if not out["accounts"]:
+			self.skipTest("No matching accounts in this company.")
+		for row in out["accounts"]:
+			self.assertEqual(
+				set(row.keys()),
+				{"account", "account_name", "balance", "currency"},
+			)
+			self.assertIsInstance(row["account"], str)
+			self.assertIsInstance(row["account_name"], str)
+			self.assertIsInstance(row["balance"], (int, float))
+
+	# --- Sort + sum invariants ---
+
+	def test_sort_order_abs_balance_desc(self):
+		out = account_drill_v1.get_account_breakdown_for_company(
+			scope={"type": "name_pattern", "value": "%"},
+			company=self.dev_company,
+		)
+		if len(out["accounts"]) < 2:
+			self.skipTest("Need >= 2 accounts to verify sort.")
+		balances = [abs(a["balance"]) for a in out["accounts"]]
+		for i in range(len(balances) - 1):
+			self.assertGreaterEqual(balances[i], balances[i + 1])
+
+	def test_company_total_matches_account_sum_when_not_truncated(self):
+		# Pin: sum(accounts.balance) == company_total when truncated=False.
+		# (When truncated, company_total reflects the full set, NOT the
+		# visible 200 -- separately tested in
+		# test_truncation_company_total_reflects_full_set.)
+		out = account_drill_v1.get_account_breakdown_for_company(
+			scope={"type": "name_pattern", "value": "%"},
+			company=self.dev_company,
+		)
+		if out["truncated"]:
+			self.skipTest("Need non-truncated result for this invariant.")
+		summed = round(sum(a["balance"] for a in out["accounts"]), 2)
+		self.assertEqual(out["company_total"], summed)
+
+	# --- Entry-shape requirements (mirrors get_account_breakdown) ---
+
+	def test_accounts_entry_requires_scope_label(self):
+		with self.assertRaises(frappe.ValidationError):
+			account_drill_v1.get_account_breakdown_for_company(
+				accounts=["Some Account - X"],
+				company=self.dev_company,
+			)
+
+	def test_accounts_entry_with_scope_label_returns_payload(self):
+		# Pick a real account in this company so the scope is non-empty.
+		row = frappe.db.sql(
+			"""
+			SELECT account FROM `tabDGV TB Snapshot Row`
+			WHERE snapshot_date = %s AND company = %s LIMIT 1
+			""",
+			(getdate(today()), self.dev_company),
+		)
+		if not row:
+			self.skipTest("No snapshot rows for this company.")
+		account = row[0][0]
+		out = account_drill_v1.get_account_breakdown_for_company(
+			accounts=[account],
+			scope_label="Test Custom Label",
+			company=self.dev_company,
+		)
+		self.assertEqual(out["scope_label"], "Test Custom Label")
+
+	# --- Empty-result behaviour ---
+
+	def test_zero_match_scope_returns_empty_accounts(self):
+		# Predicate matches nothing -> empty array, NOT an error.
+		out = account_drill_v1.get_account_breakdown_for_company(
+			scope={"type": "name_pattern",
+			       "value": "%ZZZZ_definitely_no_match_ZZZZ%"},
+			company=self.dev_company,
+		)
+		self.assertEqual(out["accounts"], [])
+		self.assertEqual(out["total_accounts"], 0)
+		self.assertFalse(out["truncated"])
+		self.assertEqual(out["company_total"], 0.0)
+
+	# --- Malformed scope (stale-deep-link, sets the flag) ---
+
+	def test_missing_company_sets_malformed_scope(self):
+		frappe.local.response = frappe._dict()
+		with self.assertRaises(frappe.DoesNotExistError):
+			account_drill_v1.get_account_breakdown_for_company(
+				scope={"type": "account", "value": "Sundry Creditors"},
+				company=None,
+			)
+		self.assertTrue(frappe.local.response.get("malformed_scope"))
+
+	def test_empty_company_string_sets_malformed_scope(self):
+		frappe.local.response = frappe._dict()
+		with self.assertRaises(frappe.DoesNotExistError):
+			account_drill_v1.get_account_breakdown_for_company(
+				scope={"type": "account", "value": "Sundry Creditors"},
+				company="   ",
+			)
+		self.assertTrue(frappe.local.response.get("malformed_scope"))
+
+	def test_missing_scope_and_accounts_sets_malformed_scope(self):
+		frappe.local.response = frappe._dict()
+		with self.assertRaises(frappe.DoesNotExistError):
+			account_drill_v1.get_account_breakdown_for_company(
+				company=self.dev_company,
+			)
+		self.assertTrue(frappe.local.response.get("malformed_scope"))
+
+	# --- Permission denial (NOT malformed -- a different signal) ---
+
+	def test_disallowed_company_raises_permission_error(self):
+		# A company that doesn't exist (and so isn't in any user's
+		# allowed set) exercises the `company not in allowed` branch.
+		with self.assertRaises(frappe.PermissionError):
+			account_drill_v1.get_account_breakdown_for_company(
+				scope={"type": "account", "value": "Sundry Creditors"},
+				company="Nonexistent Company XYZ 12345",
+			)
+
+	# --- Truncation logic ---
+
+	def test_truncation_caps_accounts_and_reports_total(self):
+		from unittest.mock import patch
+		# First, find a baseline at a high cap so we know the true count.
+		# `%` matches every account name, so any company with rows has
+		# data here.
+		with patch.object(account_drill_v1, "PER_COMPANY_ACCOUNT_CAP", 10000):
+			baseline = account_drill_v1.get_account_breakdown_for_company(
+				scope={"type": "name_pattern", "value": "%"},
+				company=self.dev_company,
+			)
+		if baseline["total_accounts"] < 2:
+			self.skipTest("Need >= 2 accounts in scope to test truncation.")
+
+		# Now lower cap to 1 and verify the truncation contract.
+		with patch.object(account_drill_v1, "PER_COMPANY_ACCOUNT_CAP", 1):
+			out = account_drill_v1.get_account_breakdown_for_company(
+				scope={"type": "name_pattern", "value": "%"},
+				company=self.dev_company,
+			)
+		self.assertTrue(out["truncated"])
+		self.assertEqual(len(out["accounts"]), 1)
+		# total_accounts reports the TRUE count (full set), not the
+		# visible count.
+		self.assertEqual(out["total_accounts"], baseline["total_accounts"])
+		# Sort order preserved: the visible row is the top-of-baseline.
+		self.assertEqual(
+			out["accounts"][0]["account"],
+			baseline["accounts"][0]["account"],
+		)
+
+	def test_truncation_company_total_reflects_full_set(self):
+		# When truncated, company_total must equal the sum over ALL
+		# matching accounts, NOT just the visible 200. Pin this
+		# explicitly because the implementation has two branches
+		# (sum-of-rows vs separate-SUM-query).
+		from unittest.mock import patch
+		with patch.object(account_drill_v1, "PER_COMPANY_ACCOUNT_CAP", 10000):
+			baseline = account_drill_v1.get_account_breakdown_for_company(
+				scope={"type": "name_pattern", "value": "%"},
+				company=self.dev_company,
+			)
+		if baseline["total_accounts"] < 2:
+			self.skipTest("Need >= 2 accounts to compare full-set total.")
+
+		with patch.object(account_drill_v1, "PER_COMPANY_ACCOUNT_CAP", 1):
+			truncated_out = account_drill_v1.get_account_breakdown_for_company(
+				scope={"type": "name_pattern", "value": "%"},
+				company=self.dev_company,
+			)
+		self.assertTrue(truncated_out["truncated"])
+		# Truncated company_total equals baseline company_total exactly
+		# (both are the full-set natural-side sum).
+		self.assertEqual(
+			truncated_out["company_total"],
+			baseline["company_total"],
+		)
+
+	def test_truncation_not_set_when_cap_exceeds_data(self):
+		# Defensive: when cap exceeds the result set size, truncated
+		# must be False and total_accounts == len(accounts).
+		from unittest.mock import patch
+		with patch.object(account_drill_v1, "PER_COMPANY_ACCOUNT_CAP", 100000):
+			out = account_drill_v1.get_account_breakdown_for_company(
+				scope={"type": "name_pattern", "value": "%"},
+				company=self.dev_company,
+			)
+		self.assertFalse(out["truncated"])
+		self.assertEqual(out["total_accounts"], len(out["accounts"]))
+
+
 class TestIsPartyTrackable(FrappeTestCase):
 	"""Exercises the is_party_trackable flag across account_types.
 
