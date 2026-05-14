@@ -143,4 +143,35 @@ def _resolve_match(match: dict, companies: list) -> list:
 			},
 		)
 
+	if "by_parent_account_stem_in" in match:
+		# Per spec `specs/cash-bank-card-split.md` §4: matches leaves
+		# whose immediate parent group's stripped account_name (the
+		# part BEFORE the first ` - ` separator in `parent_account`)
+		# is in `stems`. Defensive: empty stems, missing root_type,
+		# or wrong types -> empty.
+		conf = match["by_parent_account_stem_in"]
+		if not isinstance(conf, dict):
+			return []
+		stems = conf.get("stems")
+		root_type = conf.get("root_type")
+		if not isinstance(stems, (list, tuple)) or not stems:
+			return []
+		if not isinstance(root_type, str) or not root_type:
+			return []
+		st_ph, st_params = _named_in("st", stems)
+		return frappe.db.sql_list(
+			f"""
+			SELECT name FROM `tabAccount`
+			WHERE is_group = 0
+			  AND root_type = %(root_type)s
+			  AND SUBSTRING_INDEX(parent_account, ' - ', 1) IN ({st_ph})
+			  AND company IN ({co_ph})
+			""",
+			{
+				"root_type": root_type,
+				**st_params,
+				**co_params,
+			},
+		)
+
 	return []

@@ -765,7 +765,9 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 
 	function classifyTiers(cards) {
 		// Primary = top 3 by abs(value) where value != 0.
-		// Secondary = remaining 3.
+		// Secondary = remaining (any count -- the CSS grid is
+		// `repeat(3, 1fr)` and auto-wraps, so the secondary tier
+		// gracefully handles 0..N cards).
 		// If fewer than 3 cards have non-zero values, the empty cards
 		// always go to secondary (per spec §Tier classification).
 		const indexed = cards.map((c, i) => ({ card: c, idx: i, abs: Math.abs(Number(c.value) || 0) }));

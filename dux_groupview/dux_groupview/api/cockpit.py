@@ -135,8 +135,15 @@ def get_spotlight_cards(snapshot_date):
 		)
 		prior_card_ids = {r[0] for r in prior_rows}
 
+	# Per spec `specs/cash-bank-card-split.md` §5.3: disabled cards are
+	# hidden from the cockpit grid but their cache rows remain so the
+	# sparkline history survives a future re-enable. The filter is
+	# applied at the iteration boundary -- cache lookups, prior-baseline
+	# checks, and response assembly all run against `visible_cards`.
+	visible_cards = [c for c in CARDS if not c.get("disabled")]
+
 	out = []
-	for card in CARDS:
+	for card in visible_cards:
 		cache = cache_by_id.get(card["id"])
 		value = flt(cache["value"]) if cache else 0.0
 		delta = flt(cache["delta"]) if cache else 0.0
@@ -210,16 +217,22 @@ def _build_filtered_cards_payload(snapshot_date, allowed):
 	`allowed` is already permission-intersected (caller invokes
 	`_resolve_scope`).
 	"""
+	# Per spec `specs/cash-bank-card-split.md` §5.3: filter disabled
+	# cards here too -- the live-recompute path mirrors the cache path's
+	# response shape. Disabled cards never appear in the cockpit
+	# regardless of which read path is used.
+	visible_cards = [c for c in CARDS if not c.get("disabled")]
+
 	if not allowed:
 		# No accessible companies after intersection -- return zeroed
 		# cards in the same shape as get_spotlight_cards.
-		return [_zero_card_payload(card) for card in CARDS]
+		return [_zero_card_payload(card) for card in visible_cards]
 
 	prior_month_date = prior_month_snapshot_date(snapshot_date)
 	hist_dates = historical_month_end_dates(snapshot_date, SPARKLINE_LENGTH)
 
 	out = []
-	for card in CARDS:
+	for card in visible_cards:
 		value = aggregate_card_value(card, snapshot_date, companies=allowed)
 		prior_value = (
 			aggregate_card_value(card, prior_month_date, companies=allowed)
@@ -419,6 +432,15 @@ HEADLINE_CARD_NAMES = {
 	"fixed_deposits":         "Fixed deposits",
 	"financial_exp_to_bank":  "Bank finance costs",
 	"financial_exp_to_other": "Other finance costs",
+	# Per spec `specs/cash-bank-card-split.md` §6.2: labels match
+	# headline copy directly for these two -- they read naturally
+	# inline ("Liquid cash up Rs 2.3 Cr from last month"). Entries for
+	# disabled cards (sundry_debtors / cash_and_bank /
+	# inter_co_receivable) stay in this map so flipping `disabled`
+	# back later doesn't require a re-add; the visible-cards filter
+	# at the read sites is the source of truth for headline inclusion.
+	"liquid_cash":            "Liquid cash",
+	"secured_loans":          "Secured loans",
 }
 
 # Significance threshold for inclusion in the headline.
@@ -463,8 +485,15 @@ def get_cockpit_headline(as_of_date, companies=None):
 	# month had no matching snapshot rows for this scope are excluded.
 	# If ALL cards lack baseline, emit the dedicated "first snapshot"
 	# template.
+	#
+	# Per spec `specs/cash-bank-card-split.md` §5.3 + Q2: disabled cards
+	# are also excluded from headline narration. Narrating a delta for
+	# a hidden card would be confusing ("Sundry debtors up Rs X Cr"
+	# with no visible card to read) and would leak a value the user
+	# was meant to not see.
+	visible_cards = [c for c in CARDS if not c.get("disabled")]
 	deltas = []
-	for card in CARDS:
+	for card in visible_cards:
 		has_baseline = _card_has_prior_baseline(card, prior_month_date, allowed)
 		if not has_baseline:
 			continue

@@ -156,6 +156,24 @@ class TestSpotlightCache(FrappeTestCase):
 			conf = match["by_root_type_and_name_pattern"]
 			where = "root_type = %s AND account LIKE %s"
 			params = [conf["root_type"], conf["name_pattern"], snapshot_date]
+		elif "by_parent_account_stem_in" in match:
+			# Per spec `specs/cash-bank-card-split.md` §4: the new
+			# predicate's direct aggregation uses an IN-subquery against
+			# tabAccount. Keep the WHERE structure parallel to what
+			# `_match_clause` emits in production code so this test
+			# verifies the production query's shape AND its arithmetic.
+			conf = match["by_parent_account_stem_in"]
+			stems = conf["stems"]
+			placeholders = ", ".join(["%s"] * len(stems))
+			where = (
+				"account IN ("
+				"SELECT name FROM `tabAccount` "
+				"WHERE is_group = 0 "
+				"AND root_type = %s "
+				f"AND SUBSTRING_INDEX(parent_account, ' - ', 1) IN ({placeholders})"
+				")"
+			)
+			params = [conf["root_type"]] + list(stems) + [snapshot_date]
 		else:
 			return 0.0
 
@@ -301,3 +319,246 @@ class TestSpotlightCache(FrappeTestCase):
 		val_a = _aggregate(card_a, getdate(today()))
 		val_b = _aggregate(card_b, getdate(today()))
 		self.assertEqual(val_a, val_b)
+
+
+class TestDisabledFlagRefreshSide(FrappeTestCase):
+	"""Tests for the `disabled` flag's behaviour on the refresh path.
+
+	Per spec `specs/cash-bank-card-split.md` §5.2: refresh writes
+	cache rows for ALL cards (including disabled) so a future re-
+	enable preserves the historical sparkline. Only the read paths
+	filter on `disabled`. This invariant is load-bearing for the
+	Phase 5 cards-editor: a user disabling then re-enabling a card
+	should see continuous sparkline data, not a gap from the period
+	the card was hidden.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		# Same canonical-snapshot setUp pattern as TestSpotlightCache:
+		# fresh snapshot tables, single TB snapshot for today.
+		_purge_all()
+		refresh_tb_snapshot()
+
+	@classmethod
+	def tearDownClass(cls):
+		_purge_all()
+		super().tearDownClass()
+
+	def setUp(self):
+		# Each test starts with a clean spotlight cache; TB stays.
+		frappe.db.sql("DELETE FROM `tabDGV Spotlight Cache`")
+		frappe.db.commit()
+
+	def test_refresh_writes_cache_for_disabled_cards(self):
+		"""Refresh writes one cache row per card in CARDS, INCLUDING
+		those marked disabled. History continuity invariant: disabling
+		a card must not stop its cache from updating, so re-enabling
+		later shows continuous sparkline data, not a gap.
+		"""
+		refresh_spotlight_cache()
+		snapshot_date = getdate(today())
+		disabled_card_ids = [
+			c["id"] for c in CARDS if c.get("disabled")
+		]
+		self.assertGreater(
+			len(disabled_card_ids), 0,
+			msg=(
+				"This invariant test relies on at least one disabled "
+				"card existing in CARDS. The cash & bank split PR "
+				"disables 3 (sundry_debtors, cash_and_bank, "
+				"inter_co_receivable); revisit if that changes."
+			),
+		)
+		for card_id in disabled_card_ids:
+			cache_row = frappe.db.exists(
+				"DGV Spotlight Cache",
+				{"card_id": card_id, "snapshot_date": snapshot_date},
+			)
+			self.assertTrue(
+				cache_row,
+				msg=(
+					f"Disabled card '{card_id}' must continue receiving "
+					f"cache rows so history is preserved across "
+					f"enable/disable cycles. Found no cache row for "
+					f"snapshot_date={snapshot_date}."
+				),
+			)
+
+	def test_refresh_creates_one_row_per_card_including_disabled(self):
+		"""Total cache row count after refresh equals len(CARDS),
+		not len(visible_cards). Pin the asymmetry between refresh
+		(includes disabled) and read paths (skip disabled).
+		"""
+		refresh_spotlight_cache()
+		snapshot_date = getdate(today())
+		row_count = frappe.db.count(
+			"DGV Spotlight Cache",
+			{"snapshot_date": snapshot_date},
+		)
+		self.assertEqual(
+			row_count, len(CARDS),
+			msg=(
+				f"Refresh wrote {row_count} cache rows but CARDS has "
+				f"{len(CARDS)} entries. Refresh must include disabled "
+				f"cards (history continuity); only read paths skip them."
+			),
+		)
+
+
+class TestByParentAccountStemInRefreshClause(FrappeTestCase):
+	"""Tests for the new predicate's refresh-side SQL emission and
+	aggregation correctness.
+
+	Per spec `specs/cash-bank-card-split.md` §4.4: the refresh path
+	uses an IN-subquery against tabAccount (since the snapshot row
+	table doesn't denormalise `parent_account`). This class pins
+	that the emitted clause aggregates the same set of leaves that
+	`cards_v1._resolve_match` returns for the same predicate.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		_purge_all()
+		refresh_tb_snapshot()
+		refresh_spotlight_cache()
+
+	@classmethod
+	def tearDownClass(cls):
+		_purge_all()
+		super().tearDownClass()
+
+	def test_match_clause_emits_in_subquery_against_tabaccount(self):
+		"""_match_clause for `by_parent_account_stem_in` emits an
+		IN-subquery (not an inline column filter) and uses named
+		parameters end-to-end (no string concatenation of values).
+		"""
+		from dux_groupview.dux_groupview.snapshots.spotlight_refresh import (
+			_match_clause,
+		)
+		card = {
+			"id": "test_card",
+			"match": {
+				"by_parent_account_stem_in": {
+					"stems": ["Bank Accounts", "Cash in Hand"],
+					"root_type": "Asset",
+				},
+			},
+		}
+		clause, params = _match_clause(card)
+		self.assertIsNotNone(clause)
+		# Shape pins:
+		self.assertIn(
+			"account IN (", clause,
+			msg="by_parent_account_stem_in must emit an IN-subquery",
+		)
+		self.assertIn(
+			"SUBSTRING_INDEX(parent_account, ' - ', 1)", clause,
+			msg="Predicate must extract parent stem via SUBSTRING_INDEX",
+		)
+		self.assertIn("is_group = 0", clause)
+		# Params pins:
+		self.assertEqual(params["root_type"], "Asset")
+		self.assertEqual(params["st_0"], "Bank Accounts")
+		self.assertEqual(params["st_1"], "Cash in Hand")
+		# Defensive: no literal stem string concatenated into clause.
+		self.assertNotIn(
+			"Bank Accounts", clause,
+			msg=(
+				"Stem values must flow through named parameters, never "
+				"concatenated into the SQL string"
+			),
+		)
+
+	def test_match_clause_defensive_branches_return_none(self):
+		"""Malformed predicate -> (None, {}) so refresh skips the card
+		with a zero rather than erroring out the entire refresh batch.
+		'A single broken card must not break the whole refresh' is
+		load-bearing for the multi-card system.
+		"""
+		from dux_groupview.dux_groupview.snapshots.spotlight_refresh import (
+			_match_clause,
+		)
+		# Each of these should return (None, {}) -- not raise.
+		cases = [
+			# Empty stems list
+			{"by_parent_account_stem_in": {"stems": [], "root_type": "Asset"}},
+			# Missing root_type
+			{"by_parent_account_stem_in": {"stems": ["Bank Accounts"]}},
+			# Missing stems
+			{"by_parent_account_stem_in": {"root_type": "Asset"}},
+			# Non-dict conf
+			{"by_parent_account_stem_in": "not-a-dict"},
+			# Stems is a string, not a list
+			{"by_parent_account_stem_in": {
+				"stems": "Bank Accounts", "root_type": "Asset"}},
+			# root_type is empty string
+			{"by_parent_account_stem_in": {
+				"stems": ["Bank Accounts"], "root_type": ""}},
+		]
+		for match in cases:
+			with self.subTest(match=match):
+				clause, params = _match_clause({"match": match})
+				self.assertIsNone(
+					clause,
+					msg=(
+						f"Malformed predicate must return (None, {{}}) so "
+						f"refresh treats the card as zero rather than "
+						f"erroring out: {match}"
+					),
+				)
+				self.assertEqual(params, {})
+
+	def test_refresh_aggregation_matches_direct_sum_for_new_predicate(self):
+		"""For each new-predicate card (liquid_cash + secured_loans),
+		the cached value after refresh equals an independent SQL
+		aggregation using the same parent-stem filter. Verifies the
+		refresh path's emitted SQL is arithmetically correct, not
+		just syntactically valid.
+		"""
+		snapshot_date = getdate(today())
+		for card_id in ("liquid_cash", "secured_loans"):
+			card = next((c for c in CARDS if c["id"] == card_id), None)
+			if card is None:
+				self.skipTest(f"Card '{card_id}' not in CARDS")
+			conf = card["match"]["by_parent_account_stem_in"]
+			stems = conf["stems"]
+			root_type = conf["root_type"]
+			ph = ", ".join(["%s"] * len(stems))
+			rows = frappe.db.sql(
+				f"""
+				SELECT COALESCE(SUM(
+					CASE WHEN root_type IN ('Liability', 'Equity', 'Income')
+					     THEN -balance
+					     ELSE balance
+					END
+				), 0)
+				FROM `tabDGV TB Snapshot Row`
+				WHERE snapshot_date = %s
+				  AND account IN (
+				    SELECT name FROM `tabAccount`
+				    WHERE is_group = 0
+				      AND root_type = %s
+				      AND SUBSTRING_INDEX(parent_account, ' - ', 1) IN ({ph})
+				  )
+				""",
+				[snapshot_date, root_type] + list(stems),
+			)
+			expected = round(float(rows[0][0] or 0), 2)
+			cached = frappe.db.get_value(
+				"DGV Spotlight Cache",
+				{"card_id": card_id, "snapshot_date": snapshot_date},
+				"value",
+			)
+			self.assertAlmostEqual(
+				float(cached or 0), expected, places=2,
+				msg=(
+					f"Card '{card_id}': cached refresh value {cached} "
+					f"does not match independent direct aggregation "
+					f"{expected}. The new predicate's refresh SQL is "
+					f"likely emitting a different leaf set than the "
+					f"production parent-stem filter expects."
+				),
+			)
