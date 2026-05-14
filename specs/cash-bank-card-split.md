@@ -54,6 +54,21 @@ Visible cards after this ships: **7** (down from 8).
 - **`fixed_deposits` card is out of scope.** Its predicate may also
   have issues (separate diagnostics in progress); we are not
   touching it in this PR even if discovery surfaces something.
+- **Case variants in parent account stems.** Across dev seeds and
+  production COAs we've observed casing differences in parent
+  names (e.g. `Cash in Hand` vs `Cash In Hand`). The current
+  predicate handles this by enumerating variants explicitly in the
+  `stems` list — the `liquid_cash` card definition carries both
+  spellings. Other potentially-affected stems (`Loans (Liability)`
+  vs `Loans (Liabilities)`, `Fixed Deposit` vs `Fixed Deposits`)
+  are not used by cards in this PR but may surface in future
+  cards. A Phase 5 cards-editor "fuzzy stem matching" feature
+  (case-insensitive + trailing-s tolerant) would remove this
+  manual enumeration. For now, document case variants in stems
+  lists with an inline comment when needed. The
+  `liquid_cash` card definition carries such a comment so a
+  future "dedupe obvious duplicates" refactor doesn't silently
+  drop the production-spelling entry.
 
 ## 2. Non-goals
 
@@ -196,7 +211,25 @@ This is robust to:
 - Root accounts (NULL parent_account): excluded because their
   children are checked, not them.
 
-### 4.6. Perf profile
+### 4.6. Case-insensitivity (MySQL collation)
+
+MariaDB / MySQL's default collation on `VARCHAR` columns is
+`utf8mb4_general_ci` (case-insensitive). The IN-clause comparison
+`SUBSTRING_INDEX(parent_account, ' - ', 1) IN ('Bank Accounts', 'Cash in Hand')`
+therefore matches BOTH `"Cash in Hand"` AND `"Cash In Hand"` (and
+`"CASH IN HAND"`, etc.) as parent stems. This is **desired behaviour**
+given real-world COA data has case inconsistencies — the dev seed
+contains both `"Cash in Hand - CACSPU"` and `"Cash In Hand - ASSA"`,
+and the production COA likely has similar drift. The predicate
+accepts both transparently.
+
+Surfaced during test development (HALT 3): a case-sensitive Python
+assertion `stem in {"Cash in Hand"}` failed when the resolver
+correctly returned a leaf whose parent stem was `"Cash In Hand"`.
+Tests now compare case-insensitively via `.casefold()` so the
+predicate's real (case-insensitive) behaviour is what's asserted.
+
+### 4.7. Perf profile
 
 Refresh-path subquery against `tabAccount` runs once per card per
 refresh. The two existing predicates (`by_account_type`,
@@ -212,7 +245,7 @@ so the subquery returns hundreds of rows at most across the whole
 group. If perf shows up funny during a future investigation, this
 subquery is the suspect.
 
-### 4.7. Why a predicate, not a SQL helper
+### 4.8. Why a predicate, not a SQL helper
 
 Card predicates are the public contract that `cards.py` cards bind
 to. A predicate type is documented, testable, and reusable for

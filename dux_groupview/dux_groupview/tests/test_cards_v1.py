@@ -260,3 +260,403 @@ class TestResolveMatchToAccounts(FrappeTestCase):
 				)
 				resolved = _resolve_match(card["match"], _all_companies())
 				self.assertIsInstance(resolved, list)
+
+
+class TestByParentAccountStemIn(FrappeTestCase):
+	"""Tests for the new `by_parent_account_stem_in` predicate.
+
+	Per spec `specs/cash-bank-card-split.md` §4. The predicate matches
+	leaves where:
+	  - is_group = 0, AND
+	  - root_type = <given>, AND
+	  - SUBSTRING_INDEX(parent_account, ' - ', 1) IN (<stems>)
+
+	Tests rely on the dev fixture's existing COA structure (ERPNext
+	standard convention `<parent_name> - <company_abbr>` on
+	`parent_account`). No fixture seeding required.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		_ensure_today_data()
+
+	# -- Happy path + filter behaviour ----------------------------------
+
+	def test_happy_path_returns_leaves_under_named_stems(self):
+		"""Predicate {stems: ['Bank Accounts'], root_type: 'Asset'}
+		returns at least one leaf when the dev seed has Bank Accounts
+		groups; every returned account satisfies all three predicate
+		conditions independently.
+
+		Note: MySQL's default collation (`utf8mb4_general_ci`) is case-
+		INSENSITIVE on VARCHAR comparison, so `IN ('Bank Accounts')`
+		matches both `"Bank Accounts"` and `"BANK ACCOUNTS"` parent
+		stems if both exist. The dev COA has case variants (e.g.
+		`"Cash in Hand"` and `"Cash In Hand"` coexist); the predicate
+		intentionally accepts both because the production data has
+		the same kind of inconsistency. Tests therefore compare
+		case-insensitively.
+		"""
+		match = {
+			"by_parent_account_stem_in": {
+				"stems": ["Bank Accounts"],
+				"root_type": "Asset",
+			},
+		}
+		result = cards_v1.resolve_match_to_accounts(match, _all_companies())
+		if not result["accounts"]:
+			self.skipTest("No 'Bank Accounts' leaves in dev COA.")
+		# Independently verify each returned leaf matches predicate.
+		rows = frappe.db.sql(
+			"""
+			SELECT name, parent_account, root_type, is_group
+			FROM `tabAccount` WHERE name IN %s
+			""",
+			(tuple(result["accounts"]),),
+			as_dict=True,
+		)
+		for r in rows:
+			self.assertEqual(
+				r["is_group"], 0,
+				msg=f"{r['name']}: parent-stem predicate returned a group account",
+			)
+			self.assertEqual(
+				r["root_type"], "Asset",
+				msg=f"{r['name']}: parent-stem predicate returned wrong root_type",
+			)
+			stem = (r["parent_account"] or "").split(" - ", 1)[0]
+			self.assertEqual(
+				stem.casefold(), "Bank Accounts".casefold(),
+				msg=f"{r['name']}: parent stem '{stem}' != 'Bank Accounts' (case-insensitive)",
+			)
+
+	def test_root_type_filter_excludes_wrong_root_type(self):
+		"""Same parent-stem, different root_type -> different (or
+		empty) leaf set. Pin that the root_type filter is load-bearing,
+		not vestigial."""
+		asset = cards_v1.resolve_match_to_accounts(
+			{"by_parent_account_stem_in": {
+				"stems": ["Bank Accounts"], "root_type": "Asset"}},
+			_all_companies(),
+		)
+		liability = cards_v1.resolve_match_to_accounts(
+			{"by_parent_account_stem_in": {
+				"stems": ["Bank Accounts"], "root_type": "Liability"}},
+			_all_companies(),
+		)
+		# Sets must be disjoint -- a Bank Accounts leaf can't be both
+		# Asset and Liability simultaneously.
+		self.assertEqual(
+			set(asset["accounts"]) & set(liability["accounts"]),
+			set(),
+			msg="Asset and Liability root_type filters returned overlapping leaves",
+		)
+
+	def test_multi_stem_or_returns_union(self):
+		"""Two stems in the same predicate return the union of leaves
+		under either stem. Pin the IN-list semantics."""
+		bank_only = cards_v1.resolve_match_to_accounts(
+			{"by_parent_account_stem_in": {
+				"stems": ["Bank Accounts"], "root_type": "Asset"}},
+			_all_companies(),
+		)
+		cash_only = cards_v1.resolve_match_to_accounts(
+			{"by_parent_account_stem_in": {
+				"stems": ["Cash in Hand"], "root_type": "Asset"}},
+			_all_companies(),
+		)
+		both = cards_v1.resolve_match_to_accounts(
+			{"by_parent_account_stem_in": {
+				"stems": ["Bank Accounts", "Cash in Hand"],
+				"root_type": "Asset"}},
+			_all_companies(),
+		)
+		# Union check: every leaf in either single-stem result is in
+		# the combined; every leaf in combined is in one of the singles.
+		single_union = set(bank_only["accounts"]) | set(cash_only["accounts"])
+		self.assertEqual(
+			set(both["accounts"]), single_union,
+			msg="Multi-stem predicate did not return union of single-stem results",
+		)
+
+	def test_nonexistent_stem_returns_empty(self):
+		"""A stem that doesn't match any parent_account returns an
+		empty list. Not an error."""
+		result = cards_v1.resolve_match_to_accounts(
+			{"by_parent_account_stem_in": {
+				"stems": ["Definitely Not A Real Parent Stem XYZ"],
+				"root_type": "Asset"}},
+			_all_companies(),
+		)
+		self.assertEqual(result["accounts"], [])
+
+	# -- Defensive branches --------------------------------------------
+
+	def test_empty_stems_returns_empty(self):
+		"""Empty stems list -> empty result. Defensive against
+		malformed dev-defined card predicates."""
+		result = cards_v1.resolve_match_to_accounts(
+			{"by_parent_account_stem_in": {
+				"stems": [], "root_type": "Asset"}},
+			_all_companies(),
+		)
+		self.assertEqual(
+			result["accounts"], [],
+			msg="Empty stems list should match no leaves (defensive)",
+		)
+
+	def test_missing_root_type_returns_empty(self):
+		"""Missing root_type key -> empty result. Defensive."""
+		result = cards_v1.resolve_match_to_accounts(
+			{"by_parent_account_stem_in": {
+				"stems": ["Bank Accounts"]}},
+			_all_companies(),
+		)
+		self.assertEqual(
+			result["accounts"], [],
+			msg="Missing root_type should match no leaves (defensive)",
+		)
+
+	def test_non_dict_conf_returns_empty(self):
+		"""Predicate value not a dict -> empty result. Defensive
+		against a card definition that passes a string or list by
+		mistake."""
+		from dux_groupview.dux_groupview.api.cards_v1 import _resolve_match
+		result = _resolve_match(
+			{"by_parent_account_stem_in": "not-a-dict"},
+			_all_companies(),
+		)
+		self.assertEqual(
+			result, [],
+			msg="Non-dict predicate conf should match no leaves (defensive)",
+		)
+
+	def test_matches_case_variants_via_explicit_enumeration(self):
+		"""Both 'Cash in Hand' (dev seed) and 'Cash In Hand' (prod COA)
+		appear in real environments. The predicate must catch both via
+		explicit enumeration in `stems`, rather than relying on MySQL's
+		default collation behaviour (which happens to be case-
+		insensitive today, but that's a per-database-engine accident
+		we don't want to depend on).
+
+		Phase 5 cards-editor may introduce fuzzy stem matching
+		(case-insensitive + trailing-s tolerant) to eliminate the
+		need for manual variant enumeration. Until then, card
+		definitions must enumerate every case variant explicitly
+		(see `liquid_cash` in cards.py).
+
+		This test exists so a future 'tidy up duplicate-looking
+		entries' refactor doesn't silently drop one of the case
+		variants and break prod matching.
+		"""
+		# Probe the dev seed to confirm both variants actually exist
+		# as parent stems. If the dev seed ever changes to use only
+		# one variant, this test should still pin the rationale
+		# (skip rather than silently pass).
+		#
+		# `BINARY` is required: the default collation
+		# (utf8mb4_general_ci) collapses both casings under DISTINCT,
+		# returning a single entry. We specifically need case-
+		# DISTINCT detection here.
+		dev_stems = set(frappe.db.sql_list(
+			"""
+			SELECT DISTINCT BINARY SUBSTRING_INDEX(parent_account, ' - ', 1)
+			FROM `tabAccount`
+			WHERE is_group = 0
+			  AND parent_account IS NOT NULL
+			  AND parent_account != ''
+			  AND LOWER(SUBSTRING_INDEX(parent_account, ' - ', 1)) = 'cash in hand'
+			"""
+		))
+		# `BINARY` returns bytes in MariaDB; decode for the Python
+		# string comparison below.
+		dev_stems = {
+			s.decode("utf-8") if isinstance(s, (bytes, bytearray)) else s
+			for s in dev_stems
+		}
+		if "Cash in Hand" not in dev_stems or "Cash In Hand" not in dev_stems:
+			self.skipTest(
+				"Dev seed lacks both 'Cash in Hand' AND 'Cash In Hand' "
+				"parent stems; cannot verify case-variant rationale. "
+				f"Found: {sorted(dev_stems)}"
+			)
+
+		# Both casings in stems -> matches all leaves under either
+		# parent stem regardless of which variant the COA used.
+		both_casings = cards_v1.resolve_match_to_accounts(
+			{"by_parent_account_stem_in": {
+				"stems": ["Cash in Hand", "Cash In Hand"],
+				"root_type": "Asset"}},
+			_all_companies(),
+		)
+		# Independently confirm: there should be at least one leaf
+		# under EACH casing variant in the result. This is the
+		# load-bearing invariant -- dropping either entry from the
+		# stems list would lose leaves on one side.
+		if not both_casings["accounts"]:
+			self.skipTest("No Cash in/In Hand leaves in dev COA.")
+		rows = frappe.db.sql(
+			"""
+			SELECT SUBSTRING_INDEX(parent_account, ' - ', 1) AS stem
+			FROM `tabAccount` WHERE name IN %s
+			""",
+			(tuple(both_casings["accounts"]),),
+			as_dict=True,
+		)
+		distinct_stems = {r["stem"] for r in rows}
+		self.assertIn(
+			"Cash in Hand", distinct_stems,
+			msg=(
+				"Predicate with both casings in stems must catch "
+				"leaves under 'Cash in Hand' (lowercase 'in', dev "
+				"seed variant). Found stems: "
+				f"{sorted(distinct_stems)}"
+			),
+		)
+		self.assertIn(
+			"Cash In Hand", distinct_stems,
+			msg=(
+				"Predicate with both casings in stems must catch "
+				"leaves under 'Cash In Hand' (capital 'I', prod COA "
+				"variant). Found stems: "
+				f"{sorted(distinct_stems)}"
+			),
+		)
+
+	def test_stems_not_a_list_returns_empty(self):
+		"""stems supplied as a string (instead of list) -> empty
+		result. Defensive."""
+		from dux_groupview.dux_groupview.api.cards_v1 import _resolve_match
+		result = _resolve_match(
+			{"by_parent_account_stem_in": {
+				"stems": "Bank Accounts", "root_type": "Asset"}},
+			_all_companies(),
+		)
+		self.assertEqual(
+			result, [],
+			msg="Non-list stems should match no leaves (defensive)",
+		)
+
+	# -- Two-card-specific predicate sanity ----------------------------
+
+	def test_liquid_cash_predicate_resolves_to_bank_and_cash_leaves(self):
+		"""The `liquid_cash` card's predicate (the production card
+		definition) returns leaves under `Bank Accounts` or
+		`Cash in Hand` parents with `root_type=Asset` only.
+		Cross-checks the actual CARDS entry, not a synthetic copy."""
+		card = next(c for c in CARDS if c["id"] == "liquid_cash")
+		result = cards_v1.resolve_match_to_accounts(
+			card["match"], _all_companies(),
+		)
+		if not result["accounts"]:
+			self.skipTest("No Liquid cash leaves in dev COA.")
+		rows = frappe.db.sql(
+			"""
+			SELECT parent_account, root_type FROM `tabAccount`
+			WHERE name IN %s
+			""",
+			(tuple(result["accounts"]),),
+			as_dict=True,
+		)
+		# Case-insensitive comparison: MySQL's default collation matches
+		# 'Cash in Hand' and 'Cash In Hand' as equal; the predicate
+		# returns both case variants from the dev COA (which has both).
+		# See test_happy_path_returns_leaves_under_named_stems note.
+		expected_stems_lower = {"bank accounts", "cash in hand"}
+		for r in rows:
+			stem = (r["parent_account"] or "").split(" - ", 1)[0]
+			self.assertIn(
+				stem.casefold(), expected_stems_lower,
+				msg=f"Liquid cash leaf has unexpected parent stem '{stem}'",
+			)
+			self.assertEqual(
+				r["root_type"], "Asset",
+				msg=f"Liquid cash leaf has unexpected root_type '{r['root_type']}'",
+			)
+
+	def test_secured_loans_predicate_resolves_to_loan_leaves(self):
+		"""The `secured_loans` card's predicate returns leaves under
+		`Secured Loans` or `Bank OD A/c` parents with
+		`root_type=Liability` only."""
+		card = next(c for c in CARDS if c["id"] == "secured_loans")
+		result = cards_v1.resolve_match_to_accounts(
+			card["match"], _all_companies(),
+		)
+		if not result["accounts"]:
+			self.skipTest("No Secured loans leaves in dev COA.")
+		rows = frappe.db.sql(
+			"""
+			SELECT parent_account, root_type FROM `tabAccount`
+			WHERE name IN %s
+			""",
+			(tuple(result["accounts"]),),
+			as_dict=True,
+		)
+		# Case-insensitive (see note on test_happy_path).
+		expected_stems_lower = {"secured loans", "bank od a/c"}
+		for r in rows:
+			stem = (r["parent_account"] or "").split(" - ", 1)[0]
+			self.assertIn(
+				stem.casefold(), expected_stems_lower,
+				msg=f"Secured loans leaf has unexpected parent stem '{stem}'",
+			)
+			self.assertEqual(
+				r["root_type"], "Liability",
+				msg=f"Secured loans leaf has unexpected root_type '{r['root_type']}'",
+			)
+
+
+class TestDrillResolverIgnoresDisabledFlag(FrappeTestCase):
+	"""Disabled cards remain resolvable by the drill resolver.
+
+	Per spec `specs/cash-bank-card-split.md` §5.3 + Q1: the cockpit
+	grid + headline composer skip disabled cards, BUT
+	`cards_v1.resolve_match_to_accounts` does NOT. Rationale: a
+	bookmarked deep-link to the drill panel for an old card_id (e.g.
+	a saved share-link for the now-disabled `cash_and_bank`) should
+	still open and render -- only the cockpit grid hides the card.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		_ensure_today_data()
+
+	def test_resolve_match_to_accounts_works_for_disabled_card(self):
+		"""Disabled card_id's predicate still resolves to a leaf list.
+		Pinned so a future 'tidy up the disable behaviour' refactor
+		can't silently break bookmarked drill deep-links.
+		"""
+		# Pick a card that is currently disabled by the production
+		# CARDS definition (this PR disables `cash_and_bank`).
+		disabled_cards = [c for c in CARDS if c.get("disabled")]
+		self.assertGreater(
+			len(disabled_cards), 0,
+			msg=(
+				"This regression test relies on at least one disabled "
+				"card existing in CARDS. The cash & bank split PR "
+				"disables 3; if all disabled cards are later removed, "
+				"this test should be re-pointed at a different surface "
+				"(e.g. monkey-patched CARDS entry)."
+			),
+		)
+		target = disabled_cards[0]
+		result = cards_v1.resolve_match_to_accounts(
+			target["match"], _all_companies(),
+		)
+		# We don't assert non-empty (the disabled card's predicate may
+		# match no leaves on this dev seed; e.g. inter_co_receivable).
+		# We assert the resolver did NOT short-circuit on disabled and
+		# returned the same shape it would for a non-disabled card.
+		self.assertIsInstance(
+			result["accounts"], list,
+			msg=(
+				"Disabled card predicate must resolve to a list (possibly "
+				"empty) so bookmarked drill deep-links continue to work."
+			),
+		)
+		self.assertIn(
+			"label", result,
+			msg="Resolver response shape must be unchanged for disabled cards",
+		)

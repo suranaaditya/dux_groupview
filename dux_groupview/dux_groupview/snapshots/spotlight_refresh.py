@@ -206,6 +206,55 @@ def _match_clause(card):
 			},
 		)
 
+	if "by_parent_account_stem_in" in match:
+		# Per spec `specs/cash-bank-card-split.md` §4.4: IN-subquery
+		# against tabAccount resolves leaves matching the parent-stem
+		# predicate. The snapshot row table has `account_type` and
+		# `root_type` denormalised but NOT `parent_account`; the
+		# subquery is the cheapest way to express the predicate without
+		# a schema change. Company scope is applied separately by
+		# _aggregate against the snapshot row, so the subquery does NOT
+		# need a `company IN (...)` filter.
+		#
+		# Stems list uses the same `at_N` placeholder scheme as
+		# by_account_type to share the params-merge pattern at the
+		# call site. Defensive: missing keys / empty stems / non-list
+		# stems / non-string root_type all return (None, {}) so the
+		# refresh path skips the card with a zero rather than erroring.
+		conf = match["by_parent_account_stem_in"]
+		if not isinstance(conf, dict):
+			return (None, {})
+		stems = conf.get("stems")
+		root_type = conf.get("root_type")
+		if not isinstance(stems, (list, tuple)) or not stems:
+			return (None, {})
+		if not isinstance(root_type, str) or not root_type:
+			return (None, {})
+		# Placeholder hygiene: every stem becomes a separate named
+		# parameter (`%(st_0)s`, `%(st_1)s`, ...). No string
+		# concatenation of user-supplied values into SQL even though
+		# stems are dev-defined today.
+		#
+		# TODO (Phase 5 cleanup): `cards_v1._resolve_match` uses the
+		# shared `_named_in` helper for the same placeholder pattern.
+		# Two implementations of the same primitive will diverge over
+		# time; extract `_named_in` to a module both files import.
+		# Not in this PR -- own refactor.
+		placeholders = ", ".join(
+			f"%(st_{i})s" for i in range(len(stems))
+		)
+		params = {f"st_{i}": x for i, x in enumerate(stems)}
+		params["root_type"] = root_type
+		clause = (
+			"account IN ("
+			"SELECT name FROM `tabAccount` "
+			"WHERE is_group = 0 "
+			"AND root_type = %(root_type)s "
+			f"AND SUBSTRING_INDEX(parent_account, ' - ', 1) IN ({placeholders})"
+			")"
+		)
+		return (clause, params)
+
 	return (None, {})
 
 
