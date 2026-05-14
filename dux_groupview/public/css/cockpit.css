@@ -999,6 +999,134 @@
 }
 
 
+/* ============================================================
+ * Per-company expansion: chevron + nested account rows
+ * (spec/per-account-drill-expand.md §4)
+ * ============================================================ */
+
+.dgv-drill-co-table-expandable .dgv-drill-co-row {
+	cursor: pointer;
+	transition: background-color 120ms ease;
+}
+.dgv-drill-co-table-expandable .dgv-drill-co-row:hover,
+.dgv-drill-co-table-expandable .dgv-drill-co-row:focus {
+	background: var(--rgi-bg-row-alt);
+	outline: none;
+}
+.dgv-drill-co-table-expandable .dgv-drill-co-row:focus-visible {
+	box-shadow: inset 0 0 0 2px var(--rgi-border-light);
+}
+
+.dgv-drill-co-chevron {
+	width: 28px;
+	padding-right: 6px;
+	padding-left: 2px;
+	color: var(--rgi-text-tertiary);
+	font-size: 11px;
+	vertical-align: middle;
+	text-align: center;
+	user-select: none;
+}
+.dgv-drill-co-chevron-glyph {
+	display: inline-block;
+	transition: transform 140ms ease;
+}
+.dgv-drill-co-row.is-loading .dgv-drill-co-chevron-glyph {
+	animation: dgv-drill-chevron-spin 800ms linear infinite;
+}
+@keyframes dgv-drill-chevron-spin {
+	from { transform: rotate(0deg); }
+	to   { transform: rotate(360deg); }
+}
+
+/* Account expansion <tr> */
+
+.dgv-drill-account-expand > .dgv-drill-account-cell {
+	padding: 0 0 6px 0;
+	border-bottom: 1px solid #F0EBE0;
+	background: var(--rgi-bg-row-alt);
+}
+.dgv-drill-account-slot {
+	padding: 4px 0 4px 36px;  /* indent past the chevron column */
+}
+
+.dgv-drill-account-loading,
+.dgv-drill-account-empty {
+	padding: 10px 12px;
+	font-family: var(--rgi-font-serif);
+	font-style: italic;
+	color: var(--rgi-text-tertiary);
+	font-size: 13px;
+}
+.dgv-drill-account-error-host {
+	padding: 8px 12px;
+}
+
+.dgv-drill-account-table {
+	width: 100%;
+	border-collapse: collapse;
+	font-family: var(--rgi-font-sans);
+	font-size: 12.5px;
+}
+.dgv-drill-account-table td {
+	padding: 6px 0;
+	border-bottom: 1px dashed #ECE6D6;
+	color: var(--rgi-text-secondary);
+	vertical-align: middle;
+}
+.dgv-drill-account-table tr:last-child td { border-bottom: none; }
+
+.dgv-drill-account-row {
+	cursor: pointer;
+	transition: background-color 120ms ease;
+}
+.dgv-drill-account-row:hover,
+.dgv-drill-account-row:focus {
+	background: rgba(255, 255, 255, 0.7);
+	outline: none;
+}
+.dgv-drill-account-row:focus-visible {
+	box-shadow: inset 0 0 0 2px var(--rgi-border-light);
+}
+
+.dgv-drill-account-name {
+	color: var(--rgi-text-primary);
+	padding-right: 10px;
+}
+.dgv-drill-account-value {
+	font-family: var(--rgi-font-mono);
+	color: var(--rgi-text-primary);
+	text-align: right;
+	white-space: nowrap;
+	width: 1%;  /* shrink-to-fit */
+	padding-right: 12px;
+}
+.dgv-drill-account-unit {
+	color: var(--rgi-text-tertiary);
+	font-size: 10.5px;
+}
+.dgv-drill-account-arrow {
+	width: 16px;
+	text-align: right;
+	color: var(--rgi-text-tertiary);
+	font-size: 12px;
+	opacity: 0;
+	transition: opacity 120ms ease;
+}
+.dgv-drill-account-row:hover .dgv-drill-account-arrow,
+.dgv-drill-account-row:focus .dgv-drill-account-arrow {
+	opacity: 1;
+}
+
+.dgv-drill-account-truncate-note {
+	padding: 6px 0 2px 0;
+	font-family: var(--rgi-font-serif);
+	font-style: italic;
+	color: var(--rgi-text-tertiary);
+	font-size: 12px;
+}
+
+
 /* By-party table */
 
 .dgv-drill-party-head {

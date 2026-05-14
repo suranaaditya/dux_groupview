@@ -192,6 +192,16 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 	bootstrap();
 	checkSyntheticPreview();
 
+	// Returntrip restoration (spec/per-account-drill-expand.md §7):
+	// re-open the account drill panel with the previously-expanded
+	// companies restored, when the user is returning from a per-account
+	// GL drill click via browser back. No-op when sessionStorage has
+	// no fresh entry. Fires async (panel opens in parallel with cockpit
+	// data loading; the panel makes its own API calls).
+	if (window.dgvRestoreAccountDrillFromReturntrip) {
+		window.dgvRestoreAccountDrillFromReturntrip();
+	}
+
 	function checkSyntheticPreview() {
 		frappe.call({
 			method: 'dux_groupview.dux_groupview.api.cockpit.get_seed_state',

@@ -271,12 +271,44 @@ frappe.pages['account-drill'].on_page_load = function(wrapper) {
 			coCard.hidden = true;
 		} else {
 			coCard.hidden = false;
-			document.getElementById('dgv-page-co').innerHTML =
-				window.dgvDrill.renderCompanyBreakdownTable(data.by_company || [], {
+			const coHost = document.getElementById('dgv-page-co');
+			coHost.innerHTML = window.dgvDrill.renderCompanyBreakdownTable(
+				data.by_company || [], {
 					showSparklines: true,
 					sparklineSize: [80, 14],
 					maxNameLength: null,
-				});
+					expandable: true,
+				}
+			);
+			// Wire chevron expand/collapse + per-account row -> GL drill.
+			// Args/ctx shape mirrors what the panel uses internally so the
+			// shared bindCompanyRowExpansion can route this page's clicks
+			// through the same fetchAccountsForCompany call. saveReturntrip
+			// fires from navigateToGlDrillForAccount but silently no-ops
+			// here because `currentRequest` is panel-only; full-page back-
+			// navigation does not restore expansion (acceptable v1 gap;
+			// follow-up if needed).
+			const isCard = state.scope.kind === 'card';
+			const drillArgs = {
+				source: isCard ? 'card' : 'pivot',
+				card_id: isCard ? state.scope.id : undefined,
+				scope: isCard
+					? undefined
+					: { type: state.scope.kind, value: state.scope.id },
+				scope_label: state.resolvedLabel || state.scope.id || '',
+				as_of_date: state.as_of_date,
+				companies: state.companies || undefined,
+			};
+			const drillCtx = isCard
+				? {
+					accounts: state.resolvedAccounts || [],
+					label: state.resolvedLabel || '',
+				}
+				: {
+					scope: drillArgs.scope,
+					label: drillArgs.scope_label,
+				};
+			window.dgvDrill.bindCompanyRowExpansion(coHost, drillArgs, drillCtx);
 		}
 
 		// Action bar at the bottom — same buttons, same stubs.
