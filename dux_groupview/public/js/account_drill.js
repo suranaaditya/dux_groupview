@@ -54,6 +54,12 @@
 		stubGlDrill: stubGlDrill,
 		stubExportCsv: stubExportCsv,
 		stubViewAllParties: stubViewAllParties,
+		// Per-account expansion. Full page wires this after each
+		// renderCompanyBreakdownTable swap (when expandable:true was
+		// passed). Internal helpers it depends on -- toggleCompanyExpansion,
+		// fetchAccountsForCompany, navigateToGlDrillForAccount -- live in
+		// the IIFE closure; nothing else to expose.
+		bindCompanyRowExpansion: bindCompanyRowExpansion,
 	};
 
 
@@ -179,6 +185,17 @@
 		// when it arrives (HALT 6.3 category 4.b + 4.d).
 		panelFetchToken += 1;
 		panelInFlightKey = null;
+		// Tear down per-company expansion DOM so a cross-surface
+		// lookup (full page) cannot find stale TRs from a previously
+		// closed panel and render into them. Belt-and-suspenders;
+		// openPanel's next render also swaps coHost.innerHTML which
+		// achieves the same.
+		var expansionTrs = panelEl.querySelectorAll(
+			'tr.dgv-drill-account-expand'
+		);
+		for (var i = 0; i < expansionTrs.length; i++) {
+			expansionTrs[i].remove();
+		}
 		// Drop per-company expansion state. Spec §7: fresh state on
 		// every panel open; expansions don't carry over.
 		expandedCompanies = new Set();
@@ -1174,11 +1191,20 @@
 	}
 
 	function currentExpansionRow(company) {
-		if (!panelEl) return null;
-		return panelEl.querySelector(
-			'tr.dgv-drill-account-expand[data-for-company="' +
-			cssEscape(company) + '"]'
-		);
+		// Look across the whole document so the full-page surface
+		// (`/app/account-drill?...`) finds its expansion TR too -- the
+		// full page renders into its own coHost OUTSIDE panelEl, so a
+		// panelEl-scoped lookup misses it. Prefer visible matches in
+		// case a hidden / stale TR from a closed panel still sits in
+		// the DOM alongside an active full-page TR.
+		var sel = 'tr.dgv-drill-account-expand[data-for-company="' +
+			cssEscape(company) + '"]';
+		var all = document.querySelectorAll(sel);
+		if (!all.length) return null;
+		for (var i = 0; i < all.length; i++) {
+			if (all[i].offsetParent !== null) return all[i];
+		}
+		return all[0];
 	}
 
 	/**
