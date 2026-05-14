@@ -26,6 +26,12 @@
 	root.dgvParseAccountDrillHash = parseDrillUrlParams;
 	root.dgvRenderErrorTile = renderErrorTile;
 	root.dgvClassifyError = classifyError;
+	// Cockpit calls this on page mount to re-open the panel with the
+	// previously-expanded companies restored, when the user is returning
+	// from a GL drill click. Cheap UX win for the diagnostic flow:
+	// expand A, drill into ICICI Bank, hit back -> panel reopens with A
+	// still expanded. See `saveReturntrip` / `consumeReturntrip`.
+	root.dgvRestoreAccountDrillFromReturntrip = restoreFromReturntrip;
 	// Spec v0.9: exposed for cross-page reuse. Party-list page calls
 	// this when the user clicks a multi-company party row, so the
 	// picker fires there too instead of bumping into the per-company
@@ -73,6 +79,30 @@
 	var panelFetchToken = 0;
 	var panelInFlightKey = null;
 
+	// Per-company expansion state (per spec/per-account-drill-expand.md §7).
+	//   expandedCompanies  -- Set<company_name> of currently-expanded rows
+	//   accountsCache      -- Map<company_name, accounts[]> of fetched
+	//                         per-account payloads. Lifetime = panel-open
+	//                         lifetime. Cleared on `closePanel`.
+	//   inflightExpansion  -- Set<company_name> of in-flight fetches; used
+	//                         to suppress duplicate fetches if the user
+	//                         double-clicks a chevron.
+	//   pendingExpansion   -- Array<company_name> queued for auto-expand
+	//                         after the by-company breakdown lands. Used
+	//                         only by the returntrip restoration path.
+	var expandedCompanies = new Set();
+	var accountsCache = new Map();
+	var inflightExpansion = new Set();
+	var pendingExpansion = null;
+
+	// sessionStorage key + TTL for the returntrip restoration mechanism.
+	// 5 minutes is long enough for an unhurried diagnostic flow (open
+	// panel -> expand -> drill -> read a few rows -> click back) but
+	// short enough that a stale entry from a much earlier session
+	// doesn't surprise the user.
+	var RETURNTRIP_KEY = 'dgv_drill_returntrip';
+	var RETURNTRIP_TTL_MS = 5 * 60 * 1000;
+
 
 	// =========================================================================
 	// Open / close
@@ -106,6 +136,13 @@
 		// key as the in-flight one.
 		panelFetchToken += 1;
 		panelInFlightKey = newKey;
+
+		// Fresh expansion state for every panel open. Restoration from a
+		// returntrip happens via `pendingExpansion` (set by the public
+		// `restoreFromReturntrip` entrypoint before calling openPanel).
+		expandedCompanies = new Set();
+		accountsCache = new Map();
+		inflightExpansion = new Set();
 
 		currentRequest = args;
 		ensurePanelDom();
@@ -142,6 +179,12 @@
 		// when it arrives (HALT 6.3 category 4.b + 4.d).
 		panelFetchToken += 1;
 		panelInFlightKey = null;
+		// Drop per-company expansion state. Spec §7: fresh state on
+		// every panel open; expansions don't carry over.
+		expandedCompanies = new Set();
+		accountsCache = new Map();
+		inflightExpansion = new Set();
+		pendingExpansion = null;
 		// Restore focus to the trigger if it's still in the DOM.
 		if (panelLastFocus && document.body.contains(panelLastFocus)) {
 			try { panelLastFocus.focus(); } catch (e) { /* ignore */ }
@@ -552,7 +595,21 @@
 			coHost.innerHTML = renderCompanyBreakdownTable(data.by_company || [], {
 				showSparklines: false,
 				maxNameLength: null,
+				expandable: true,
 			});
+			bindCompanyRowExpansion(coHost, args, ctx);
+			// Re-apply any pending expansions (returntrip restore path).
+			if (pendingExpansion && pendingExpansion.length) {
+				var pending = pendingExpansion;
+				pendingExpansion = null;
+				pending.forEach(function (co) {
+					var tr = coHost.querySelector(
+						'tr.dgv-drill-co-row[data-company="' +
+						cssEscape(co) + '"]'
+					);
+					if (tr) toggleCompanyExpansion(tr, args, ctx);
+				});
+			}
 		}
 
 		actions.innerHTML = renderActionBar({
@@ -877,7 +934,14 @@
 	/**
 	 * rows: [{ company, value, sparkline }]
 	 *
-	 * opts: { showSparklines, sparklineSize: [w, h], maxNameLength }
+	 * opts: { showSparklines, sparklineSize: [w, h], maxNameLength,
+	 *         expandable }
+	 *
+	 * When `expandable: true` is set, each row is augmented with a
+	 * leading chevron cell + `data-company` + `tabindex` + `role` so
+	 * the panel JS can bind expand/collapse click + keyboard. The
+	 * full page (account-drill route) imports this function via
+	 * `dgvDrill` and may pass expandable:false for its different UX.
 	 */
 	function renderCompanyBreakdownTable(rows, opts) {
 		opts = opts || {};
@@ -887,6 +951,7 @@
 		}
 		var sparklineW = opts.sparklineSize ? opts.sparklineSize[0] : 80;
 		var sparklineH = opts.sparklineSize ? opts.sparklineSize[1] : 14;
+		var expandable = !!opts.expandable;
 
 		var rowsHtml = rows.map(function (row) {
 			var fig = formatCrore(row.value);
@@ -901,7 +966,25 @@
 					renderSparkline(row.sparkline || [], sparklineW, sparklineH) +
 					'</td>';
 			}
-			return '<tr>' +
+			// Per spec §4: chevron column is the click affordance for
+			// inline expansion. data-company is the unique key for the
+			// delegated click handler in `bindCompanyRowExpansion`.
+			var chevronCell = '';
+			var rowAttrs = '';
+			if (expandable) {
+				chevronCell =
+					'<td class="dgv-drill-co-chevron" aria-hidden="true">' +
+						'<span class="dgv-drill-co-chevron-glyph">▶</span>' +
+					'</td>';
+				rowAttrs =
+					' data-company="' + escapeHtml(row.company) + '"' +
+					' tabindex="0"' +
+					' role="button"' +
+					' aria-expanded="false"' +
+					' aria-label="Expand ' + name + ' to per-account breakdown"';
+			}
+			return '<tr class="dgv-drill-co-row"' + rowAttrs + '>' +
+				chevronCell +
 				'<td class="dgv-drill-co-name">' + name + '</td>' +
 				sparkCell +
 				'<td class="dgv-drill-co-value">' +
@@ -913,8 +996,370 @@
 
 		return '<table class="dgv-drill-co-table' +
 			(opts.showSparklines ? ' dgv-drill-co-table-with-spark' : '') +
+			(expandable ? ' dgv-drill-co-table-expandable' : '') +
 			'"><tbody>' + rowsHtml + '</tbody></table>';
 	}
+
+
+	// =========================================================================
+	// Per-company expansion  (per spec/per-account-drill-expand.md §4 + §6)
+	// =========================================================================
+
+	/**
+	 * Wire delegated click + keyboard handlers to the by-company table.
+	 * Per spec §4.1: click anywhere on a company row (including chevron)
+	 * toggles its expansion; click on a per-account row inside the
+	 * expansion navigates to GL drill with `account_names=<name>`.
+	 *
+	 * Listeners are bound to the INNER `<table>`, not the outer
+	 * `coHost`. Every call to renderDrillData replaces coHost.innerHTML
+	 * with a fresh table, so old tables (and their listeners) are
+	 * destroyed by the GC. Binding to coHost would have accumulated
+	 * one listener per panel-open: each chevron click would then fire
+	 * N handlers in sequence, and the toggleCompanyExpansion logic
+	 * alternates expand/collapse on the shared `expandedCompanies`
+	 * Set -> N=2 produces a net no-op (expand then immediate collapse,
+	 * invisibly), which manifested as "chevron click does nothing" on
+	 * the second card opened in a session.
+	 */
+	function bindCompanyRowExpansion(coHost, args, ctx) {
+		var table = coHost.querySelector('.dgv-drill-co-table');
+		if (!table) return;
+		// Click delegation: handles both the company row toggle and
+		// the per-account row navigation. Single listener per render
+		// -> guaranteed by binding to the table (recreated by every
+		// innerHTML swap), not to coHost (reused across panel opens).
+		table.addEventListener('click', function (evt) {
+			var accountRow = evt.target.closest('.dgv-drill-account-row');
+			if (accountRow) {
+				navigateToGlDrillForAccount(accountRow, args);
+				return;
+			}
+			var companyRow = evt.target.closest('.dgv-drill-co-row[data-company]');
+			if (companyRow) {
+				toggleCompanyExpansion(companyRow, args, ctx);
+			}
+		});
+		// Keyboard: Enter/Space on a focused company row toggles
+		// expansion. Account rows are also focusable (tabindex=0); their
+		// Enter/Space navigates to GL drill.
+		table.addEventListener('keydown', function (evt) {
+			if (evt.key !== 'Enter' && evt.key !== ' ') return;
+			var accountRow = evt.target.closest('.dgv-drill-account-row');
+			if (accountRow) {
+				evt.preventDefault();
+				navigateToGlDrillForAccount(accountRow, args);
+				return;
+			}
+			var companyRow = evt.target.closest('.dgv-drill-co-row[data-company]');
+			if (companyRow) {
+				evt.preventDefault();
+				toggleCompanyExpansion(companyRow, args, ctx);
+			}
+		});
+	}
+
+	/**
+	 * Toggle one company row's expansion state. DOM-level transition:
+	 *   collapsed -> loading (skeleton) -> loaded (rows / error / empty)
+	 *   loaded    -> collapsed (DOM unmounted, cache retained)
+	 */
+	function toggleCompanyExpansion(companyRow, args, ctx) {
+		var company = companyRow.getAttribute('data-company');
+		if (!company) return;
+		if (expandedCompanies.has(company)) {
+			// Collapse: remove expansion DOM, update chevron + ARIA.
+			var existing = companyRow.nextElementSibling;
+			if (existing && existing.classList.contains('dgv-drill-account-expand')) {
+				existing.remove();
+			}
+			expandedCompanies.delete(company);
+			updateRowExpansionAffordance(companyRow, false, false);
+			return;
+		}
+		// Expand. Insert the expansion <tr> immediately after the
+		// company row; render either from cache or via fetch.
+		expandedCompanies.add(company);
+		updateRowExpansionAffordance(companyRow, true, false);
+
+		var colspan = companyRow.children.length;  // 3 default, 4 with sparkline
+		var expandTr = document.createElement('tr');
+		expandTr.className = 'dgv-drill-account-expand';
+		expandTr.setAttribute('data-for-company', company);
+		expandTr.innerHTML =
+			'<td class="dgv-drill-account-cell" colspan="' + colspan + '">' +
+				'<div class="dgv-drill-account-slot"></div>' +
+			'</td>';
+		companyRow.parentNode.insertBefore(expandTr, companyRow.nextSibling);
+
+		if (accountsCache.has(company)) {
+			renderAccountSlot(expandTr, accountsCache.get(company), args);
+			return;
+		}
+		// First expand for this company: fetch.
+		updateRowExpansionAffordance(companyRow, true, true);
+		var slot = expandTr.querySelector('.dgv-drill-account-slot');
+		slot.innerHTML =
+			'<div class="dgv-drill-account-loading">Loading accounts…</div>';
+		fetchAccountsForCompany(company, args, ctx);
+	}
+
+	/**
+	 * Update the chevron glyph + ARIA state. `loading=true` triggers a
+	 * CSS-animated spin on the chevron (the row stays in "expanded"
+	 * affordance state because the slot is already on screen).
+	 */
+	function updateRowExpansionAffordance(companyRow, expanded, loading) {
+		companyRow.classList.toggle('is-expanded', !!expanded);
+		companyRow.classList.toggle('is-loading',  !!loading);
+		companyRow.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+		var glyph = companyRow.querySelector('.dgv-drill-co-chevron-glyph');
+		if (glyph) glyph.textContent = expanded ? '▼' : '▶';
+	}
+
+	/**
+	 * Fetch per-account rows for one company. Caches on success;
+	 * renders dgvClassifyError tile on failure (scoped to the
+	 * expansion slot, NOT the whole panel). Inflight-set suppresses
+	 * duplicate fetches if the user mash-clicks the chevron.
+	 */
+	function fetchAccountsForCompany(company, args, ctx) {
+		if (inflightExpansion.has(company)) return;
+		inflightExpansion.add(company);
+
+		var myToken = panelFetchToken;
+		var apiArgs = { company: company };
+		// Reuse the panel's resolved leaf list when available (card
+		// path); fall back to the scope dict (pivot path).
+		if (ctx && ctx.accounts) {
+			apiArgs.accounts = JSON.stringify(ctx.accounts);
+			apiArgs.scope_label = (ctx.label || args.scope_label || '');
+		} else if (args.scope) {
+			apiArgs.scope = JSON.stringify(args.scope);
+			apiArgs.scope_label = args.scope_label || '';
+		}
+		if (args.as_of_date) apiArgs.as_of_date = args.as_of_date;
+
+		frappe.call({
+			method: 'dux_groupview.dux_groupview.api.account_drill_v1.' +
+				'get_account_breakdown_for_company',
+			args: apiArgs,
+			callback: function (r) {
+				if (myToken !== panelFetchToken) return; // stale
+				inflightExpansion.delete(company);
+				if (!expandedCompanies.has(company)) {
+					// User collapsed while in flight; cache anyway for
+					// next expand, skip render.
+					if (r && r.message) accountsCache.set(company, r.message);
+					return;
+				}
+				var data = (r && r.message) || null;
+				if (!data) {
+					renderAccountSlotError(company,
+						{ status: 500, statusText: 'Empty response' },
+						args, ctx);
+					return;
+				}
+				accountsCache.set(company, data);
+				var expandTr = currentExpansionRow(company);
+				if (expandTr) renderAccountSlot(expandTr, data, args);
+			},
+			error: function (r, xhr) {
+				if (myToken !== panelFetchToken) return; // stale
+				inflightExpansion.delete(company);
+				if (!expandedCompanies.has(company)) return;
+				renderAccountSlotError(company, xhr, args, ctx);
+			},
+		});
+	}
+
+	function currentExpansionRow(company) {
+		if (!panelEl) return null;
+		return panelEl.querySelector(
+			'tr.dgv-drill-account-expand[data-for-company="' +
+			cssEscape(company) + '"]'
+		);
+	}
+
+	/**
+	 * Render the loaded payload into the expansion slot. Drives the
+	 * defensive empty / truncation footer / per-account row list.
+	 */
+	function renderAccountSlot(expandTr, data, args) {
+		var slot = expandTr.querySelector('.dgv-drill-account-slot');
+		var companyRow = expandTr.previousElementSibling;
+		if (companyRow) updateRowExpansionAffordance(companyRow, true, false);
+
+		var accounts = (data && data.accounts) || [];
+		if (!accounts.length) {
+			slot.innerHTML =
+				'<div class="dgv-drill-account-empty">' +
+					'No accounts in this company match this card\'s ' +
+					'predicate.' +
+				'</div>';
+			return;
+		}
+
+		var rowsHtml = accounts.map(function (a) {
+			var fig = formatCrore(a.balance);
+			var sign = (Number(a.balance) || 0) < 0 ? '−' : '';
+			var name = escapeHtml(a.account_name || '');
+			// Truncate display at ~50 chars; full name kept in `title`.
+			var nameAttr = '';
+			if (a.account_name && a.account_name.length > 50) {
+				name = escapeHtml(a.account_name.slice(0, 49) + '…');
+				nameAttr = ' title="' + escapeHtml(a.account_name) + '"';
+			}
+			return '<tr class="dgv-drill-account-row"' +
+				' data-account="' + escapeHtml(a.account || '') + '"' +
+				' data-account-name="' + escapeHtml(a.account_name || '') + '"' +
+				' tabindex="0"' +
+				' role="button"' +
+				' aria-label="View GL entries for ' + name + '">' +
+				'<td class="dgv-drill-account-name"' + nameAttr + '>' +
+					name +
+				'</td>' +
+				'<td class="dgv-drill-account-value">' +
+					sign + '₹' + escapeHtml(fig.amount) + ' ' +
+					'<span class="dgv-drill-account-unit">' +
+						escapeHtml(fig.unit) +
+					'</span>' +
+				'</td>' +
+				'<td class="dgv-drill-account-arrow" aria-hidden="true">→</td>' +
+				'</tr>';
+		}).join('');
+
+		var truncHtml = '';
+		if (data.truncated) {
+			truncHtml =
+				'<div class="dgv-drill-account-truncate-note">' +
+					'Showing ' + accounts.length + ' of ' +
+					(data.total_accounts || accounts.length) + '. ' +
+					'Use Export CSV for all.' +
+				'</div>';
+		}
+
+		slot.innerHTML =
+			'<table class="dgv-drill-account-table">' +
+				'<tbody>' + rowsHtml + '</tbody>' +
+			'</table>' +
+			truncHtml;
+	}
+
+	function renderAccountSlotError(company, xhr, args, ctx) {
+		var expandTr = currentExpansionRow(company);
+		if (!expandTr) return;
+		var slot = expandTr.querySelector('.dgv-drill-account-slot');
+		var companyRow = expandTr.previousElementSibling;
+		if (companyRow) updateRowExpansionAffordance(companyRow, true, false);
+		// Per spec §4.4: error tile scoped to the expansion slot, NOT
+		// the whole panel. The retry callback re-fires only this
+		// company's fetch -- other expansions in the same panel keep
+		// their state.
+		slot.innerHTML = '<div class="dgv-drill-account-error-host"></div>';
+		var host = slot.firstElementChild;
+		root.dgvRenderErrorTile(xhr, host, function () {
+			slot.innerHTML =
+				'<div class="dgv-drill-account-loading">Loading accounts…</div>';
+			fetchAccountsForCompany(company, args, ctx);
+		});
+	}
+
+	/**
+	 * Per-account row click -> navigate to GL drill scoped to that one
+	 * account in that one company. Before navigating, save a returntrip
+	 * cookie to sessionStorage so the cockpit can re-open the panel
+	 * with this company still expanded if the user hits back.
+	 */
+	function navigateToGlDrillForAccount(accountRow, args) {
+		var accountName = accountRow.getAttribute('data-account-name') || '';
+		var expandTr = accountRow.closest('.dgv-drill-account-expand');
+		var company = expandTr
+			? expandTr.getAttribute('data-for-company')
+			: null;
+		if (!accountName || !company) return;
+		// Snapshot expansion state for the back-trip restoration.
+		saveReturntrip();
+		var url = buildGlDrillUrl({
+			source: args.source,
+			card_id: args.card_id,
+			scope: args.scope,
+			as_of_date: args.as_of_date,
+			companies: [company],
+			account_name: accountName,
+		});
+		try { window.location.href = url; }
+		catch (e) { window.location.assign(url); }
+	}
+
+	// =========================================================================
+	// Returntrip: preserve expansion state across the GL drill round-trip
+	// =========================================================================
+
+	function saveReturntrip() {
+		if (!currentRequest) return;
+		if (!expandedCompanies.size) return;
+		var payload = {
+			request: {
+				source: currentRequest.source,
+				card_id: currentRequest.card_id || null,
+				match: currentRequest.match || null,
+				scope: currentRequest.scope || null,
+				scope_label: currentRequest.scope_label || '',
+				as_of_date: currentRequest.as_of_date || null,
+				companies: currentRequest.companies || null,
+			},
+			expanded: Array.from(expandedCompanies),
+			ts: Date.now(),
+		};
+		try {
+			sessionStorage.setItem(RETURNTRIP_KEY, JSON.stringify(payload));
+		} catch (e) {
+			// Private-mode / quota / disabled storage: silently degrade.
+			// Worst case: user lands back without expansion restored,
+			// which is the pre-feature baseline.
+		}
+	}
+
+	function consumeReturntrip() {
+		var raw = null;
+		try { raw = sessionStorage.getItem(RETURNTRIP_KEY); }
+		catch (e) { return null; }
+		if (!raw) return null;
+		try { sessionStorage.removeItem(RETURNTRIP_KEY); } catch (e) {}
+		var data;
+		try { data = JSON.parse(raw); } catch (e) { return null; }
+		if (!data || typeof data.ts !== 'number') return null;
+		if (Date.now() - data.ts > RETURNTRIP_TTL_MS) return null;
+		if (!Array.isArray(data.expanded) || !data.expanded.length) return null;
+		return data;
+	}
+
+	function restoreFromReturntrip() {
+		var data = consumeReturntrip();
+		if (!data) return;
+		pendingExpansion = data.expanded;
+		openPanel(data.request);
+	}
+
+	// =========================================================================
+	// Small helpers shared by the expansion path
+	// =========================================================================
+
+	/**
+	 * Minimal CSS.escape polyfill for the attribute-selector lookups
+	 * used by the expansion code. Most modern browsers ship CSS.escape;
+	 * Frappe Desk supports the same browsers we do, so this is mostly
+	 * paranoia. The whitespace + quote escapes here cover real-world
+	 * company names ("GH Raisoni University Amravati", quoted refs etc).
+	 */
+	function cssEscape(s) {
+		if (typeof CSS !== 'undefined' && CSS.escape) return CSS.escape(s);
+		return String(s).replace(/["\\\n\r\f]/g, function (ch) {
+			return '\\' + ch.charCodeAt(0).toString(16) + ' ';
+		});
+	}
+
 
 	/**
 	 * Tiny inline-SVG sparkline. data: [number|null, ...] (12 entries).
@@ -1359,6 +1804,15 @@
 		}
 		if (args.companies && args.companies.length) {
 			params.push('companies=' + encodeURIComponent(args.companies.join(',')));
+		}
+		// Per spec/per-account-drill-expand.md §6: per-account drill
+		// passes the stripped account name as a single-element
+		// `account_names` filter. GL drill (HALT 2.5) already reads
+		// this URL param + renders an active chip filter, so no GL
+		// drill page change is required for the per-account click path.
+		if (args.account_name) {
+			params.push('account_names=' +
+				encodeURIComponent(args.account_name));
 		}
 		return '/app/gl-drill' + (params.length ? '?' + params.join('&') : '');
 	}
