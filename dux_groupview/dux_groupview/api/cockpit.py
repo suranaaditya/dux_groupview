@@ -441,6 +441,11 @@ HEADLINE_CARD_NAMES = {
 	# at the read sites is the source of truth for headline inclusion.
 	"liquid_cash":            "Liquid cash",
 	"secured_loans":          "Secured loans",
+	# Companion to `sundry_creditors`. Same label as the card
+	# (matches the liquid_cash / secured_loans pattern -- label and
+	# headline copy converge for cards where the label is already
+	# prose-friendly inline).
+	"supplier_advances":      "Supplier advances",
 }
 
 # Significance threshold for inclusion in the headline.

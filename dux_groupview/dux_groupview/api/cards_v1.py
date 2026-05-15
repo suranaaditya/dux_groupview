@@ -103,25 +103,65 @@ def _resolve_match(match: dict, companies: list) -> list:
 
 	if "by_account_type" in match:
 		v = match["by_account_type"]
-		if isinstance(v, (list, tuple)):
-			at_ph, at_params = _named_in("at", v)
-			return frappe.db.sql_list(
-				f"""
+		# `by_account_type` value shapes (three forms; first two are
+		# shortcuts for the canonical dict form):
+		#   "Payable"                                            -> single account_type
+		#   ["Bank", "Cash"]                                     -> multiple account_types
+		#   {"account_type": ..., "balance_sign": "negative"}    -> canonical, optional sign filter
+		if isinstance(v, str):
+			account_types, balance_sign = [v], "any"
+		elif isinstance(v, (list, tuple)):
+			# Strict: every element must be a string. Mixed-type lists
+			# (e.g. `["Payable", {"balance_sign": "positive"}]`) are
+			# NOT supported -- a card author wanting sign-filter +
+			# multi-type must use the canonical dict shape:
+			#   {"account_type": ["Payable", ...], "balance_sign": ...}
+			# Defensive: any non-string element -> empty result.
+			if not all(isinstance(x, str) for x in v):
+				return []
+			account_types, balance_sign = list(v), "any"
+		elif isinstance(v, dict):
+			at = v.get("account_type")
+			if isinstance(at, str):
+				account_types = [at]
+			elif isinstance(at, (list, tuple)):
+				if not all(isinstance(x, str) for x in at):
+					return []
+				account_types = list(at)
+			else:
+				return []
+			balance_sign = v.get("balance_sign", "any")
+		else:
+			return []
+		if not account_types:
+			return []
+		if balance_sign not in ("positive", "negative", "any"):
+			# Defensive: unrecognised sign -> empty (matches the
+			# defensive shape used elsewhere in this resolver).
+			return []
+		at_ph, at_params = _named_in("at", account_types)
+		return _resolve_with_optional_sign_filter(
+			tabaccount_only_sql=f"""
 				SELECT name FROM `tabAccount`
 				WHERE is_group = 0
 				  AND account_type IN ({at_ph})
 				  AND company IN ({co_ph})
-				""",
-				{**at_params, **co_params},
-			)
-		return frappe.db.sql_list(
-			f"""
-			SELECT name FROM `tabAccount`
-			WHERE is_group = 0
-			  AND account_type = %(account_type)s
-			  AND company IN ({co_ph})
 			""",
-			{"account_type": v, **co_params},
+			tabaccount_sign_filtered_sql=f"""
+				SELECT DISTINCT s.account
+				FROM `tabDGV TB Snapshot Row` s
+				JOIN `tabAccount` a ON a.name = s.account
+				WHERE s.snapshot_date = (
+				    SELECT MAX(snapshot_date) FROM `tabDGV TB Snapshot`
+				    WHERE status = 'Complete'
+				)
+				  AND a.is_group = 0
+				  AND a.account_type IN ({at_ph})
+				  AND s.company IN ({co_ph})
+				  AND s.balance {{sign_op}} 0
+			""",
+			params={**at_params, **co_params},
+			balance_sign=balance_sign,
 		)
 
 	if "by_root_type_and_name_pattern" in match:
@@ -149,6 +189,13 @@ def _resolve_match(match: dict, companies: list) -> list:
 		# part BEFORE the first ` - ` separator in `parent_account`)
 		# is in `stems`. Defensive: empty stems, missing root_type,
 		# or wrong types -> empty.
+		#
+		# Optional `balance_sign` (added in spec/supplier-advances-split):
+		# "positive" / "negative" / "any". When set, filters leaves to
+		# those whose latest-snapshot balance has the matching sign.
+		# Predicate types other than this one don't currently consume
+		# the key but are designed to accept it for forward
+		# consistency.
 		conf = match["by_parent_account_stem_in"]
 		if not isinstance(conf, dict):
 			return []
@@ -158,20 +205,74 @@ def _resolve_match(match: dict, companies: list) -> list:
 			return []
 		if not isinstance(root_type, str) or not root_type:
 			return []
+		balance_sign = conf.get("balance_sign", "any")
+		if balance_sign not in ("positive", "negative", "any"):
+			return []
 		st_ph, st_params = _named_in("st", stems)
-		return frappe.db.sql_list(
-			f"""
-			SELECT name FROM `tabAccount`
-			WHERE is_group = 0
-			  AND root_type = %(root_type)s
-			  AND SUBSTRING_INDEX(parent_account, ' - ', 1) IN ({st_ph})
-			  AND company IN ({co_ph})
+		return _resolve_with_optional_sign_filter(
+			tabaccount_only_sql=f"""
+				SELECT name FROM `tabAccount`
+				WHERE is_group = 0
+				  AND root_type = %(root_type)s
+				  AND SUBSTRING_INDEX(parent_account, ' - ', 1) IN ({st_ph})
+				  AND company IN ({co_ph})
 			""",
-			{
-				"root_type": root_type,
-				**st_params,
-				**co_params,
-			},
+			tabaccount_sign_filtered_sql=f"""
+				SELECT DISTINCT s.account
+				FROM `tabDGV TB Snapshot Row` s
+				JOIN `tabAccount` a ON a.name = s.account
+				WHERE s.snapshot_date = (
+				    SELECT MAX(snapshot_date) FROM `tabDGV TB Snapshot`
+				    WHERE status = 'Complete'
+				)
+				  AND a.is_group = 0
+				  AND a.root_type = %(root_type)s
+				  AND SUBSTRING_INDEX(a.parent_account, ' - ', 1) IN ({st_ph})
+				  AND s.company IN ({co_ph})
+				  AND s.balance {{sign_op}} 0
+			""",
+			params={"root_type": root_type, **st_params, **co_params},
+			balance_sign=balance_sign,
 		)
 
 	return []
+
+
+def _resolve_with_optional_sign_filter(
+	tabaccount_only_sql: str,
+	tabaccount_sign_filtered_sql: str,
+	params: dict,
+	balance_sign: str,
+) -> list:
+	"""Run the right resolution query based on `balance_sign`.
+
+	Per spec/supplier-advances-split §1 + HALT 1 decision point (a):
+
+	  - `balance_sign == "any"`: query `tabAccount` only (default,
+	    backward-compatible). No snapshot dependency -- safe for
+	    fresh installs / mid-test environments where the snapshot
+	    cache may not exist yet.
+
+	  - `balance_sign in ("positive", "negative")`: JOIN
+	    `tabDGV TB Snapshot Row` against `tabAccount` at the latest
+	    `Complete` snapshot, filter leaves to those whose snapshot
+	    `balance` has the matching sign. Drill panel sees the same
+	    leaf set the card aggregated -- consistency between card
+	    surface and drill expansion. Architectural rule 1 compliant
+	    -- the snapshot row table is the cache layer, fair game from
+	    UI code paths.
+
+	The `tabaccount_sign_filtered_sql` argument carries a literal
+	`{sign_op}` placeholder that we replace here with `>` or `<`.
+	Sign comparison runs against the snapshot row's RAW `balance`
+	column (debit-credit, pre-natural-side-flip). Balance > 0 = debit
+	balance (advance-paid for Payable accounts); balance < 0 = credit
+	balance (owed for Payable accounts).
+	"""
+	if balance_sign == "any":
+		return frappe.db.sql_list(tabaccount_only_sql, params)
+	sign_op = ">" if balance_sign == "positive" else "<"
+	return frappe.db.sql_list(
+		tabaccount_sign_filtered_sql.replace("{sign_op}", sign_op),
+		params,
+	)
