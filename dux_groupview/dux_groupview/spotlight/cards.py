@@ -26,15 +26,36 @@ Each card definition is a dict with the following shape:
                                      to the drill panel continue to work.
     }
 
-`match` keys (three supported as of the cash & bank card split, spec
-`specs/cash-bank-card-split.md`):
+`match` keys (three supported; both `by_account_type` and
+`by_parent_account_stem_in` also accept an optional `balance_sign`
+sub-key as of the supplier-advances split):
 
 * `by_account_type`:
-    - value can be a string or a list of strings.
-    - Single string: `WHERE account_type = X`.
-    - List: `WHERE account_type IN (...)`.
-  Example: `{"by_account_type": "Payable"}` or
-  `{"by_account_type": ["Bank", "Cash"]}`.
+    - Three input shapes; first two are shortcuts for the third:
+      - `"Payable"` (string)                        -> single account_type
+      - `["Bank", "Cash"]` (list)                   -> multiple account_types
+      - `{"account_type": <str|list>,
+         "balance_sign": <"positive"|"negative"|"any">}` (dict, canonical)
+    - `balance_sign` is OPTIONAL and defaults to "any" (no sign filter,
+      same as the legacy string/list shapes). When set to "positive"
+      or "negative", the predicate filters leaves to those whose
+      LATEST-snapshot raw `balance` column has the matching sign.
+      Raw balance is debit-credit, pre-natural-side-flip:
+        - Payable / Liability accounts:
+            balance < 0 = credit balance = company owes (default)
+            balance > 0 = debit balance  = advance paid to supplier
+        - Receivable / Asset accounts:
+            balance > 0 = debit balance  = customer owes (default)
+            balance < 0 = credit balance = advance received from customer
+      Sign semantics route through the snapshot, NOT the COA
+      structure. A leaf whose balance flips sign between snapshots
+      will appear/disappear from the leaf set across refreshes -- this
+      is intended (the card surface flips the same way).
+  Examples:
+    `{"by_account_type": "Payable"}`                   -- legacy shortcut, no sign
+    `{"by_account_type": ["Bank", "Cash"]}`            -- legacy shortcut, no sign
+    `{"by_account_type": {"account_type": "Payable",   -- canonical, with sign
+                          "balance_sign": "negative"}}`
 
 * `by_root_type_and_name_pattern`:
     - filters on `root_type`, then matches `account` name with LIKE.
@@ -48,6 +69,10 @@ Each card definition is a dict with the following shape:
       AND `is_group = 0`. Used by the Liquid cash + Secured loans
       cards to express predicate-disjoint matching against an
       ERPNext-standard COA structure.
+    - Also accepts the same optional `balance_sign` sub-key as
+      `by_account_type` (same semantics, same snapshot consultation).
+      Not currently consumed by any card in this PR; added for
+      forward consistency / OD-positive future work.
   Example: `{"by_parent_account_stem_in":
               {"stems": ["Bank Accounts", "Cash in Hand"],
                "root_type": "Asset"}}`.
@@ -57,7 +82,31 @@ CARDS = [
 	{
 		"id": "sundry_creditors",
 		"label": "Sundry creditors",
-		"match": {"by_account_type": "Payable"},
+		"match": {
+			# Predicate split (spec/supplier-advances-split): the old
+			# `by_account_type: "Payable"` summed BOTH credit balances
+			# (money owed) AND debit balances (advances paid to
+			# suppliers) into a single net figure. Production diagnostic
+			# showed a net of ~Rs 37.79 Cr hiding ~Rs 2.52 Cr of paid-
+			# ahead advances. Splitting into gross-owed (this card) and
+			# gross-advances (new `supplier_advances` card).
+			#
+			# `balance_sign: negative` => raw balance < 0 = credit
+			# balance = actually owed to the supplier (the natural
+			# "creditors" semantic). The CASE flip in _aggregate then
+			# turns this into a positive natural-side total for the
+			# card display.
+			#
+			# Sparkline discontinuity at deploy: pre-PR points were
+			# net values; post-PR points are gross-owed. The
+			# transition will look like a small jump on most companies
+			# (~7% on prod baseline, plus the variance from the
+			# previously-netted advances).
+			"by_account_type": {
+				"account_type": "Payable",
+				"balance_sign": "negative",
+			},
+		},
 		"polarity": "neutral",
 		"format": "crore",
 		"color": "#BA7517",
@@ -194,6 +243,34 @@ CARDS = [
 		"polarity": "bad_up",
 		"format": "crore",
 		"color": "#7B2D26",
+	},
+	{
+		"id": "supplier_advances",
+		"label": "Supplier advances",
+		"match": {
+			# Companion to `sundry_creditors`. Same predicate (Payable
+			# account_type) but filtered to leaves with debit balances
+			# = advances paid to suppliers ahead of invoices arriving.
+			# Sign convention: raw balance > 0 on a Payable account is
+			# a debit balance (atypical state), representing money the
+			# supplier holds in advance against future invoices.
+			#
+			# Polarity: `bad_up`. Advances rising means more working
+			# capital is parked with suppliers; from an owner's
+			# perspective that's a deterioration of cash position,
+			# even though individual advances may be legitimate.
+			"by_account_type": {
+				"account_type": "Payable",
+				"balance_sign": "positive",
+			},
+		},
+		"polarity": "bad_up",
+		"format": "crore",
+		# Rose-mauve. Distinct from the existing palette (creditors
+		# brown #BA7517, debtors green #3B6D11, financial-exp red
+		# #A33B3B, etc.). Sits adjacent to creditors visually (warm
+		# tones for AP-adjacent concepts) without competing with it.
+		"color": "#A85B8C",
 	},
 ]
 

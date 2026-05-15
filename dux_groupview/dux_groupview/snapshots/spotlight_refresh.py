@@ -183,18 +183,61 @@ def _match_clause(card):
 	"""Translate a card's `match` config into (where_clause, params).
 
 	Returns (None, {}) if the strategy is unrecognised.
+
+	Optional `balance_sign` key on `by_account_type` and
+	`by_parent_account_stem_in` (spec/supplier-advances-split §1):
+	"positive" / "negative" / "any" (default). When set, appends
+	`AND balance > 0` or `AND balance < 0` to the emitted WHERE
+	clause. Filter runs against the snapshot row's RAW `balance`
+	column (debit-credit, pre-natural-side-flip), NOT the CASE-flipped
+	natural-side value computed in `_aggregate`. For Payable accounts:
+	  - balance < 0 -> credit balance (company owes / "sundry creditors")
+	  - balance > 0 -> debit balance (advance paid / "supplier advances")
 	"""
 	match = card.get("match", {})
 
 	if "by_account_type" in match:
 		v = match["by_account_type"]
-		if isinstance(v, (list, tuple)):
-			placeholders = ", ".join(
-				f"%(at_{i})s" for i in range(len(v))
-			)
-			params = {f"at_{i}": x for i, x in enumerate(v)}
-			return (f"account_type IN ({placeholders})", params)
-		return ("account_type = %(account_type)s", {"account_type": v})
+		# Three input shapes (spec/supplier-advances-split):
+		#   "Payable"                                            -> str
+		#   ["Bank", "Cash"]                                     -> list
+		#   {"account_type": ..., "balance_sign": "negative"}    -> dict
+		if isinstance(v, str):
+			account_types, balance_sign = [v], "any"
+		elif isinstance(v, (list, tuple)):
+			# Strict: every element must be a string. Mixed-type lists
+			# are NOT supported (see cards_v1._resolve_match for the
+			# same defensive shape and rationale).
+			if not all(isinstance(x, str) for x in v):
+				return (None, {})
+			account_types, balance_sign = list(v), "any"
+		elif isinstance(v, dict):
+			at = v.get("account_type")
+			if isinstance(at, str):
+				account_types = [at]
+			elif isinstance(at, (list, tuple)):
+				if not all(isinstance(x, str) for x in at):
+					return (None, {})
+				account_types = list(at)
+			else:
+				return (None, {})
+			balance_sign = v.get("balance_sign", "any")
+		else:
+			return (None, {})
+		if not account_types:
+			return (None, {})
+		if balance_sign not in ("positive", "negative", "any"):
+			return (None, {})  # defensive
+		placeholders = ", ".join(
+			f"%(at_{i})s" for i in range(len(account_types))
+		)
+		params = {f"at_{i}": x for i, x in enumerate(account_types)}
+		clause = f"account_type IN ({placeholders})"
+		if balance_sign == "positive":
+			clause += " AND balance > 0"
+		elif balance_sign == "negative":
+			clause += " AND balance < 0"
+		return (clause, params)
 
 	if "by_root_type_and_name_pattern" in match:
 		conf = match["by_root_type_and_name_pattern"]
@@ -230,6 +273,9 @@ def _match_clause(card):
 			return (None, {})
 		if not isinstance(root_type, str) or not root_type:
 			return (None, {})
+		balance_sign = conf.get("balance_sign", "any")
+		if balance_sign not in ("positive", "negative", "any"):
+			return (None, {})  # defensive
 		# Placeholder hygiene: every stem becomes a separate named
 		# parameter (`%(st_0)s`, `%(st_1)s`, ...). No string
 		# concatenation of user-supplied values into SQL even though
@@ -253,6 +299,14 @@ def _match_clause(card):
 			f"AND SUBSTRING_INDEX(parent_account, ' - ', 1) IN ({placeholders})"
 			")"
 		)
+		# Sign filter sits on the OUTER WHERE (i.e. on snapshot row's
+		# `balance`), not inside the IN-subquery -- the subquery
+		# resolves leaves; the outer WHERE filters by current state.
+		# Same column semantics as by_account_type (raw, pre-flip).
+		if balance_sign == "positive":
+			clause += " AND balance > 0"
+		elif balance_sign == "negative":
+			clause += " AND balance < 0"
 		return (clause, params)
 
 	return (None, {})

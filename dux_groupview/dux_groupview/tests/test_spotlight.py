@@ -141,17 +141,43 @@ class TestSpotlightCache(FrappeTestCase):
 		"""Independent re-aggregation, intentionally using a different
 		query path than the production code (raw SQL with explicit
 		WHERE/CASE rather than the strategy-dispatched code).
+
+		Handles all three input shapes of `by_account_type`:
+		  - str:  legacy shortcut, no sign filter
+		  - list: legacy shortcut, no sign filter
+		  - dict: canonical form with optional balance_sign (extended
+		          by spec/supplier-advances-split)
 		"""
 		match = card["match"]
 		if "by_account_type" in match:
 			v = match["by_account_type"]
-			if isinstance(v, (list, tuple)):
+			balance_sign_clause = ""
+			if isinstance(v, str):
+				where = "account_type = %s"
+				params = [v, snapshot_date]
+			elif isinstance(v, (list, tuple)):
 				placeholders = ", ".join(["%s"] * len(v))
 				where = f"account_type IN ({placeholders})"
 				params = list(v) + [snapshot_date]
+			elif isinstance(v, dict):
+				at = v["account_type"]
+				if isinstance(at, (list, tuple)):
+					placeholders = ", ".join(["%s"] * len(at))
+					where = f"account_type IN ({placeholders})"
+					params = list(at) + [snapshot_date]
+				else:
+					where = "account_type = %s"
+					params = [at, snapshot_date]
+				# Sign filter on RAW snapshot row balance, mirroring
+				# what `_match_clause` emits.
+				balance_sign = v.get("balance_sign", "any")
+				if balance_sign == "positive":
+					balance_sign_clause = " AND balance > 0"
+				elif balance_sign == "negative":
+					balance_sign_clause = " AND balance < 0"
 			else:
-				where = "account_type = %s"
-				params = [v, snapshot_date]
+				return 0.0
+			where = where + balance_sign_clause
 		elif "by_root_type_and_name_pattern" in match:
 			conf = match["by_root_type_and_name_pattern"]
 			where = "root_type = %s AND account LIKE %s"
@@ -162,6 +188,9 @@ class TestSpotlightCache(FrappeTestCase):
 			# tabAccount. Keep the WHERE structure parallel to what
 			# `_match_clause` emits in production code so this test
 			# verifies the production query's shape AND its arithmetic.
+			#
+			# Per spec/supplier-advances-split §1: optional balance_sign
+			# applies the same outer-WHERE sign filter as by_account_type.
 			conf = match["by_parent_account_stem_in"]
 			stems = conf["stems"]
 			placeholders = ", ".join(["%s"] * len(stems))
@@ -174,6 +203,11 @@ class TestSpotlightCache(FrappeTestCase):
 				")"
 			)
 			params = [conf["root_type"]] + list(stems) + [snapshot_date]
+			balance_sign = conf.get("balance_sign", "any")
+			if balance_sign == "positive":
+				where += " AND balance > 0"
+			elif balance_sign == "negative":
+				where += " AND balance < 0"
 		else:
 			return 0.0
 
@@ -562,3 +596,243 @@ class TestByParentAccountStemInRefreshClause(FrappeTestCase):
 					f"production parent-stem filter expects."
 				),
 			)
+
+
+class TestBalanceSignRefresh(FrappeTestCase):
+	"""Refresh-path tests for the `balance_sign` predicate extension.
+
+	Per spec/supplier-advances-split §1: `_match_clause` appends
+	`AND balance > 0` or `AND balance < 0` to the snapshot-row WHERE
+	when `balance_sign` is set. These tests verify the EMITTED CLAUSE
+	produces the right cached number, not just the right SQL shape.
+
+	Critical invariant pinned here:
+	    sundry_creditors.value + supplier_advances.value
+	      == old_sundry_creditors_net_value (within rounding).
+
+	This catches accidental double-counting or accidental exclusion if
+	a future refactor breaks the sign split.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		_purge_all()
+		refresh_tb_snapshot()
+		refresh_spotlight_cache()
+
+	@classmethod
+	def tearDownClass(cls):
+		_purge_all()
+		super().tearDownClass()
+
+	def test_match_clause_appends_balance_sign_to_emitted_clause(self):
+		"""`_match_clause` for `by_account_type` with `balance_sign:
+		"positive"` emits `account_type IN (...) AND balance > 0`.
+		Pin the SQL shape so a future refactor can't silently drop
+		the sign filter.
+		"""
+		from dux_groupview.dux_groupview.snapshots.spotlight_refresh import (
+			_match_clause,
+		)
+		# Negative sign
+		card_neg = {
+			"id": "test_neg",
+			"match": {"by_account_type": {
+				"account_type": "Payable", "balance_sign": "negative"}},
+		}
+		clause, params = _match_clause(card_neg)
+		self.assertIsNotNone(clause)
+		self.assertIn("balance < 0", clause)
+		self.assertIn("account_type IN", clause)
+		# Positive sign
+		card_pos = {
+			"id": "test_pos",
+			"match": {"by_account_type": {
+				"account_type": "Payable", "balance_sign": "positive"}},
+		}
+		clause, params = _match_clause(card_pos)
+		self.assertIsNotNone(clause)
+		self.assertIn("balance > 0", clause)
+		# `any` -> no balance clause emitted
+		card_any = {
+			"id": "test_any",
+			"match": {"by_account_type": {"account_type": "Payable"}},
+		}
+		clause, params = _match_clause(card_any)
+		self.assertIsNotNone(clause)
+		self.assertNotIn("balance", clause)
+
+	def test_match_clause_invalid_sign_returns_none(self):
+		"""Invalid `balance_sign` value -> (None, {}). Refresh
+		treats the card as zero, doesn't crash. Same defensive
+		shape as other malformed-predicate cases.
+		"""
+		from dux_groupview.dux_groupview.snapshots.spotlight_refresh import (
+			_match_clause,
+		)
+		card = {
+			"id": "test_bad",
+			"match": {"by_account_type": {
+				"account_type": "Payable", "balance_sign": "credit"}},
+		}
+		clause, params = _match_clause(card)
+		self.assertIsNone(
+			clause,
+			msg=(
+				"Invalid balance_sign must yield (None, {}) so the "
+				"refresh path skips with zero. Silently treating it "
+				"as 'any' would mask card-definition bugs."
+			),
+		)
+
+	def test_mixed_type_list_returns_none_clause(self):
+		"""Mixed-type list `["Payable", {"balance_sign": "positive"}]`
+		must return (None, {}). Same defensive shape as the resolver.
+		"""
+		from dux_groupview.dux_groupview.snapshots.spotlight_refresh import (
+			_match_clause,
+		)
+		card = {
+			"id": "test_mixed",
+			"match": {"by_account_type": [
+				"Payable", {"balance_sign": "positive"}]},
+		}
+		clause, params = _match_clause(card)
+		self.assertIsNone(clause)
+
+	def test_sundry_creditors_cached_matches_credit_only_aggregation(self):
+		"""Cached value for `sundry_creditors` (balance_sign=negative)
+		equals an independent SUM of credit-only Payable leaves on
+		the snapshot. Verifies the production refresh SQL is
+		arithmetically correct, not just syntactically valid.
+		"""
+		snapshot_date = getdate(today())
+		cached = frappe.db.get_value(
+			"DGV Spotlight Cache",
+			{"card_id": "sundry_creditors", "snapshot_date": snapshot_date},
+			"value",
+		)
+		# Independent: sum CASE-flipped values for Payable leaves with
+		# RAW balance < 0 only.
+		expected = frappe.db.sql(
+			"""
+			SELECT COALESCE(SUM(
+				CASE WHEN root_type IN ('Liability', 'Equity', 'Income')
+				     THEN -balance
+				     ELSE balance
+				END
+			), 0)
+			FROM `tabDGV TB Snapshot Row`
+			WHERE snapshot_date = %s
+			  AND account_type = 'Payable'
+			  AND balance < 0
+			""",
+			(snapshot_date,),
+		)
+		expected_value = round(float(expected[0][0] or 0), 2)
+		self.assertAlmostEqual(
+			float(cached or 0), expected_value, places=2,
+			msg=(
+				f"sundry_creditors cached={cached} does not match "
+				f"credit-only sum={expected_value}. Predicate's "
+				f"balance_sign=negative clause is wrong, OR refresh "
+				f"is summing both signs (regression to pre-split "
+				f"behavior)."
+			),
+		)
+
+	def test_supplier_advances_cached_matches_debit_only_aggregation(self):
+		"""Cached value for `supplier_advances` (balance_sign=positive)
+		equals an independent SUM of debit-only Payable leaves.
+		"""
+		snapshot_date = getdate(today())
+		cached = frappe.db.get_value(
+			"DGV Spotlight Cache",
+			{"card_id": "supplier_advances", "snapshot_date": snapshot_date},
+			"value",
+		)
+		expected = frappe.db.sql(
+			"""
+			SELECT COALESCE(SUM(
+				CASE WHEN root_type IN ('Liability', 'Equity', 'Income')
+				     THEN -balance
+				     ELSE balance
+				END
+			), 0)
+			FROM `tabDGV TB Snapshot Row`
+			WHERE snapshot_date = %s
+			  AND account_type = 'Payable'
+			  AND balance > 0
+			""",
+			(snapshot_date,),
+		)
+		expected_value = round(float(expected[0][0] or 0), 2)
+		self.assertAlmostEqual(
+			float(cached or 0), expected_value, places=2,
+			msg=(
+				f"supplier_advances cached={cached} does not match "
+				f"debit-only sum={expected_value}."
+			),
+		)
+
+	def test_split_sum_invariant_matches_pre_split_net(self):
+		"""CRITICAL INVARIANT: sundry_creditors + supplier_advances
+		(post-split, two cards) equals the OLD sundry_creditors net
+		value (pre-split, one card summing both signs) on the same
+		snapshot.
+
+		This is the load-bearing test for the split: confirms the two
+		new cards together cover EXACTLY the same set of leaves the
+		old netting card did -- no leaves accidentally double-counted,
+		no leaves accidentally excluded.
+
+		If this fails:
+		  - sum too high  -> a leaf is counted in both cards (sign
+		                     filter has overlap or a `balance == 0`
+		                     bug)
+		  - sum too low   -> a leaf is in neither card (e.g. one of
+		                     the sign filters has a strict
+		                     vs. inclusive boundary error)
+		"""
+		snapshot_date = getdate(today())
+		sundry = float(frappe.db.get_value(
+			"DGV Spotlight Cache",
+			{"card_id": "sundry_creditors", "snapshot_date": snapshot_date},
+			"value",
+		) or 0)
+		advances = float(frappe.db.get_value(
+			"DGV Spotlight Cache",
+			{"card_id": "supplier_advances", "snapshot_date": snapshot_date},
+			"value",
+		) or 0)
+		split_total = round(sundry + advances, 2)
+		# Pre-split aggregation: ALL Payable leaves, any sign.
+		net_row = frappe.db.sql(
+			"""
+			SELECT COALESCE(SUM(
+				CASE WHEN root_type IN ('Liability', 'Equity', 'Income')
+				     THEN -balance
+				     ELSE balance
+				END
+			), 0)
+			FROM `tabDGV TB Snapshot Row`
+			WHERE snapshot_date = %s
+			  AND account_type = 'Payable'
+			""",
+			(snapshot_date,),
+		)
+		net_value = round(float(net_row[0][0] or 0), 2)
+		self.assertAlmostEqual(
+			split_total, net_value, places=2,
+			msg=(
+				f"Split invariant violated: sundry_creditors ({sundry}) "
+				f"+ supplier_advances ({advances}) = {split_total}, "
+				f"but pre-split net (all-sign Payable sum) = {net_value}. "
+				f"Difference of {round(split_total - net_value, 2)} "
+				f"indicates either double-counting (one or more leaves "
+				f"in both sign sets -- likely a boundary bug) or "
+				f"missing leaves (one or more leaves in neither sign "
+				f"set -- likely a balance==0 edge case mis-handled)."
+			),
+		)

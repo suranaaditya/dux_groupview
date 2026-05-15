@@ -564,12 +564,16 @@ class TestCardsListShapeRegression(FrappeTestCase):
 	cards-system shape.
 	"""
 
-	EXPECTED_TOTAL = 10
+	# Bumped 10 -> 11 by the supplier-advances split PR
+	# (added: supplier_advances).
+	EXPECTED_TOTAL = 11
 	EXPECTED_DISABLED_IDS = {
 		"sundry_debtors",
 		"cash_and_bank",
 		"inter_co_receivable",
 	}
+	# Bumped 7 -> 8 by the supplier-advances split PR
+	# (added: supplier_advances).
 	EXPECTED_VISIBLE_IDS = {
 		"sundry_creditors",
 		"unsecured_loans",
@@ -578,6 +582,7 @@ class TestCardsListShapeRegression(FrappeTestCase):
 		"financial_exp_to_other",
 		"liquid_cash",
 		"secured_loans",
+		"supplier_advances",
 	}
 
 	def test_total_cards_count(self):
@@ -591,17 +596,23 @@ class TestCardsListShapeRegression(FrappeTestCase):
 			),
 		)
 
-	def test_visible_cards_count_is_seven(self):
+	def test_visible_cards_count_matches_expected(self):
+		"""Name-and-body-derived count assertion. The magic-number-in-
+		name anti-pattern (`_is_eight`) drifts every time a card is
+		added; pinning against `len(EXPECTED_VISIBLE_IDS)` makes the
+		expected count co-located with the id set and avoids a parallel
+		bomb that has to be defused on each card addition.
+		"""
 		from dux_groupview.dux_groupview.spotlight.cards import CARDS
 		visible = [c for c in CARDS if not c.get("disabled")]
 		self.assertEqual(
-			len(visible), 7,
+			len(visible), len(self.EXPECTED_VISIBLE_IDS),
 			msg=(
-				f"Visible card count is {len(visible)}, expected 7. "
-				f"This test pins the post-split count documented in "
-				f"spec `specs/cash-bank-card-split.md` §6. Re-enabling "
-				f"or adding a visible card requires updating this "
-				f"assertion AND the EXPECTED_VISIBLE_IDS set."
+				f"Visible card count is {len(visible)}, expected "
+				f"{len(self.EXPECTED_VISIBLE_IDS)}. Re-enabling or "
+				f"adding a visible card requires updating the "
+				f"EXPECTED_VISIBLE_IDS set above (this test then "
+				f"updates automatically)."
 			),
 		)
 
@@ -636,8 +647,17 @@ class TestCardsListShapeRegression(FrappeTestCase):
 	# this PR explicitly did NOT change. Any drift in any of these
 	# fields means the regression posture broke.
 	PRE_SPLIT_CARDS = {
+		# Predicate updated 2026-05-15 by the supplier-advances split
+		# PR from the shortcut form `{"by_account_type": "Payable"}` to
+		# the canonical dict form with `balance_sign: "negative"`.
+		# Card now shows ONLY credit-balance Payable leaves (gross
+		# owed); debit-balance leaves go to the new `supplier_advances`
+		# card. Sparkline discontinuity at deploy is documented in the
+		# PR description.
 		"sundry_creditors": (
-			{"by_account_type": "Payable"},
+			{"by_account_type": {
+				"account_type": "Payable",
+				"balance_sign": "negative"}},
 			"neutral", "crore", "#BA7517",
 		),
 		"sundry_debtors": (
@@ -743,3 +763,120 @@ class TestCardsListShapeRegression(FrappeTestCase):
 					HEADLINE_CARD_NAMES[card_id].strip(),
 					msg=f"'{card_id}' HEADLINE_CARD_NAMES entry is empty",
 				)
+
+
+class TestSundryCreditorsAndSupplierAdvancesSplit(FrappeTestCase):
+	"""Tests for the supplier-advances split (2026-05-15).
+
+	`sundry_creditors` predicate changed from the legacy
+	`{"by_account_type": "Payable"}` shortcut to the canonical dict
+	form `{"by_account_type": {"account_type": "Payable",
+	"balance_sign": "negative"}}`. New companion card
+	`supplier_advances` uses the same predicate type with
+	`balance_sign: "positive"`.
+
+	Behaviour pinned here so a future "tidy up" refactor can't
+	silently revert to the netting one-card form.
+	"""
+
+	def test_sundry_creditors_uses_negative_balance_sign(self):
+		"""sundry_creditors must filter to credit balances only.
+		The previous shortcut form (which summed both signs into a
+		net figure) is replaced by the canonical dict form with
+		explicit balance_sign=negative.
+		"""
+		from dux_groupview.dux_groupview.spotlight.cards import by_id
+		card = by_id()["sundry_creditors"]
+		self.assertIn(
+			"by_account_type", card["match"],
+			msg="sundry_creditors must still use by_account_type predicate",
+		)
+		v = card["match"]["by_account_type"]
+		self.assertIsInstance(
+			v, dict,
+			msg=(
+				"Predicate value must be the canonical dict shape "
+				"(not the legacy string shortcut). The dict shape "
+				"carries the balance_sign filter; reverting to "
+				"the string form would silently drop the sign filter "
+				"and re-introduce the netting behaviour."
+			),
+		)
+		self.assertEqual(v.get("account_type"), "Payable")
+		self.assertEqual(
+			v.get("balance_sign"), "negative",
+			msg=(
+				"sundry_creditors must filter to balance < 0 "
+				"(credit-only / actually-owed). balance_sign != "
+				"'negative' would re-net advances into the card."
+			),
+		)
+
+	def test_sundry_creditors_metadata_stable(self):
+		"""Predicate changed; id, label, polarity, format, color
+		unchanged.
+		"""
+		from dux_groupview.dux_groupview.spotlight.cards import by_id
+		card = by_id()["sundry_creditors"]
+		self.assertEqual(card["id"], "sundry_creditors")
+		self.assertEqual(card["label"], "Sundry creditors")
+		self.assertEqual(card["polarity"], "neutral")
+		self.assertEqual(card["format"], "crore")
+		self.assertEqual(card["color"], "#BA7517")
+		self.assertFalse(card.get("disabled", False))
+
+	def test_supplier_advances_uses_positive_balance_sign(self):
+		"""supplier_advances filters Payable leaves to debit balances
+		(advances paid ahead). Sign filter is what distinguishes it
+		from sundry_creditors.
+		"""
+		from dux_groupview.dux_groupview.spotlight.cards import by_id
+		card = by_id()["supplier_advances"]
+		self.assertIn("by_account_type", card["match"])
+		v = card["match"]["by_account_type"]
+		self.assertIsInstance(v, dict)
+		self.assertEqual(v.get("account_type"), "Payable")
+		self.assertEqual(
+			v.get("balance_sign"), "positive",
+			msg=(
+				"supplier_advances must filter to balance > 0 "
+				"(debit-only / advance-paid). balance_sign != "
+				"'positive' would merge the card back with "
+				"sundry_creditors."
+			),
+		)
+
+	def test_supplier_advances_metadata(self):
+		"""New card's metadata pinned exactly: id, label, polarity,
+		format, color. Color in particular is a deliberate visual
+		choice (rose-mauve, distinct from the warm-tone creditors
+		brown without competing); refactor mustn't silently change it.
+		"""
+		from dux_groupview.dux_groupview.spotlight.cards import by_id
+		card = by_id().get("supplier_advances")
+		self.assertIsNotNone(
+			card,
+			msg="supplier_advances card missing from CARDS",
+		)
+		self.assertEqual(card["id"], "supplier_advances")
+		self.assertEqual(card["label"], "Supplier advances")
+		self.assertEqual(card["polarity"], "bad_up")
+		self.assertEqual(card["format"], "crore")
+		self.assertEqual(card["color"], "#A85B8C")
+		self.assertFalse(
+			card.get("disabled", False),
+			msg="supplier_advances must be visible",
+		)
+
+	def test_supplier_advances_has_headline_name(self):
+		"""HEADLINE_CARD_NAMES must carry supplier_advances entry.
+		Existing test_friendly_names_cover_all_cards catches this
+		generically; pinning explicitly here for the new card.
+		"""
+		from dux_groupview.dux_groupview.api.cockpit import (
+			HEADLINE_CARD_NAMES,
+		)
+		self.assertIn("supplier_advances", HEADLINE_CARD_NAMES)
+		self.assertEqual(
+			HEADLINE_CARD_NAMES["supplier_advances"], "Supplier advances",
+		)

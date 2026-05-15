@@ -660,3 +660,367 @@ class TestDrillResolverIgnoresDisabledFlag(FrappeTestCase):
 			"label", result,
 			msg="Resolver response shape must be unchanged for disabled cards",
 		)
+
+
+class TestBalanceSignResolver(FrappeTestCase):
+	"""Tests for the `balance_sign` extension on
+	`by_account_type` and `by_parent_account_stem_in` predicates.
+
+	Per spec/supplier-advances-split §1 + HALT 1 decision (a): when
+	`balance_sign` is set to "positive" or "negative", the resolver
+	consults the latest Complete `tabDGV TB Snapshot` and filters
+	leaves to those whose snapshot `balance` has the matching sign.
+	Default "any" (or omitted) preserves the existing tabAccount-only
+	resolution path.
+
+	Sign comparison runs against the RAW snapshot row `balance` column
+	(debit-credit, pre-natural-side-flip). For Payable accounts:
+	  - balance < 0 = credit balance = owed
+	  - balance > 0 = debit balance = advance paid
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		_ensure_today_data()
+
+	# ------------------------------------------------------------------
+	# Shape acceptance: the three input forms of by_account_type
+	# ------------------------------------------------------------------
+
+	def test_str_shape_defaults_to_any(self):
+		"""Legacy string shape: `"by_account_type": "Payable"` resolves
+		without sign filter -- same set of leaves a tabAccount-only
+		query would return.
+		"""
+		match = {"by_account_type": "Payable"}
+		result = cards_v1.resolve_match_to_accounts(match, _all_companies())
+		self.assertIsInstance(result["accounts"], list)
+		# Independent check: every returned leaf has account_type=Payable
+		# at tabAccount level. (Snapshot consultation is NOT happening
+		# here -- the string shape is a shortcut for any-sign.)
+		if result["accounts"]:
+			types = frappe.db.sql_list(
+				"SELECT DISTINCT account_type FROM `tabAccount` "
+				"WHERE name IN %s",
+				(tuple(result["accounts"]),),
+			)
+			self.assertEqual(set(types), {"Payable"})
+
+	def test_list_shape_defaults_to_any(self):
+		"""Legacy list shape: `["Bank", "Cash"]` resolves without
+		sign filter. Same semantics as the string shape.
+		"""
+		match = {"by_account_type": ["Bank", "Cash"]}
+		result = cards_v1.resolve_match_to_accounts(match, _all_companies())
+		self.assertIsInstance(result["accounts"], list)
+
+	def test_dict_shape_default_balance_sign_is_any(self):
+		"""Canonical dict shape WITHOUT balance_sign key: same result
+		as the legacy string/list shapes -- no sign filter applied.
+		"""
+		match = {"by_account_type": {"account_type": "Payable"}}
+		result = cards_v1.resolve_match_to_accounts(match, _all_companies())
+		expected = cards_v1.resolve_match_to_accounts(
+			{"by_account_type": "Payable"}, _all_companies(),
+		)
+		self.assertEqual(
+			set(result["accounts"]), set(expected["accounts"]),
+			msg=(
+				"Dict shape with no balance_sign key must produce the "
+				"same leaf set as the legacy string shortcut. The dict "
+				"shape is canonical; the string is a shortcut for it."
+			),
+		)
+
+	def test_dict_shape_explicit_any_matches_default(self):
+		"""`balance_sign: "any"` explicitly set must behave identically
+		to the key being omitted.
+		"""
+		explicit = cards_v1.resolve_match_to_accounts(
+			{"by_account_type": {
+				"account_type": "Payable", "balance_sign": "any"}},
+			_all_companies(),
+		)
+		omitted = cards_v1.resolve_match_to_accounts(
+			{"by_account_type": {"account_type": "Payable"}},
+			_all_companies(),
+		)
+		self.assertEqual(
+			set(explicit["accounts"]), set(omitted["accounts"]),
+			msg="balance_sign='any' must be equivalent to omitting the key",
+		)
+
+	# ------------------------------------------------------------------
+	# Sign filter semantics: positive vs negative vs any
+	# ------------------------------------------------------------------
+
+	def test_positive_sign_filters_to_debit_balances(self):
+		"""`balance_sign: "positive"` returns only leaves with
+		balance > 0 in the latest snapshot. For Payable accounts,
+		that's the advance-paid / "supplier advances" case.
+		"""
+		match = {"by_account_type": {
+			"account_type": "Payable", "balance_sign": "positive"}}
+		result = cards_v1.resolve_match_to_accounts(match, _all_companies())
+		if not result["accounts"]:
+			self.skipTest("No debit-balance Payable leaves in latest snapshot")
+		# Independent: every returned leaf has snapshot row balance > 0
+		# at the latest Complete snapshot.
+		signs = frappe.db.sql(
+			"""
+			SELECT s.account, s.balance
+			FROM `tabDGV TB Snapshot Row` s
+			WHERE s.snapshot_date = (
+			    SELECT MAX(snapshot_date) FROM `tabDGV TB Snapshot`
+			    WHERE status = 'Complete'
+			)
+			  AND s.account IN %s
+			""",
+			(tuple(result["accounts"]),),
+			as_dict=True,
+		)
+		for row in signs:
+			self.assertGreater(
+				row["balance"], 0,
+				msg=(
+					f"Leaf '{row['account']}' returned by positive-sign "
+					f"predicate has balance={row['balance']} (must be > 0). "
+					f"Sign filter must route through snapshot, not COA."
+				),
+			)
+
+	def test_negative_sign_filters_to_credit_balances(self):
+		"""`balance_sign: "negative"` returns only leaves with
+		balance < 0. For Payable accounts, that's the owed /
+		"sundry creditors" case (the default state).
+		"""
+		match = {"by_account_type": {
+			"account_type": "Payable", "balance_sign": "negative"}}
+		result = cards_v1.resolve_match_to_accounts(match, _all_companies())
+		if not result["accounts"]:
+			self.skipTest("No credit-balance Payable leaves in latest snapshot")
+		signs = frappe.db.sql(
+			"""
+			SELECT s.account, s.balance
+			FROM `tabDGV TB Snapshot Row` s
+			WHERE s.snapshot_date = (
+			    SELECT MAX(snapshot_date) FROM `tabDGV TB Snapshot`
+			    WHERE status = 'Complete'
+			)
+			  AND s.account IN %s
+			""",
+			(tuple(result["accounts"]),),
+			as_dict=True,
+		)
+		for row in signs:
+			self.assertLess(
+				row["balance"], 0,
+				msg=(
+					f"Leaf '{row['account']}' returned by negative-sign "
+					f"predicate has balance={row['balance']} (must be < 0)."
+				),
+			)
+
+	def test_positive_and_negative_sets_are_disjoint(self):
+		"""Sign filter splits the Payable leaf universe into two
+		disjoint sets. A leaf with balance == 0 belongs to neither;
+		a leaf is in exactly one of the two sets at any snapshot.
+		"""
+		pos = cards_v1.resolve_match_to_accounts(
+			{"by_account_type": {
+				"account_type": "Payable", "balance_sign": "positive"}},
+			_all_companies(),
+		)
+		neg = cards_v1.resolve_match_to_accounts(
+			{"by_account_type": {
+				"account_type": "Payable", "balance_sign": "negative"}},
+			_all_companies(),
+		)
+		overlap = set(pos["accounts"]) & set(neg["accounts"])
+		self.assertEqual(
+			overlap, set(),
+			msg=(
+				"Positive and negative sign sets must be disjoint. "
+				"A leaf cannot have both balance>0 and balance<0 "
+				"simultaneously. Overlap suggests an SQL or filter bug."
+			),
+		)
+
+	# ------------------------------------------------------------------
+	# Defensive branches: invalid input
+	# ------------------------------------------------------------------
+
+	def test_invalid_balance_sign_returns_empty(self):
+		"""`balance_sign: "credit"` (or any non-canonical value) must
+		return an empty list -- not silently fall back to "any" and
+		not raise. Defensive against card-definition typos.
+		"""
+		match = {"by_account_type": {
+			"account_type": "Payable", "balance_sign": "credit"}}
+		result = cards_v1.resolve_match_to_accounts(match, _all_companies())
+		self.assertEqual(
+			result["accounts"], [],
+			msg=(
+				"Invalid balance_sign must return empty list. Silently "
+				"treating it as 'any' would mask card-definition bugs. "
+				"Empty result is a clear signal during dev verification."
+			),
+		)
+
+	def test_mixed_type_list_returns_empty(self):
+		"""`by_account_type: ["Payable", {"balance_sign": "positive"}]`
+		(mixed string + dict elements) is not a supported shape.
+		Must return empty rather than crash at SQL execution.
+		"""
+		from dux_groupview.dux_groupview.api.cards_v1 import _resolve_match
+		mixed = _resolve_match(
+			{"by_account_type": ["Payable", {"balance_sign": "positive"}]},
+			_all_companies(),
+		)
+		self.assertEqual(
+			mixed, [],
+			msg=(
+				"Mixed-type lists are not a supported shape. A card "
+				"author wanting sign-filter + multi-type must use the "
+				"canonical dict shape with account_type=list."
+			),
+		)
+
+	def test_non_string_account_type_in_dict_returns_empty(self):
+		"""`{"account_type": 42}` or similar non-string is invalid.
+		Defensive shape: empty result.
+		"""
+		from dux_groupview.dux_groupview.api.cards_v1 import _resolve_match
+		result = _resolve_match(
+			{"by_account_type": {"account_type": 42}},
+			_all_companies(),
+		)
+		self.assertEqual(result, [])
+
+	# ------------------------------------------------------------------
+	# by_parent_account_stem_in: balance_sign forward consistency
+	# ------------------------------------------------------------------
+
+	def test_parent_stem_predicate_accepts_balance_sign(self):
+		"""`by_parent_account_stem_in` accepts the same balance_sign
+		key as `by_account_type` even though no card in this PR
+		consumes it. Forward consistency for the OD-positive case
+		(when secured_loans / liquid_cash get sign-aware predicates).
+		"""
+		# Use Unsecured Loans stem (from the parallel PR). On dev,
+		# some leaves under this stem will have credit balances
+		# (money owed). With balance_sign=negative, those leaves
+		# return; balance_sign=positive returns the (rare) debit
+		# advances.
+		match = {"by_parent_account_stem_in": {
+			"stems": ["Unsecured Loans"],
+			"root_type": "Liability",
+			"balance_sign": "negative",
+		}}
+		result = cards_v1.resolve_match_to_accounts(match, _all_companies())
+		self.assertIsInstance(result["accounts"], list)
+		if result["accounts"]:
+			signs = frappe.db.sql(
+				"""
+				SELECT s.account, s.balance
+				FROM `tabDGV TB Snapshot Row` s
+				WHERE s.snapshot_date = (
+				    SELECT MAX(snapshot_date) FROM `tabDGV TB Snapshot`
+				    WHERE status = 'Complete'
+				)
+				  AND s.account IN %s
+				""",
+				(tuple(result["accounts"]),),
+				as_dict=True,
+			)
+			for row in signs:
+				self.assertLess(
+					row["balance"], 0,
+					msg=(
+						f"by_parent_account_stem_in with "
+						f"balance_sign=negative returned leaf "
+						f"{row['account']} with balance={row['balance']}"
+					),
+				)
+
+	def test_parent_stem_predicate_invalid_balance_sign_returns_empty(self):
+		"""Same defensive shape on by_parent_account_stem_in: invalid
+		balance_sign returns empty.
+		"""
+		from dux_groupview.dux_groupview.api.cards_v1 import _resolve_match
+		result = _resolve_match(
+			{"by_parent_account_stem_in": {
+				"stems": ["Unsecured Loans"],
+				"root_type": "Liability",
+				"balance_sign": "weird",
+			}},
+			_all_companies(),
+		)
+		self.assertEqual(result, [])
+
+	# ------------------------------------------------------------------
+	# No-Complete-snapshot edge case
+	# ------------------------------------------------------------------
+
+	def test_no_complete_snapshot_returns_empty_for_sign_filter(self):
+		"""When no Complete snapshot exists, the sign-filter subquery
+		(`MAX(snapshot_date) WHERE status='Complete'`) returns NULL,
+		and the outer query matches zero rows.
+
+		Pinned via a brief monkey-patch on the snapshot_date subquery's
+		anchor. Real "no snapshot" state would wipe the snapshot tables
+		(destructive in dev); we patch the query instead.
+		"""
+		# Temporarily set every Complete snapshot to a different status
+		# so MAX(...) over WHERE status='Complete' returns NULL.
+		# Reversible via try/finally.
+		original_statuses = frappe.db.sql(
+			"SELECT name, status FROM `tabDGV TB Snapshot` "
+			"WHERE status = 'Complete'",
+			as_dict=True,
+		)
+		if not original_statuses:
+			# No snapshots at all -> the edge is already in effect.
+			pass
+		else:
+			frappe.db.sql(
+				"UPDATE `tabDGV TB Snapshot` "
+				"SET status = 'Failed_For_Test' WHERE status = 'Complete'"
+			)
+			frappe.db.commit()
+		try:
+			# Sign-filter path consults snapshot -> with no Complete
+			# snapshot, returns empty.
+			result = cards_v1.resolve_match_to_accounts(
+				{"by_account_type": {
+					"account_type": "Payable", "balance_sign": "negative"}},
+				_all_companies(),
+			)
+			self.assertEqual(
+				result["accounts"], [],
+				msg=(
+					"Sign-filter resolver must return empty when no "
+					"Complete snapshot exists. Drill panel will show "
+					"the standard empty state ('No matching accounts')."
+				),
+			)
+			# But no-sign path (string shape) still works -- no snapshot
+			# dependency, tabAccount only.
+			result_no_sign = cards_v1.resolve_match_to_accounts(
+				{"by_account_type": "Payable"},
+				_all_companies(),
+			)
+			# May be empty if no Payable leaves exist on dev seed; the
+			# point is the call doesn't raise and isn't blocked by the
+			# snapshot absence.
+			self.assertIsInstance(result_no_sign["accounts"], list)
+		finally:
+			# Restore original statuses
+			for row in original_statuses:
+				frappe.db.sql(
+					"UPDATE `tabDGV TB Snapshot` SET status = %s "
+					"WHERE name = %s",
+					(row["status"], row["name"]),
+				)
+			frappe.db.commit()
