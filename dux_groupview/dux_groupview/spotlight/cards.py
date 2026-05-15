@@ -126,9 +126,33 @@ CARDS = [
 		"id": "unsecured_loans",
 		"label": "Unsecured loans",
 		"match": {
-			"by_root_type_and_name_pattern": {
+			# Switched from `by_root_type_and_name_pattern` (the old
+			# `%Unsecured Loan%` LIKE) to `by_parent_account_stem_in`
+			# because the name-pattern only matched leaves whose own
+			# `account` name happened to contain "Unsecured Loan" --
+			# 5 incidentally-named accounts on production, totalling
+			# ~-Rs 0.52 Cr. The actual unsecured loan leaves live
+			# under a parent group named `Unsecured Loans` across 68
+			# production companies (1,649 leaves total, 142 with
+			# non-zero balance, ~-Rs 202.78 Cr).
+			#
+			# Card id `unsecured_loans` is retained so existing
+			# DGV Spotlight Cache history rows stay attached; the
+			# sparkline will show a discontinuity at deploy as the
+			# new (correct) value lands on top of historical (wrong)
+			# values. Pre-warned in the PR description.
+			#
+			# Known gap: 31 suppliers in the "Unsecured Loan Lenders"
+			# supplier_group currently post to leaves under other
+			# parents (mostly "Current Liabilities") and are NOT
+			# captured here. To be resolved via supplier-side
+			# `default_payable_account` configuration on prod by
+			# Aditya, not code. Once that data converges, no further
+			# code change is needed -- the parent-stem predicate
+			# catches everything by construction.
+			"by_parent_account_stem_in": {
+				"stems": ["Unsecured Loans"],
 				"root_type": "Liability",
-				"name_pattern": "%Unsecured Loan%",
 			},
 		},
 		"polarity": "neutral",
