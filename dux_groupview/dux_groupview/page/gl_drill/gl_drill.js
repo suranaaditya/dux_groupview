@@ -1156,7 +1156,18 @@ frappe.pages['gl-drill'].on_page_load = function(wrapper) {
 
 	function renderPage() {
 		const data = state.data;
-		const label = data.scope_label || state.resolvedLabel || state.scope.id || '—';
+		let label = data.scope_label || state.resolvedLabel || state.scope.id || '—';
+
+		// When a single `account_names` filter narrows the scope to one
+		// account, surface that account in the title. Matches the user
+		// expectation that clicking ICICI in the per-account drill
+		// expansion lands on a page titled ICICI -- not the parent
+		// scope it was originally drilled from. The active-chip row +
+		// the fanout banner already convey the filter; the title was
+		// the last surface still echoing the pre-filter scope.
+		if (state.account_names && state.account_names.length === 1) {
+			label = state.account_names[0];
+		}
 
 		document.getElementById('dgv-gl-bc-current').textContent =
 			'GL entries (' + (data.total_entries || 0).toLocaleString() + ')';
@@ -1364,15 +1375,23 @@ frappe.pages['gl-drill'].on_page_load = function(wrapper) {
 	}
 
 	function bindVoucherLinks(wrap) {
-		// Voucher cells navigate to /app/<voucher-type>/<voucher-no>.
-		// frappe.set_route handles the standard ERPNext document view.
+		// Voucher cells navigate to /app/<voucher-type-slug>/<voucher-no>
+		// via Frappe's standard Form-view router. The first arg MUST be
+		// the literal "Form" -- without it, `frappe.set_route(vt, vn)`
+		// becomes a two-segment route `/desk/<vt>/<vn>` which Frappe
+		// resolves to a PAGE called <vt>, not a doctype Form view.
+		// There is no page called "Journal Entry" / "Payment Entry"
+		// (those are doctypes, not pages), so the prior two-arg call
+		// rendered "Page Journal Entry not found". Three-arg form
+		// `set_route("Form", "Journal Entry", "<name>")` routes
+		// correctly to `/app/journal-entry/<name>`.
 		wrap.querySelectorAll('.dgv-gl-voucher-link').forEach(function (a) {
 			a.addEventListener('click', function (e) {
 				e.preventDefault();
 				const vt = a.getAttribute('data-voucher-type');
 				const vn = a.getAttribute('data-voucher-no');
 				if (vt && vn) {
-					frappe.set_route(vt, vn);
+					frappe.set_route("Form", vt, vn);
 				}
 			});
 		});
