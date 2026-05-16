@@ -664,10 +664,19 @@ class TestCardsListShapeRegression(FrappeTestCase):
 			{"by_account_type": "Receivable"},
 			"bad_up", "crore", "#3B6D11",
 		),
+		# Predicate updated 2026-05-15 from by_root_type_and_name_pattern
+		# to by_parent_account_stem_in -- name-pattern matched only 5
+		# incidentally-named accounts (~-Rs 0.52 Cr on prod); the actual
+		# unsecured loan leaves sit under the `Unsecured Loans` parent
+		# group across 68 prod companies (1,649 leaves, 142 non-zero,
+		# ~-Rs 202.78 Cr). Card id retained -> cache history continues.
+		# Known gap: 31 suppliers in "Unsecured Loan Lenders" group post
+		# to other parents; resolved via supplier-side data config on
+		# prod, not code.
 		"unsecured_loans": (
-			{"by_root_type_and_name_pattern": {
-				"root_type": "Liability",
-				"name_pattern": "%Unsecured Loan%"}},
+			{"by_parent_account_stem_in": {
+				"stems": ["Unsecured Loans"],
+				"root_type": "Liability"}},
 			"neutral", "crore", "#5F5E5A",
 		),
 		"cash_and_bank": (
@@ -763,6 +772,81 @@ class TestCardsListShapeRegression(FrappeTestCase):
 					HEADLINE_CARD_NAMES[card_id].strip(),
 					msg=f"'{card_id}' HEADLINE_CARD_NAMES entry is empty",
 				)
+
+	# -- Unsecured Loans predicate fix (2026-05-15) --------------------
+
+	def test_unsecured_loans_uses_parent_stem_predicate(self):
+		"""Unsecured Loans card matches all leaves under the
+		`Unsecured Loans` parent group, not just accounts named
+		`*Unsecured Loan*`. The previous name-pattern predicate caught
+		only 5 incidentally-named accounts (~-Rs 0.52 Cr on prod);
+		production has 1,649 leaves under the parent group (142 with
+		non-zero balance, ~-Rs 202.78 Cr). Predicate fix swapped
+		2026-05-15.
+
+		This test pins the new predicate shape so a future "tidy
+		up" refactor can't silently revert to the broken name-
+		pattern form.
+		"""
+		from dux_groupview.dux_groupview.spotlight.cards import by_id
+		card = by_id()["unsecured_loans"]
+		self.assertIn(
+			"by_parent_account_stem_in", card["match"],
+			msg=(
+				"unsecured_loans must use by_parent_account_stem_in. "
+				"The old by_root_type_and_name_pattern matched only "
+				"5 leaves on prod (~400x under-counted vs the real "
+				"1,649 parent-stem leaves). Reverting to name-pattern "
+				"would silently re-introduce the under-count."
+			),
+		)
+		conf = card["match"]["by_parent_account_stem_in"]
+		self.assertEqual(
+			conf["stems"], ["Unsecured Loans"],
+			msg=(
+				"stems must be exactly ['Unsecured Loans']. Production "
+				"has one canonical parent group with no casing variants."
+			),
+		)
+		self.assertEqual(
+			conf["root_type"], "Liability",
+			msg="root_type filter must remain Liability",
+		)
+		# Defensive: predicate must NOT also carry the old key.
+		self.assertNotIn(
+			"by_root_type_and_name_pattern", card["match"],
+			msg=(
+				"Predicate must NOT carry both keys -- the resolver "
+				"branches on `in` checks and the first match wins, so "
+				"a stray old key would partially override the new "
+				"predicate's semantics."
+			),
+		)
+
+	def test_unsecured_loans_metadata_stable(self):
+		"""Predicate may evolve; user-visible metadata (id, label,
+		polarity, format, color) stays consistent across the
+		predicate swap. Pinned separately from the predicate test
+		so a metadata drift doesn't get masked by a passing
+		predicate assertion.
+		"""
+		from dux_groupview.dux_groupview.spotlight.cards import by_id
+		card = by_id()["unsecured_loans"]
+		self.assertEqual(card["id"], "unsecured_loans")
+		self.assertEqual(card["label"], "Unsecured loans")
+		self.assertEqual(card["polarity"], "neutral")
+		self.assertEqual(card["format"], "crore")
+		self.assertEqual(card["color"], "#5F5E5A")
+		# Card must not be disabled -- this is a visible card.
+		self.assertFalse(
+			card.get("disabled", False),
+			msg=(
+				"unsecured_loans must remain visible. The predicate "
+				"fix doesn't touch the disabled flag; if the card "
+				"got disabled accidentally during a future refactor "
+				"this test surfaces it."
+			),
+		)
 
 
 class TestSundryCreditorsAndSupplierAdvancesSplit(FrappeTestCase):
