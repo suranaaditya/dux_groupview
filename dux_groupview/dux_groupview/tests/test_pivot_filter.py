@@ -249,7 +249,11 @@ class TestPivotFilter(FrappeTestCase):
 		)
 		filtered_by_id = {c["card_id"]: c for c in filtered}
 
-		for card in CARDS:
+		# Iterate VISIBLE cards only -- the API response excludes
+		# disabled cards (per PR #15 disabled flag semantics), so
+		# pulling `filtered_by_id[card["id"]]` for a disabled card
+		# raises KeyError. Mirror the API's visibility filter here.
+		for card in [c for c in CARDS if not c.get("disabled")]:
 			expected = self._aggregate_card_directly(card, today(), subset)
 			got = filtered_by_id[card["id"]]["value"]
 			self.assertAlmostEqual(
@@ -529,14 +533,50 @@ class TestPivotFilter(FrappeTestCase):
 
 		if "by_account_type" in match:
 			v = match["by_account_type"]
-			if isinstance(v, (list, tuple)):
-				placeholders = ", ".join(f"%(at{i})s" for i in range(len(v)))
-				for i, x in enumerate(v):
+			# Handle all three input shapes introduced by PR #18
+			# (supplier-advances-split) and PR #19 (display-and-exclude-
+			# fixes). The dict shape is the canonical form; str/list are
+			# legacy shortcuts. Without this handling the helper binds
+			# the whole dict as a parameter and MariaDB raises
+			# `TypeError: dict can not be used as parameter`.
+			balance_sign = "any"
+			exclude_parent_stems = None
+			if isinstance(v, dict):
+				at = v["account_type"]
+				balance_sign = v.get("balance_sign", "any")
+				exclude_parent_stems = v.get("exclude_parent_stems")
+			else:
+				at = v
+			if isinstance(at, (list, tuple)):
+				placeholders = ", ".join(f"%(at{i})s" for i in range(len(at)))
+				for i, x in enumerate(at):
 					params[f"at{i}"] = x
 				clauses.append(f"account_type IN ({placeholders})")
 			else:
 				clauses.append("account_type = %(at)s")
-				params["at"] = v
+				params["at"] = at
+			if balance_sign == "positive":
+				clauses.append("balance > 0")
+			elif balance_sign == "negative":
+				clauses.append("balance < 0")
+			if (
+				isinstance(exclude_parent_stems, list)
+				and exclude_parent_stems
+				and all(isinstance(x, str) for x in exclude_parent_stems)
+			):
+				ex_placeholders = ", ".join(
+					f"%(ex{i})s" for i in range(len(exclude_parent_stems))
+				)
+				for i, x in enumerate(exclude_parent_stems):
+					params[f"ex{i}"] = x
+				clauses.append(
+					f"account NOT IN ("
+					f"SELECT name FROM `tabAccount` "
+					f"WHERE is_group = 0 "
+					f"AND SUBSTRING_INDEX(parent_account, ' - ', 1) "
+					f"IN ({ex_placeholders})"
+					f")"
+				)
 		elif "by_root_type_and_name_pattern" in match:
 			conf = match["by_root_type_and_name_pattern"]
 			clauses.append(
@@ -544,6 +584,34 @@ class TestPivotFilter(FrappeTestCase):
 			)
 			params["rt"] = conf["root_type"]
 			params["np"] = conf["name_pattern"]
+		elif "by_parent_account_stem_in" in match:
+			# Added by PR #15 (Cash & Bank split) but never wired
+			# into this helper. Catches up with the predicate set
+			# the production aggregator supports.
+			conf = match["by_parent_account_stem_in"]
+			stems = conf["stems"]
+			placeholders = ", ".join(
+				f"%(st{i})s" for i in range(len(stems))
+			)
+			for i, x in enumerate(stems):
+				params[f"st{i}"] = x
+			params["rt"] = conf["root_type"]
+			clauses.append(
+				f"account IN ("
+				f"SELECT name FROM `tabAccount` "
+				f"WHERE is_group = 0 "
+				f"AND root_type = %(rt)s "
+				f"AND SUBSTRING_INDEX(parent_account, ' - ', 1) "
+				f"IN ({placeholders})"
+				f")"
+			)
+			# Per PR #18 (supplier-advances-split): optional balance_sign
+			# on this predicate too.
+			stem_balance_sign = conf.get("balance_sign", "any")
+			if stem_balance_sign == "positive":
+				clauses.append("balance > 0")
+			elif stem_balance_sign == "negative":
+				clauses.append("balance < 0")
 		else:
 			return 0.0
 
@@ -567,4 +635,14 @@ class TestPivotFilter(FrappeTestCase):
 			""",
 			params,
 		)
-		return round(flt(row[0][0]), 2) if row else 0.0
+		raw = round(flt(row[0][0]), 2) if row else 0.0
+		# Mirror the production-side `display_sign` transform applied
+		# in spotlight_refresh._aggregate so this independent helper's
+		# return value compares apples-to-apples with the API's
+		# (already-transformed) cache value.
+		sign = card.get("display_sign", "natural")
+		if sign == "absolute":
+			return abs(raw)
+		if sign == "negated":
+			return -raw
+		return raw

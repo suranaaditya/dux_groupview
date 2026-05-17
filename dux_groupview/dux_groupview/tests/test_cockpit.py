@@ -647,17 +647,21 @@ class TestCardsListShapeRegression(FrappeTestCase):
 	# this PR explicitly did NOT change. Any drift in any of these
 	# fields means the regression posture broke.
 	PRE_SPLIT_CARDS = {
-		# Predicate updated 2026-05-15 by the supplier-advances split
-		# PR from the shortcut form `{"by_account_type": "Payable"}` to
-		# the canonical dict form with `balance_sign: "negative"`.
-		# Card now shows ONLY credit-balance Payable leaves (gross
-		# owed); debit-balance leaves go to the new `supplier_advances`
-		# card. Sparkline discontinuity at deploy is documented in the
-		# PR description.
+		# Predicate updated twice in 2026-05:
+		#   - 2026-05-15 supplier-advances split PR: shortcut form
+		#     `{"by_account_type": "Payable"}` replaced by canonical
+		#     dict with `balance_sign: "negative"`.
+		#   - 2026-05-16 display-and-exclude-fixes PR: added
+		#     `exclude_parent_stems: ["Unsecured Loans"]` to carve out
+		#     Payable leaves living under the Unsecured Loans parent
+		#     (they now belong to the `unsecured_loans` card only).
+		# Sparkline discontinuities at each deploy documented in the
+		# respective PRs.
 		"sundry_creditors": (
 			{"by_account_type": {
 				"account_type": "Payable",
-				"balance_sign": "negative"}},
+				"balance_sign": "negative",
+				"exclude_parent_stems": ["Unsecured Loans"]}},
 			"neutral", "crore", "#BA7517",
 		),
 		"sundry_debtors": (
@@ -963,4 +967,95 @@ class TestSundryCreditorsAndSupplierAdvancesSplit(FrappeTestCase):
 		self.assertIn("supplier_advances", HEADLINE_CARD_NAMES)
 		self.assertEqual(
 			HEADLINE_CARD_NAMES["supplier_advances"], "Supplier advances",
+		)
+
+	# -- Display-and-exclude PR (2026-05-16) -----------------------------
+
+	def test_sundry_creditors_excludes_unsecured_loans_parent(self):
+		"""sundry_creditors carries
+		`exclude_parent_stems: ["Unsecured Loans"]` so Payable-tagged
+		leaves under the Unsecured Loans parent group are not double-
+		counted (they belong to the `unsecured_loans` card via its
+		`by_parent_account_stem_in` predicate). Pin the exact value
+		so a future "tidy up" can't silently drop it.
+		"""
+		from dux_groupview.dux_groupview.spotlight.cards import by_id
+		card = by_id()["sundry_creditors"]
+		v = card["match"]["by_account_type"]
+		self.assertIn(
+			"exclude_parent_stems", v,
+			msg=(
+				"sundry_creditors must carry `exclude_parent_stems` "
+				"to suppress the ~Rs 0.25 Cr double-count with the "
+				"`unsecured_loans` card. Removing this key re-"
+				"introduces the bug fixed by the 2026-05-16 PR."
+			),
+		)
+		self.assertEqual(
+			v["exclude_parent_stems"], ["Unsecured Loans"],
+			msg=(
+				f"Expected ['Unsecured Loans'], got "
+				f"{v.get('exclude_parent_stems')!r}. If the list "
+				f"changed, verify the new stems are still the right "
+				f"carve-out -- and update the unsecured_loans card "
+				f"if so."
+			),
+		)
+
+	def test_supplier_advances_excludes_unsecured_loans_parent(self):
+		"""Same exclusion rationale as sundry_creditors -- supplier_advances
+		also carves out Payable leaves under the Unsecured Loans parent.
+		"""
+		from dux_groupview.dux_groupview.spotlight.cards import by_id
+		card = by_id()["supplier_advances"]
+		v = card["match"]["by_account_type"]
+		self.assertEqual(
+			v.get("exclude_parent_stems"), ["Unsecured Loans"],
+			msg=(
+				"supplier_advances must also exclude Unsecured Loans "
+				"parent. Drift here means debit-balance Payable leaves "
+				"under that parent would surface in BOTH cards."
+			),
+		)
+
+	def test_supplier_advances_uses_display_sign_absolute(self):
+		"""supplier_advances carries `display_sign: "absolute"` so the
+		stored cache value (and the cockpit's filtered-scope path
+		response) is the magnitude of the natural-side sum, never
+		negative. Without this, a debit-balance Payable leaf -- which
+		flips negative through the per-row natural-side CASE on the
+		Liability root_type -- would surface as a negative number on
+		a card whose semantic is "money parked with suppliers" (a
+		positive concept).
+		"""
+		from dux_groupview.dux_groupview.spotlight.cards import by_id
+		card = by_id()["supplier_advances"]
+		self.assertEqual(
+			card.get("display_sign"), "absolute",
+			msg=(
+				f"Expected display_sign='absolute', got "
+				f"{card.get('display_sign')!r}. Removing or changing "
+				f"this re-introduces the negative-display bug fixed "
+				f"by the 2026-05-16 PR."
+			),
+		)
+
+	def test_no_other_card_carries_display_sign(self):
+		"""Only `supplier_advances` should carry `display_sign` for
+		now. Pinned so that a future PR adding `display_sign` to
+		another card has to update this test explicitly -- prevents
+		silent expansion of the feature surface without review.
+		"""
+		from dux_groupview.dux_groupview.spotlight.cards import CARDS
+		offenders = [
+			c["id"] for c in CARDS
+			if c.get("display_sign") and c["id"] != "supplier_advances"
+		]
+		self.assertEqual(
+			offenders, [],
+			msg=(
+				f"Cards other than supplier_advances are using "
+				f"display_sign: {offenders}. If this is intentional, "
+				f"update this test to allow-list the new cards."
+			),
 		)

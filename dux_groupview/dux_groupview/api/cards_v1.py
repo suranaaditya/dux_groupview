@@ -107,9 +107,14 @@ def _resolve_match(match: dict, companies: list) -> list:
 		# shortcuts for the canonical dict form):
 		#   "Payable"                                            -> single account_type
 		#   ["Bank", "Cash"]                                     -> multiple account_types
-		#   {"account_type": ..., "balance_sign": "negative"}    -> canonical, optional sign filter
+		#   {"account_type": ...,                                -> canonical
+		#    "balance_sign": "negative",                             optional sign filter
+		#    "exclude_parent_stems": ["Unsecured Loans"]}            optional exclusion
+		# `exclude_parent_stems` is accepted only in the canonical
+		# dict form (shortcut shapes have no place to express it).
 		if isinstance(v, str):
 			account_types, balance_sign = [v], "any"
+			exclude_parent_stems = None
 		elif isinstance(v, (list, tuple)):
 			# Strict: every element must be a string. Mixed-type lists
 			# (e.g. `["Payable", {"balance_sign": "positive"}]`) are
@@ -120,6 +125,7 @@ def _resolve_match(match: dict, companies: list) -> list:
 			if not all(isinstance(x, str) for x in v):
 				return []
 			account_types, balance_sign = list(v), "any"
+			exclude_parent_stems = None
 		elif isinstance(v, dict):
 			at = v.get("account_type")
 			if isinstance(at, str):
@@ -131,6 +137,7 @@ def _resolve_match(match: dict, companies: list) -> list:
 			else:
 				return []
 			balance_sign = v.get("balance_sign", "any")
+			exclude_parent_stems = v.get("exclude_parent_stems")
 		else:
 			return []
 		if not account_types:
@@ -140,12 +147,16 @@ def _resolve_match(match: dict, companies: list) -> list:
 			# defensive shape used elsewhere in this resolver).
 			return []
 		at_ph, at_params = _named_in("at", account_types)
+		ex_clause_unaliased, ex_clause_aliased, ex_params = (
+			_exclude_parent_stems_clauses(exclude_parent_stems)
+		)
 		return _resolve_with_optional_sign_filter(
 			tabaccount_only_sql=f"""
 				SELECT name FROM `tabAccount`
 				WHERE is_group = 0
 				  AND account_type IN ({at_ph})
 				  AND company IN ({co_ph})
+				  {ex_clause_unaliased}
 			""",
 			tabaccount_sign_filtered_sql=f"""
 				SELECT DISTINCT s.account
@@ -159,8 +170,9 @@ def _resolve_match(match: dict, companies: list) -> list:
 				  AND a.account_type IN ({at_ph})
 				  AND s.company IN ({co_ph})
 				  AND s.balance {{sign_op}} 0
+				  {ex_clause_aliased}
 			""",
-			params={**at_params, **co_params},
+			params={**at_params, **co_params, **ex_params},
 			balance_sign=balance_sign,
 		)
 
@@ -208,7 +220,11 @@ def _resolve_match(match: dict, companies: list) -> list:
 		balance_sign = conf.get("balance_sign", "any")
 		if balance_sign not in ("positive", "negative", "any"):
 			return []
+		exclude_parent_stems = conf.get("exclude_parent_stems")
 		st_ph, st_params = _named_in("st", stems)
+		ex_clause_unaliased, ex_clause_aliased, ex_params = (
+			_exclude_parent_stems_clauses(exclude_parent_stems)
+		)
 		return _resolve_with_optional_sign_filter(
 			tabaccount_only_sql=f"""
 				SELECT name FROM `tabAccount`
@@ -216,6 +232,7 @@ def _resolve_match(match: dict, companies: list) -> list:
 				  AND root_type = %(root_type)s
 				  AND SUBSTRING_INDEX(parent_account, ' - ', 1) IN ({st_ph})
 				  AND company IN ({co_ph})
+				  {ex_clause_unaliased}
 			""",
 			tabaccount_sign_filtered_sql=f"""
 				SELECT DISTINCT s.account
@@ -230,12 +247,38 @@ def _resolve_match(match: dict, companies: list) -> list:
 				  AND SUBSTRING_INDEX(a.parent_account, ' - ', 1) IN ({st_ph})
 				  AND s.company IN ({co_ph})
 				  AND s.balance {{sign_op}} 0
+				  {ex_clause_aliased}
 			""",
-			params={"root_type": root_type, **st_params, **co_params},
+			params={"root_type": root_type, **st_params, **co_params, **ex_params},
 			balance_sign=balance_sign,
 		)
 
 	return []
+
+
+def _exclude_parent_stems_clauses(value):
+	"""Build the unaliased + aliased `NOT IN` exclusion clauses.
+
+	Returns a 3-tuple `(unaliased_clause, aliased_clause, params)`.
+	Used by both `by_account_type` and `by_parent_account_stem_in`
+	branches of `_resolve_match`. The two clauses differ only in
+	whether `parent_account` carries the `a.` alias prefix -- the
+	`tabaccount_only_sql` template has no alias; the
+	`tabaccount_sign_filtered_sql` template joins tabAccount as `a`.
+
+	Defensive: missing / empty / non-list / non-string elements ->
+	returns `("", "", {})` so the surrounding SQL template renders
+	with no additional WHERE clause and no spurious params (no-op
+	shape per cards.py docstring).
+	"""
+	if not isinstance(value, list) or not value:
+		return ("", "", {})
+	if not all(isinstance(x, str) for x in value):
+		return ("", "", {})
+	ex_ph, ex_params = _named_in("ex", value)
+	unaliased = f"AND SUBSTRING_INDEX(parent_account, ' - ', 1) NOT IN ({ex_ph})"
+	aliased = f"AND SUBSTRING_INDEX(a.parent_account, ' - ', 1) NOT IN ({ex_ph})"
+	return (unaliased, aliased, ex_params)
 
 
 def _resolve_with_optional_sign_filter(
