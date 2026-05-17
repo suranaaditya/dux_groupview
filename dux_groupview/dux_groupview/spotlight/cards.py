@@ -24,18 +24,71 @@ Each card definition is a dict with the following shape:
                                      still resolves disabled cards'
                                      predicates so bookmarked deep-links
                                      to the drill panel continue to work.
+        "display_sign": str          optional, default "natural". Final
+                                     sign transform applied to the
+                                     aggregated card value before it is
+                                     written to `tabDGV Spotlight Cache`
+                                     AND before it is returned by the
+                                     cockpit's filtered-spotlight path
+                                     (i.e. applied inside `_aggregate`
+                                     itself, so every read path sees the
+                                     transformed number). Three values:
+                                       - "natural" (default): no change.
+                                       - "absolute": abs(value). Use
+                                         when the underlying sign is
+                                         semantically wrong for the
+                                         card's surface direction
+                                         (e.g. `supplier_advances` --
+                                         a debit balance on a Payable
+                                         account flips negative through
+                                         the natural-side CASE, but
+                                         "advances paid" is conceptually
+                                         a positive concept).
+                                       - "negated": -value. Included
+                                         for completeness; no card uses
+                                         it today.
+                                     Caveat on delta math: the prior-
+                                     month value and every sparkline
+                                     point are run through the same
+                                     transform, so deltas remain
+                                     internally consistent. A card that
+                                     flips sign month-over-month under
+                                     "absolute" will show a delta on
+                                     the absolute axis (e.g. -2 -> -3
+                                     becomes 2 -> 3, delta +1) which
+                                     may not match the underlying
+                                     directional change. None of the
+                                     cards that use "absolute" today
+                                     are expected to cross zero in
+                                     practice.
+                                     Sparkline implication: changing
+                                     `display_sign` between deploys
+                                     produces a discontinuity at the
+                                     deploy date in the cached
+                                     sparkline -- new cache rows write
+                                     transformed values while older
+                                     rows persist with the old
+                                     transform. This is intended;
+                                     refresh re-computes the sparkline
+                                     window on every run so the
+                                     discontinuity rolls off naturally.
+                                     Invalid value -> log warning and
+                                     treat as "natural" (refresh does
+                                     not crash).
     }
 
 `match` keys (three supported; both `by_account_type` and
-`by_parent_account_stem_in` also accept an optional `balance_sign`
-sub-key as of the supplier-advances split):
+`by_parent_account_stem_in` also accept optional `balance_sign` and
+`exclude_parent_stems` sub-keys as of the supplier-advances split and
+supplier-advances display-and-exclude fix respectively):
 
 * `by_account_type`:
     - Three input shapes; first two are shortcuts for the third:
       - `"Payable"` (string)                        -> single account_type
       - `["Bank", "Cash"]` (list)                   -> multiple account_types
       - `{"account_type": <str|list>,
-         "balance_sign": <"positive"|"negative"|"any">}` (dict, canonical)
+         "balance_sign": <"positive"|"negative"|"any">,
+         "exclude_parent_stems": <list[str]>}` (dict, canonical)
     - `balance_sign` is OPTIONAL and defaults to "any" (no sign filter,
       same as the legacy string/list shapes). When set to "positive"
       or "negative", the predicate filters leaves to those whose
@@ -51,11 +104,26 @@ sub-key as of the supplier-advances split):
       structure. A leaf whose balance flips sign between snapshots
       will appear/disappear from the leaf set across refreshes -- this
       is intended (the card surface flips the same way).
+    - `exclude_parent_stems` is OPTIONAL (dict shape only -- shortcut
+      string/list shapes do NOT accept this key). When set to a
+      non-empty list of stem names, excludes leaves whose immediate
+      parent group's account_name stem (the part BEFORE the first
+      ` - ` separator in `parent_account`) is in the list. Used to
+      carve out incidentally-included parents that another card
+      already owns -- e.g. `sundry_creditors` excludes the
+      `Unsecured Loans` parent stem because Payable-tagged loan
+      leaves living under that parent are correctly attributed to the
+      `unsecured_loans` card via `by_parent_account_stem_in`.
+      Defensive: empty list / missing key / non-list value / list with
+      non-string elements -> no-op (predicate behaves as today, no
+      exclusion clause emitted, no error).
   Examples:
     `{"by_account_type": "Payable"}`                   -- legacy shortcut, no sign
     `{"by_account_type": ["Bank", "Cash"]}`            -- legacy shortcut, no sign
     `{"by_account_type": {"account_type": "Payable",   -- canonical, with sign
-                          "balance_sign": "negative"}}`
+                          "balance_sign": "negative",  --   and parent-stem
+                          "exclude_parent_stems":      --   exclusion
+                              ["Unsecured Loans"]}}`
 
 * `by_root_type_and_name_pattern`:
     - filters on `root_type`, then matches `account` name with LIKE.
@@ -73,6 +141,13 @@ sub-key as of the supplier-advances split):
       `by_account_type` (same semantics, same snapshot consultation).
       Not currently consumed by any card in this PR; added for
       forward consistency / OD-positive future work.
+    - Also accepts the same optional `exclude_parent_stems` sub-key as
+      `by_account_type`. Layered on top of the inclusion list: a leaf
+      whose parent stem appears in BOTH `stems` and
+      `exclude_parent_stems` is excluded (defensive against
+      misconfigured overlap; the exclusion wins). Defensive shape
+      identical to `by_account_type` -- empty / missing / non-list /
+      non-string elements -> no-op, no error.
   Example: `{"by_parent_account_stem_in":
               {"stems": ["Bank Accounts", "Cash in Hand"],
                "root_type": "Asset"}}`.
@@ -105,6 +180,17 @@ CARDS = [
 			"by_account_type": {
 				"account_type": "Payable",
 				"balance_sign": "negative",
+				# Excludes Payable-tagged leaves living under the
+				# `Unsecured Loans` parent group. 3 such leaves on
+				# production (~Rs 0.25 Cr) were previously double-
+				# counted between this card and `unsecured_loans`;
+				# the dedicated card catches them via
+				# `by_parent_account_stem_in` so removing them here
+				# eliminates the overlap. Net effect at deploy:
+				# `sundry_creditors` drops by the previously-double-
+				# counted total; the sparkline shows a small step
+				# down at deploy date. Pre-warned in the PR.
+				"exclude_parent_stems": ["Unsecured Loans"],
 			},
 		},
 		"polarity": "neutral",
@@ -286,6 +372,13 @@ CARDS = [
 			"by_account_type": {
 				"account_type": "Payable",
 				"balance_sign": "positive",
+				# Same exclusion rationale as `sundry_creditors`:
+				# Payable-tagged leaves under the `Unsecured Loans`
+				# parent group are owned by the `unsecured_loans`
+				# card. Without this filter, a debit-balance leaf
+				# named e.g. `Unsecured Loans Payable - <abbr>`
+				# would surface in BOTH cards.
+				"exclude_parent_stems": ["Unsecured Loans"],
 			},
 		},
 		"polarity": "bad_up",
@@ -295,6 +388,18 @@ CARDS = [
 		# #A33B3B, etc.). Sits adjacent to creditors visually (warm
 		# tones for AP-adjacent concepts) without competing with it.
 		"color": "#A85B8C",
+		# The per-row natural-side CASE flip in `_aggregate` produces
+		# a negative number for a debit-balance Payable leaf (Payable
+		# is a Liability root_type and so flips). Semantically,
+		# "advances paid ahead" is a positive concept -- an owner
+		# wants to see "we have Rs 2.5 Cr parked with suppliers", not
+		# "minus 2.5 Cr". `display_sign: "absolute"` applies a final
+		# magnitude transform on the aggregated value before it lands
+		# in the cache (and before the cockpit's filtered-scope path
+		# returns it). Doesn't touch the underlying refresh-path sign
+		# convention -- that's a separate architectural issue
+		# deferred to Phase 5.
+		"display_sign": "absolute",
 	},
 ]
 

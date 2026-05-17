@@ -1024,3 +1024,272 @@ class TestBalanceSignResolver(FrappeTestCase):
 					(row["status"], row["name"]),
 				)
 			frappe.db.commit()
+
+
+class TestExcludeParentStemsResolver(FrappeTestCase):
+	"""Resolver-path tests for the `exclude_parent_stems` predicate
+	extension on `by_account_type` and `by_parent_account_stem_in`.
+
+	Per spec/supplier-advances-display-and-exclude-fixes Fix 2:
+	resolver mirrors `_match_clause`'s exclusion semantics so drill
+	expansion sees the same leaf set the cards aggregate over.
+
+	Tests are structured to work whether or not the dev site has any
+	leaves matching the excluded parent stem: shape/defensive tests
+	don't depend on data; semantic tests gracefully degrade when the
+	exclusion universe is empty (the `with_excl == without_excl`
+	check still pins behaviour).
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		_ensure_today_data()
+
+	# ------------------------------------------------------------------
+	# Shape: subquery emitted via _exclude_parent_stems_clauses helper
+	# ------------------------------------------------------------------
+
+	def test_helper_returns_empty_for_invalid_inputs(self):
+		"""`_exclude_parent_stems_clauses` defensive shape: missing,
+		empty, non-list, and non-string-element inputs all return
+		`("", "", {})` so the surrounding SQL template renders with
+		no extra WHERE and no spurious params.
+		"""
+		from dux_groupview.dux_groupview.api.cards_v1 import (
+			_exclude_parent_stems_clauses,
+		)
+		for bad in (None, [], "Unsecured Loans", 42, ["Unsecured Loans", 42]):
+			with self.subTest(bad=bad):
+				unaliased, aliased, params = (
+					_exclude_parent_stems_clauses(bad)
+				)
+				self.assertEqual(unaliased, "")
+				self.assertEqual(aliased, "")
+				self.assertEqual(params, {})
+
+	def test_helper_returns_both_aliased_forms_for_valid_input(self):
+		"""Valid input -> unaliased + aliased clauses + named-
+		placeholder params. The two clauses differ only in the
+		`a.` table-alias prefix on parent_account.
+		"""
+		from dux_groupview.dux_groupview.api.cards_v1 import (
+			_exclude_parent_stems_clauses,
+		)
+		unaliased, aliased, params = _exclude_parent_stems_clauses(
+			["Unsecured Loans", "Other Stem"],
+		)
+		self.assertIn(
+			"SUBSTRING_INDEX(parent_account, ' - ', 1) NOT IN", unaliased,
+		)
+		self.assertIn(
+			"SUBSTRING_INDEX(a.parent_account, ' - ', 1) NOT IN", aliased,
+		)
+		self.assertEqual(params.get("ex_0"), "Unsecured Loans")
+		self.assertEqual(params.get("ex_1"), "Other Stem")
+
+	# ------------------------------------------------------------------
+	# by_account_type with exclusion
+	# ------------------------------------------------------------------
+
+	def test_by_account_type_exclusion_removes_under_stem_leaves(self):
+		"""Resolving `by_account_type` with `exclude_parent_stems`
+		returns no leaves whose immediate parent stem matches the
+		exclusion list -- even if those leaves match the
+		`account_type` filter.
+		"""
+		all_companies = _all_companies()
+		match_with = {"by_account_type": {
+			"account_type": "Payable",
+			"exclude_parent_stems": ["Unsecured Loans"],
+		}}
+		result = cards_v1.resolve_match_to_accounts(match_with, all_companies)
+		if not result["accounts"]:
+			self.skipTest("No Payable leaves on dev site")
+		# Independent check: for every returned leaf, its parent_stem
+		# must NOT be `Unsecured Loans`.
+		offending = frappe.db.sql_list(
+			f"""
+			SELECT name FROM `tabAccount`
+			WHERE name IN %s
+			  AND SUBSTRING_INDEX(parent_account, ' - ', 1) = 'Unsecured Loans'
+			""",
+			(tuple(result["accounts"]),),
+		)
+		self.assertEqual(
+			offending, [],
+			msg=(
+				f"Resolver returned leaves under the excluded stem: "
+				f"{offending}. The NOT IN clause must filter these "
+				f"out before the resolver returns."
+			),
+		)
+
+	def test_by_account_type_exclusion_is_subset_of_no_exclusion(self):
+		"""Leaves returned with the exclusion are always a (non-
+		strict) subset of leaves returned without the exclusion.
+		"""
+		all_companies = _all_companies()
+		with_excl = cards_v1.resolve_match_to_accounts(
+			{"by_account_type": {
+				"account_type": "Payable",
+				"exclude_parent_stems": ["Unsecured Loans"]}},
+			all_companies,
+		)
+		without_excl = cards_v1.resolve_match_to_accounts(
+			{"by_account_type": "Payable"},
+			all_companies,
+		)
+		self.assertTrue(
+			set(with_excl["accounts"]).issubset(set(without_excl["accounts"])),
+			msg=(
+				"Excluded-result must be a subset of non-excluded. "
+				"Any leaf returned only WITH the exclusion is a bug -- "
+				"the exclusion can only remove leaves, never add them."
+			),
+		)
+
+	def test_by_account_type_empty_list_matches_no_exclusion(self):
+		"""`exclude_parent_stems: []` -> same leaf set as omitting
+		the key. Regression-safe defensive shape.
+		"""
+		all_companies = _all_companies()
+		empty = cards_v1.resolve_match_to_accounts(
+			{"by_account_type": {
+				"account_type": "Payable",
+				"exclude_parent_stems": []}},
+			all_companies,
+		)
+		omitted = cards_v1.resolve_match_to_accounts(
+			{"by_account_type": {"account_type": "Payable"}},
+			all_companies,
+		)
+		self.assertEqual(
+			set(empty["accounts"]), set(omitted["accounts"]),
+			msg="exclude_parent_stems=[] must be equivalent to omitting the key",
+		)
+
+	def test_by_account_type_non_list_exclusion_silently_ignored(self):
+		"""Non-list `exclude_parent_stems` -> resolver behaves as
+		though the key were omitted. (Resolver doesn't error;
+		`_exclude_parent_stems_clauses` returns the no-op shape.)
+		"""
+		all_companies = _all_companies()
+		bad = cards_v1.resolve_match_to_accounts(
+			{"by_account_type": {
+				"account_type": "Payable",
+				"exclude_parent_stems": "Unsecured Loans"}},
+			all_companies,
+		)
+		baseline = cards_v1.resolve_match_to_accounts(
+			{"by_account_type": {"account_type": "Payable"}},
+			all_companies,
+		)
+		self.assertEqual(
+			set(bad["accounts"]), set(baseline["accounts"]),
+		)
+
+	# ------------------------------------------------------------------
+	# by_parent_account_stem_in with exclusion
+	# ------------------------------------------------------------------
+
+	def test_by_parent_stem_in_exclusion_removes_overlap_leaves(self):
+		"""If the inclusion list and exclusion list overlap (a
+		misconfiguration scenario), every leaf under an overlapping
+		stem is excluded. Defensive against author typos.
+		"""
+		all_companies = _all_companies()
+		# Inclusion AND exclusion both contain "Bank Accounts" -- a
+		# self-defeating predicate. Result must be empty.
+		match = {"by_parent_account_stem_in": {
+			"stems": ["Bank Accounts"],
+			"root_type": "Asset",
+			"exclude_parent_stems": ["Bank Accounts"],
+		}}
+		result = cards_v1.resolve_match_to_accounts(match, all_companies)
+		self.assertEqual(
+			result["accounts"], [],
+			msg=(
+				"Overlap between stems and exclude_parent_stems must "
+				"yield an empty leaf set. Exclusion wins by virtue "
+				"of being applied as `NOT IN` inside the same WHERE."
+			),
+		)
+
+	def test_by_parent_stem_in_disjoint_exclusion_no_effect(self):
+		"""If the exclusion list is disjoint from any leaf's parent
+		stem (none of the included leaves are under an excluded
+		stem), the result is identical to no exclusion. Common case
+		for `liquid_cash` / `secured_loans` if we ever added an
+		exclusion key there.
+		"""
+		all_companies = _all_companies()
+		with_excl = cards_v1.resolve_match_to_accounts(
+			{"by_parent_account_stem_in": {
+				"stems": ["Bank Accounts"],
+				"root_type": "Asset",
+				"exclude_parent_stems": ["A Stem That Does Not Exist"]}},
+			all_companies,
+		)
+		without = cards_v1.resolve_match_to_accounts(
+			{"by_parent_account_stem_in": {
+				"stems": ["Bank Accounts"],
+				"root_type": "Asset"}},
+			all_companies,
+		)
+		self.assertEqual(
+			set(with_excl["accounts"]), set(without["accounts"]),
+			msg=(
+				"Disjoint exclusion list must not affect the result "
+				"set -- the NOT IN clause matches nothing, so the "
+				"subquery emits the same row set as without exclusion."
+			),
+		)
+
+	# ------------------------------------------------------------------
+	# Composability with balance_sign
+	# ------------------------------------------------------------------
+
+	def test_balance_sign_and_exclude_compose_on_by_account_type(self):
+		"""Production `sundry_creditors` predicate shape: both
+		`balance_sign=negative` AND `exclude_parent_stems=
+		["Unsecured Loans"]`. Resolver returns leaves matching
+		BOTH constraints -- credit-balance Payable leaves NOT under
+		Unsecured Loans.
+		"""
+		all_companies = _all_companies()
+		match = {"by_account_type": {
+			"account_type": "Payable",
+			"balance_sign": "negative",
+			"exclude_parent_stems": ["Unsecured Loans"],
+		}}
+		result = cards_v1.resolve_match_to_accounts(match, all_companies)
+		if not result["accounts"]:
+			self.skipTest("No matching leaves on dev site")
+		# Cross-check both constraints on every returned leaf.
+		rows = frappe.db.sql(
+			"""
+			SELECT s.account, s.balance,
+			       SUBSTRING_INDEX(a.parent_account, ' - ', 1) AS stem
+			FROM `tabDGV TB Snapshot Row` s
+			JOIN `tabAccount` a ON a.name = s.account
+			WHERE s.snapshot_date = (
+			    SELECT MAX(snapshot_date) FROM `tabDGV TB Snapshot`
+			    WHERE status = 'Complete'
+			)
+			  AND s.account IN %s
+			""",
+			(tuple(result["accounts"]),),
+			as_dict=True,
+		)
+		for row in rows:
+			self.assertLess(
+				row["balance"], 0,
+				msg=f"Leaf {row['account']} balance={row['balance']} "
+				    f"(expected < 0 under balance_sign=negative)",
+			)
+			self.assertNotEqual(
+				row["stem"], "Unsecured Loans",
+				msg=f"Leaf {row['account']} has excluded stem "
+				    f"{row['stem']!r}",
+			)

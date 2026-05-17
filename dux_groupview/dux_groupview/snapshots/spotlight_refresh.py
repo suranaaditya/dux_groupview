@@ -174,9 +174,58 @@ def _aggregate(card, snapshot_date, companies=None):
 		""",
 		params,
 	)
-	return round(flt(rows[0][0]), 2) if rows else 0.0
+	raw_value = round(flt(rows[0][0]), 2) if rows else 0.0
+	# Applied here (not in the refresh loop) so every caller of
+	# `_aggregate` -- the refresh path AND the cockpit's filtered-
+	# spotlight path (`aggregate_card_value`, imported by api/cockpit.py)
+	# -- sees the same display-corrected value. Without this, a user
+	# filtering by company on the cockpit would see `supplier_advances`
+	# flip back to negative when the cache is bypassed for scope
+	# filtering.
+	return _apply_display_sign(card, raw_value)
 
 
+def _apply_display_sign(card, value):
+	"""Apply optional `display_sign` transform to an aggregated value.
+
+	Per cards.py module docstring: "natural" (default) leaves the
+	value unchanged; "absolute" returns `abs(value)`; "negated"
+	returns `-value`. Invalid values log a warning and fall back to
+	"natural" so refresh does not crash on a malformed card definition.
+	"""
+	sign = card.get("display_sign", "natural")
+	if sign == "natural":
+		return value
+	if sign == "absolute":
+		return abs(value)
+	if sign == "negated":
+		return -value
+	frappe.logger().warning(
+		f"DGV spotlight: invalid display_sign={sign!r} on card "
+		f"{card.get('id')!r}; treating as 'natural'"
+	)
+	return value
+
+
+
+
+def _named_ex_stems(value):
+	"""Validate and name-bind an `exclude_parent_stems` value.
+
+	Returns ("", {}) if the value is missing, empty, not a list, or
+	contains any non-string element -- the predicate's caller then
+	emits no exclusion clause (no-op shape per cards.py docstring).
+	Otherwise returns (`%(ex_0)s, %(ex_1)s, ...`, {ex_0: ..., ...}),
+	matching the named-placeholder scheme used by the rest of this
+	file (`at_N`, `st_N`).
+	"""
+	if not isinstance(value, list) or not value:
+		return ("", {})
+	if not all(isinstance(x, str) for x in value):
+		return ("", {})
+	placeholders = ", ".join(f"%(ex_{i})s" for i in range(len(value)))
+	params = {f"ex_{i}": x for i, x in enumerate(value)}
+	return (placeholders, params)
 
 
 def _match_clause(card):
@@ -193,6 +242,17 @@ def _match_clause(card):
 	natural-side value computed in `_aggregate`. For Payable accounts:
 	  - balance < 0 -> credit balance (company owes / "sundry creditors")
 	  - balance > 0 -> debit balance (advance paid / "supplier advances")
+
+	Optional `exclude_parent_stems` key on the same two predicates
+	(spec/supplier-advances-display-and-exclude-fixes): non-empty
+	list of stem names. Excludes leaves whose immediate parent
+	group's `parent_account` stem (the part BEFORE the first ` - `)
+	is in the list. For `by_account_type` this expands to an
+	`account NOT IN (SELECT name FROM tabAccount WHERE ...)`
+	subquery; for `by_parent_account_stem_in` it folds into the
+	existing tabAccount subquery's WHERE. Defensive: missing / empty
+	/ non-list / non-string elements -> no-op (no exclusion clause
+	emitted).
 	"""
 	match = card.get("match", {})
 
@@ -201,9 +261,13 @@ def _match_clause(card):
 		# Three input shapes (spec/supplier-advances-split):
 		#   "Payable"                                            -> str
 		#   ["Bank", "Cash"]                                     -> list
-		#   {"account_type": ..., "balance_sign": "negative"}    -> dict
+		#   {"account_type": ..., "balance_sign": "negative",
+		#    "exclude_parent_stems": ["Unsecured Loans"]}        -> dict
+		# `exclude_parent_stems` is only accepted in the dict form
+		# (the shortcut shapes have no place to express it).
 		if isinstance(v, str):
 			account_types, balance_sign = [v], "any"
+			exclude_parent_stems = None
 		elif isinstance(v, (list, tuple)):
 			# Strict: every element must be a string. Mixed-type lists
 			# are NOT supported (see cards_v1._resolve_match for the
@@ -211,6 +275,7 @@ def _match_clause(card):
 			if not all(isinstance(x, str) for x in v):
 				return (None, {})
 			account_types, balance_sign = list(v), "any"
+			exclude_parent_stems = None
 		elif isinstance(v, dict):
 			at = v.get("account_type")
 			if isinstance(at, str):
@@ -222,6 +287,7 @@ def _match_clause(card):
 			else:
 				return (None, {})
 			balance_sign = v.get("balance_sign", "any")
+			exclude_parent_stems = v.get("exclude_parent_stems")
 		else:
 			return (None, {})
 		if not account_types:
@@ -237,6 +303,22 @@ def _match_clause(card):
 			clause += " AND balance > 0"
 		elif balance_sign == "negative":
 			clause += " AND balance < 0"
+		ex_placeholders, ex_params = _named_ex_stems(exclude_parent_stems)
+		if ex_placeholders:
+			# Snapshot rows don't carry parent_account, so the
+			# exclusion is an `account NOT IN (...)` subquery against
+			# `tabAccount`. Mirrors the `by_parent_account_stem_in`
+			# subquery shape elsewhere in this file. Pure structural
+			# query against tabAccount (Rule 1 compliant -- not
+			# touching tabGL Entry).
+			clause += (
+				" AND account NOT IN ("
+				"SELECT name FROM `tabAccount` "
+				"WHERE is_group = 0 "
+				f"AND SUBSTRING_INDEX(parent_account, ' - ', 1) IN ({ex_placeholders})"
+				")"
+			)
+			params.update(ex_params)
 		return (clause, params)
 
 	if "by_root_type_and_name_pattern" in match:
@@ -276,6 +358,7 @@ def _match_clause(card):
 		balance_sign = conf.get("balance_sign", "any")
 		if balance_sign not in ("positive", "negative", "any"):
 			return (None, {})  # defensive
+		exclude_parent_stems = conf.get("exclude_parent_stems")
 		# Placeholder hygiene: every stem becomes a separate named
 		# parameter (`%(st_0)s`, `%(st_1)s`, ...). No string
 		# concatenation of user-supplied values into SQL even though
@@ -291,12 +374,26 @@ def _match_clause(card):
 		)
 		params = {f"st_{i}": x for i, x in enumerate(stems)}
 		params["root_type"] = root_type
+		# Inclusion + (optional) exclusion both run INSIDE the
+		# IN-subquery's WHERE -- they're filtering the same tabAccount
+		# row set. Same `ex_N` placeholder scheme as `by_account_type`
+		# uses for its exclusion subquery, so the two implementations
+		# stay readable side-by-side.
+		ex_placeholders, ex_params = _named_ex_stems(exclude_parent_stems)
+		exclusion_sql = ""
+		if ex_placeholders:
+			exclusion_sql = (
+				f" AND SUBSTRING_INDEX(parent_account, ' - ', 1) "
+				f"NOT IN ({ex_placeholders})"
+			)
+			params.update(ex_params)
 		clause = (
 			"account IN ("
 			"SELECT name FROM `tabAccount` "
 			"WHERE is_group = 0 "
 			"AND root_type = %(root_type)s "
 			f"AND SUBSTRING_INDEX(parent_account, ' - ', 1) IN ({placeholders})"
+			f"{exclusion_sql}"
 			")"
 		)
 		# Sign filter sits on the OUTER WHERE (i.e. on snapshot row's

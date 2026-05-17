@@ -146,28 +146,36 @@ class TestSpotlightCache(FrappeTestCase):
 		  - str:  legacy shortcut, no sign filter
 		  - list: legacy shortcut, no sign filter
 		  - dict: canonical form with optional balance_sign (extended
-		          by spec/supplier-advances-split)
+		          by spec/supplier-advances-split) and optional
+		          exclude_parent_stems (extended by
+		          spec/supplier-advances-display-and-exclude-fixes)
+
+		Applies the same `display_sign` transform as
+		`spotlight_refresh._aggregate` does, so the cached value can
+		be compared apples-to-apples with this helper's return value
+		on cards using `display_sign: "absolute"`.
 		"""
 		match = card["match"]
+		exclude_parent_stems = None
 		if "by_account_type" in match:
 			v = match["by_account_type"]
 			balance_sign_clause = ""
 			if isinstance(v, str):
 				where = "account_type = %s"
-				params = [v, snapshot_date]
+				params = [v]
 			elif isinstance(v, (list, tuple)):
 				placeholders = ", ".join(["%s"] * len(v))
 				where = f"account_type IN ({placeholders})"
-				params = list(v) + [snapshot_date]
+				params = list(v)
 			elif isinstance(v, dict):
 				at = v["account_type"]
 				if isinstance(at, (list, tuple)):
 					placeholders = ", ".join(["%s"] * len(at))
 					where = f"account_type IN ({placeholders})"
-					params = list(at) + [snapshot_date]
+					params = list(at)
 				else:
 					where = "account_type = %s"
-					params = [at, snapshot_date]
+					params = [at]
 				# Sign filter on RAW snapshot row balance, mirroring
 				# what `_match_clause` emits.
 				balance_sign = v.get("balance_sign", "any")
@@ -175,9 +183,29 @@ class TestSpotlightCache(FrappeTestCase):
 					balance_sign_clause = " AND balance > 0"
 				elif balance_sign == "negative":
 					balance_sign_clause = " AND balance < 0"
+				exclude_parent_stems = v.get("exclude_parent_stems")
 			else:
 				return 0.0
 			where = where + balance_sign_clause
+			# Exclusion is an `account NOT IN (subquery)` on snapshot
+			# rows, mirroring _match_clause exactly. Append AFTER any
+			# balance_sign clause so the parameters bind in the order
+			# the SQL is emitted.
+			if (
+				isinstance(exclude_parent_stems, list)
+				and exclude_parent_stems
+				and all(isinstance(x, str) for x in exclude_parent_stems)
+			):
+				ex_ph = ", ".join(["%s"] * len(exclude_parent_stems))
+				where += (
+					f" AND account NOT IN ("
+					f"SELECT name FROM `tabAccount` "
+					f"WHERE is_group = 0 "
+					f"AND SUBSTRING_INDEX(parent_account, ' - ', 1) IN ({ex_ph})"
+					f")"
+				)
+				params += list(exclude_parent_stems)
+			params += [snapshot_date]
 		elif "by_root_type_and_name_pattern" in match:
 			conf = match["by_root_type_and_name_pattern"]
 			where = "root_type = %s AND account LIKE %s"
@@ -191,18 +219,42 @@ class TestSpotlightCache(FrappeTestCase):
 			#
 			# Per spec/supplier-advances-split §1: optional balance_sign
 			# applies the same outer-WHERE sign filter as by_account_type.
+			#
+			# Per spec/supplier-advances-display-and-exclude-fixes:
+			# optional exclude_parent_stems folds NOT IN INTO the
+			# subquery's WHERE, alongside the IN.
 			conf = match["by_parent_account_stem_in"]
 			stems = conf["stems"]
 			placeholders = ", ".join(["%s"] * len(stems))
+			exclude_parent_stems = conf.get("exclude_parent_stems")
+			exclusion_sql = ""
+			exclusion_params = []
+			if (
+				isinstance(exclude_parent_stems, list)
+				and exclude_parent_stems
+				and all(isinstance(x, str) for x in exclude_parent_stems)
+			):
+				ex_ph = ", ".join(["%s"] * len(exclude_parent_stems))
+				exclusion_sql = (
+					f" AND SUBSTRING_INDEX(parent_account, ' - ', 1) "
+					f"NOT IN ({ex_ph})"
+				)
+				exclusion_params = list(exclude_parent_stems)
 			where = (
 				"account IN ("
 				"SELECT name FROM `tabAccount` "
 				"WHERE is_group = 0 "
 				"AND root_type = %s "
 				f"AND SUBSTRING_INDEX(parent_account, ' - ', 1) IN ({placeholders})"
+				f"{exclusion_sql}"
 				")"
 			)
-			params = [conf["root_type"]] + list(stems) + [snapshot_date]
+			params = (
+				[conf["root_type"]]
+				+ list(stems)
+				+ exclusion_params
+				+ [snapshot_date]
+			)
 			balance_sign = conf.get("balance_sign", "any")
 			if balance_sign == "positive":
 				where += " AND balance > 0"
@@ -224,7 +276,16 @@ class TestSpotlightCache(FrappeTestCase):
 			""",
 			params,
 		)
-		return round(float(rows[0][0] or 0), 2)
+		raw = round(float(rows[0][0] or 0), 2)
+		# Mirror the production-side display_sign transform so this
+		# helper's return value is directly comparable to the cached
+		# value (which is post-transform).
+		sign = card.get("display_sign", "natural")
+		if sign == "absolute":
+			return abs(raw)
+		if sign == "negated":
+			return -raw
+		return raw
 
 	# ------------------------------------------------------------------
 	# 4 -- sparkline format
@@ -702,10 +763,11 @@ class TestBalanceSignRefresh(FrappeTestCase):
 		self.assertIsNone(clause)
 
 	def test_sundry_creditors_cached_matches_credit_only_aggregation(self):
-		"""Cached value for `sundry_creditors` (balance_sign=negative)
-		equals an independent SUM of credit-only Payable leaves on
-		the snapshot. Verifies the production refresh SQL is
-		arithmetically correct, not just syntactically valid.
+		"""Cached value for `sundry_creditors` (balance_sign=negative,
+		exclude_parent_stems=["Unsecured Loans"]) equals an independent
+		SUM of credit-only Payable leaves whose immediate parent stem
+		is NOT `Unsecured Loans`. Verifies refresh emits BOTH the
+		balance_sign filter AND the exclusion subquery correctly.
 		"""
 		snapshot_date = getdate(today())
 		cached = frappe.db.get_value(
@@ -714,8 +776,166 @@ class TestBalanceSignRefresh(FrappeTestCase):
 			"value",
 		)
 		# Independent: sum CASE-flipped values for Payable leaves with
-		# RAW balance < 0 only.
+		# RAW balance < 0 AND parent stem not in the exclusion list.
+		# Joins to tabAccount through `account` because snapshot rows
+		# don't carry parent_account themselves -- same shape as the
+		# production NOT IN subquery.
 		expected = frappe.db.sql(
+			"""
+			SELECT COALESCE(SUM(
+				CASE WHEN s.root_type IN ('Liability', 'Equity', 'Income')
+				     THEN -s.balance
+				     ELSE s.balance
+				END
+			), 0)
+			FROM `tabDGV TB Snapshot Row` s
+			WHERE s.snapshot_date = %s
+			  AND s.account_type = 'Payable'
+			  AND s.balance < 0
+			  AND s.account NOT IN (
+			    SELECT name FROM `tabAccount`
+			    WHERE is_group = 0
+			      AND SUBSTRING_INDEX(parent_account, ' - ', 1)
+			          = 'Unsecured Loans'
+			  )
+			""",
+			(snapshot_date,),
+		)
+		expected_value = round(float(expected[0][0] or 0), 2)
+		self.assertAlmostEqual(
+			float(cached or 0), expected_value, places=2,
+			msg=(
+				f"sundry_creditors cached={cached} does not match "
+				f"credit-only-minus-UL sum={expected_value}. Predicate's "
+				f"balance_sign=negative clause is wrong, the "
+				f"exclude_parent_stems subquery dropped or is mis-"
+				f"emitted, OR refresh is summing both signs (regression "
+				f"to pre-split behaviour)."
+			),
+		)
+
+	def test_supplier_advances_cached_matches_debit_only_aggregation(self):
+		"""Cached value for `supplier_advances` (balance_sign=positive,
+		exclude_parent_stems=["Unsecured Loans"], display_sign=absolute)
+		equals `abs(...)` of the natural-side SUM of debit-only Payable
+		leaves whose parent stem is NOT `Unsecured Loans`.
+
+		Verifies the FULL transform chain: predicate (sign + exclusion)
+		feeds the aggregation; display_sign applies the absolute on the
+		result. Three independent moving parts; the test pins all
+		three.
+		"""
+		snapshot_date = getdate(today())
+		cached = frappe.db.get_value(
+			"DGV Spotlight Cache",
+			{"card_id": "supplier_advances", "snapshot_date": snapshot_date},
+			"value",
+		)
+		expected_raw = frappe.db.sql(
+			"""
+			SELECT COALESCE(SUM(
+				CASE WHEN s.root_type IN ('Liability', 'Equity', 'Income')
+				     THEN -s.balance
+				     ELSE s.balance
+				END
+			), 0)
+			FROM `tabDGV TB Snapshot Row` s
+			WHERE s.snapshot_date = %s
+			  AND s.account_type = 'Payable'
+			  AND s.balance > 0
+			  AND s.account NOT IN (
+			    SELECT name FROM `tabAccount`
+			    WHERE is_group = 0
+			      AND SUBSTRING_INDEX(parent_account, ' - ', 1)
+			          = 'Unsecured Loans'
+			  )
+			""",
+			(snapshot_date,),
+		)
+		expected_value = abs(round(float(expected_raw[0][0] or 0), 2))
+		self.assertAlmostEqual(
+			float(cached or 0), expected_value, places=2,
+			msg=(
+				f"supplier_advances cached={cached} does not match "
+				f"abs(debit-only-minus-UL natural-side sum) = "
+				f"{expected_value}. If the magnitude is right but the "
+				f"sign is wrong, display_sign=absolute is not being "
+				f"applied. If the magnitude is wrong, either the "
+				f"balance_sign clause or the exclude_parent_stems "
+				f"subquery has drifted."
+			),
+		)
+		# Cached value must be >= 0 (display_sign=absolute guarantees
+		# it). Pinned defensively: a regression that re-introduces the
+		# negative-stored bug would land here.
+		self.assertGreaterEqual(
+			float(cached or 0), 0.0,
+			msg=(
+				"supplier_advances must store a non-negative value "
+				"(display_sign='absolute'). A negative stored value "
+				"means display_sign was not applied -- likely the "
+				"transform was moved out of `_aggregate` or "
+				"`display_sign` was dropped from the card definition."
+			),
+		)
+
+	def test_split_sum_invariant_matches_pre_PR_credit_only_aggregation(self):
+		"""CRITICAL INVARIANT for the display-and-exclude PR:
+
+		    new_sundry_creditors
+		      + (credit-only Payable natural-side sum UNDER `Unsecured
+		         Loans` parent)
+		      == credit-only Payable natural-side sum, ANY parent
+		         (== the pre-this-PR sundry_creditors stored value)
+
+		The exclusion moves leaves OUT of sundry_creditors; this test
+		pins that nothing is lost in transit (the moved leaves are
+		fully accounted for by the `excluded_credit_only` term).
+
+		On dev sites with no Unsecured Loans Payable leaves, the
+		excluded-side term is 0 and the invariant degenerates to
+		`new == old` -- still a useful regression check.
+
+		Composability with `supplier_advances`: a parallel test pins
+		the same shape on the debit side
+		(`test_supplier_advances_invariant_with_absolute_and_exclude`).
+		The two cards' exclusions are independent; pinning them
+		separately gives a clearer failure message than one combined
+		invariant when only one side drifts.
+		"""
+		snapshot_date = getdate(today())
+		new_sundry = float(frappe.db.get_value(
+			"DGV Spotlight Cache",
+			{"card_id": "sundry_creditors", "snapshot_date": snapshot_date},
+			"value",
+		) or 0)
+		# Credit-only Payable, UNDER `Unsecured Loans` parent stem
+		# (i.e. what was just excluded by this PR).
+		excluded_row = frappe.db.sql(
+			"""
+			SELECT COALESCE(SUM(
+				CASE WHEN s.root_type IN ('Liability', 'Equity', 'Income')
+				     THEN -s.balance
+				     ELSE s.balance
+				END
+			), 0)
+			FROM `tabDGV TB Snapshot Row` s
+			WHERE s.snapshot_date = %s
+			  AND s.account_type = 'Payable'
+			  AND s.balance < 0
+			  AND s.account IN (
+			    SELECT name FROM `tabAccount`
+			    WHERE is_group = 0
+			      AND SUBSTRING_INDEX(parent_account, ' - ', 1)
+			          = 'Unsecured Loans'
+			  )
+			""",
+			(snapshot_date,),
+		)
+		excluded_credit_only = round(float(excluded_row[0][0] or 0), 2)
+		# Pre-this-PR sundry_creditors aggregation: credit-only
+		# Payable, ANY parent.
+		full_row = frappe.db.sql(
 			"""
 			SELECT COALESCE(SUM(
 				CASE WHEN root_type IN ('Liability', 'Equity', 'Income')
@@ -730,29 +950,78 @@ class TestBalanceSignRefresh(FrappeTestCase):
 			""",
 			(snapshot_date,),
 		)
-		expected_value = round(float(expected[0][0] or 0), 2)
+		pre_pr_sundry = round(float(full_row[0][0] or 0), 2)
 		self.assertAlmostEqual(
-			float(cached or 0), expected_value, places=2,
+			round(new_sundry + excluded_credit_only, 2),
+			pre_pr_sundry, places=2,
 			msg=(
-				f"sundry_creditors cached={cached} does not match "
-				f"credit-only sum={expected_value}. Predicate's "
-				f"balance_sign=negative clause is wrong, OR refresh "
-				f"is summing both signs (regression to pre-split "
-				f"behavior)."
+				f"Sundry-credit exclusion invariant violated: "
+				f"new_sundry ({new_sundry}) + excluded_credit_only "
+				f"({excluded_credit_only}) = "
+				f"{round(new_sundry + excluded_credit_only, 2)}, but "
+				f"pre-PR sundry (all-parent credit-only) = "
+				f"{pre_pr_sundry}. The exclusion is either over-"
+				f"matching (excluded > what was actually under UL) "
+				f"or under-matching (some UL leaves still counted "
+				f"in sundry_creditors)."
 			),
 		)
 
-	def test_supplier_advances_cached_matches_debit_only_aggregation(self):
-		"""Cached value for `supplier_advances` (balance_sign=positive)
-		equals an independent SUM of debit-only Payable leaves.
+	def test_supplier_advances_invariant_with_absolute_and_exclude(self):
+		"""Parallel invariant for `supplier_advances`, accounting for
+		BOTH `display_sign=absolute` AND `exclude_parent_stems`:
+
+		    new_supplier_advances
+		      == abs(debit-only Payable natural-side sum
+		             EXCLUDING Unsecured Loans parent)
+
+		    new_supplier_advances + abs(debit-only Payable natural-
+		         side sum UNDER Unsecured Loans parent)
+		      == abs(debit-only Payable natural-side sum,
+		             ANY parent)
+
+		Pre-this-PR `supplier_advances` stored a NEGATIVE value (the
+		natural-side CASE flip turns a debit Liability balance into a
+		negative number). Post-PR the absolute transform stores the
+		magnitude. The right-hand side of the second invariant is the
+		magnitude of the pre-PR stored value, which is what the
+		regression check anchors against.
 		"""
 		snapshot_date = getdate(today())
-		cached = frappe.db.get_value(
+		new_advances = float(frappe.db.get_value(
 			"DGV Spotlight Cache",
 			{"card_id": "supplier_advances", "snapshot_date": snapshot_date},
 			"value",
+		) or 0)
+		# Natural-side debit-only sum UNDER `Unsecured Loans` (the
+		# leaves moved out of supplier_advances by this PR). For
+		# Payable leaves with balance > 0, the natural-side CASE
+		# returns a NEGATIVE number, so the magnitude is what we add
+		# back.
+		excluded_natural_row = frappe.db.sql(
+			"""
+			SELECT COALESCE(SUM(
+				CASE WHEN s.root_type IN ('Liability', 'Equity', 'Income')
+				     THEN -s.balance
+				     ELSE s.balance
+				END
+			), 0)
+			FROM `tabDGV TB Snapshot Row` s
+			WHERE s.snapshot_date = %s
+			  AND s.account_type = 'Payable'
+			  AND s.balance > 0
+			  AND s.account IN (
+			    SELECT name FROM `tabAccount`
+			    WHERE is_group = 0
+			      AND SUBSTRING_INDEX(parent_account, ' - ', 1)
+			          = 'Unsecured Loans'
+			  )
+			""",
+			(snapshot_date,),
 		)
-		expected = frappe.db.sql(
+		excluded_abs = abs(round(float(excluded_natural_row[0][0] or 0), 2))
+		# Pre-PR magnitude: debit-only Payable, ANY parent.
+		full_row = frappe.db.sql(
 			"""
 			SELECT COALESCE(SUM(
 				CASE WHEN root_type IN ('Liability', 'Equity', 'Income')
@@ -767,72 +1036,482 @@ class TestBalanceSignRefresh(FrappeTestCase):
 			""",
 			(snapshot_date,),
 		)
-		expected_value = round(float(expected[0][0] or 0), 2)
+		pre_pr_advances_magnitude = abs(round(float(full_row[0][0] or 0), 2))
 		self.assertAlmostEqual(
-			float(cached or 0), expected_value, places=2,
+			round(new_advances + excluded_abs, 2),
+			pre_pr_advances_magnitude, places=2,
 			msg=(
-				f"supplier_advances cached={cached} does not match "
-				f"debit-only sum={expected_value}."
+				f"Supplier-advances exclusion invariant violated: "
+				f"new_advances ({new_advances}) + excluded_abs "
+				f"({excluded_abs}) = "
+				f"{round(new_advances + excluded_abs, 2)}, but "
+				f"pre-PR |supplier_advances| (all-parent debit-only "
+				f"magnitude) = {pre_pr_advances_magnitude}. Either "
+				f"display_sign isn't applying, the exclude_parent_stems "
+				f"clause has the wrong scope, or the natural-side CASE "
+				f"flip is no longer producing the magnitudes the test "
+				f"expects."
 			),
 		)
 
-	def test_split_sum_invariant_matches_pre_split_net(self):
-		"""CRITICAL INVARIANT: sundry_creditors + supplier_advances
-		(post-split, two cards) equals the OLD sundry_creditors net
-		value (pre-split, one card summing both signs) on the same
-		snapshot.
 
-		This is the load-bearing test for the split: confirms the two
-		new cards together cover EXACTLY the same set of leaves the
-		old netting card did -- no leaves accidentally double-counted,
-		no leaves accidentally excluded.
+class TestDisplaySignTransform(FrappeTestCase):
+	"""Unit tests for the `display_sign` transform applied at the end
+	of `_aggregate`.
 
-		If this fails:
-		  - sum too high  -> a leaf is counted in both cards (sign
-		                     filter has overlap or a `balance == 0`
-		                     bug)
-		  - sum too low   -> a leaf is in neither card (e.g. one of
-		                     the sign filters has a strict
-		                     vs. inclusive boundary error)
+	Per spec/supplier-advances-display-and-exclude-fixes Fix 1: the
+	final transform routes through `_apply_display_sign` and supports
+	three values (`"natural"`, `"absolute"`, `"negated"`). Invalid
+	values log a warning and fall back to `"natural"` rather than
+	crash. Field omission is equivalent to `"natural"`.
+
+	These tests bypass the SQL aggregation path by exercising
+	`_apply_display_sign` directly -- the SQL is already covered by
+	`test_supplier_advances_cached_matches_debit_only_aggregation`
+	and the gold-standard `test_spotlight_value_matches_direct_aggregation`.
+	"""
+
+	def test_natural_passthrough_positive_input(self):
+		from dux_groupview.dux_groupview.snapshots.spotlight_refresh import (
+			_apply_display_sign,
+		)
+		self.assertEqual(
+			_apply_display_sign({"display_sign": "natural"}, 12.5), 12.5,
+		)
+
+	def test_natural_passthrough_negative_input(self):
+		from dux_groupview.dux_groupview.snapshots.spotlight_refresh import (
+			_apply_display_sign,
+		)
+		self.assertEqual(
+			_apply_display_sign({"display_sign": "natural"}, -12.5), -12.5,
+		)
+
+	def test_absolute_positive_input_unchanged(self):
+		from dux_groupview.dux_groupview.snapshots.spotlight_refresh import (
+			_apply_display_sign,
+		)
+		self.assertEqual(
+			_apply_display_sign({"display_sign": "absolute"}, 12.5), 12.5,
+		)
+
+	def test_absolute_negative_input_becomes_positive(self):
+		from dux_groupview.dux_groupview.snapshots.spotlight_refresh import (
+			_apply_display_sign,
+		)
+		self.assertEqual(
+			_apply_display_sign({"display_sign": "absolute"}, -12.5), 12.5,
+		)
+
+	def test_negated_positive_input_becomes_negative(self):
+		from dux_groupview.dux_groupview.snapshots.spotlight_refresh import (
+			_apply_display_sign,
+		)
+		self.assertEqual(
+			_apply_display_sign({"display_sign": "negated"}, 12.5), -12.5,
+		)
+
+	def test_negated_negative_input_becomes_positive(self):
+		from dux_groupview.dux_groupview.snapshots.spotlight_refresh import (
+			_apply_display_sign,
+		)
+		self.assertEqual(
+			_apply_display_sign({"display_sign": "negated"}, -12.5), 12.5,
+		)
+
+	def test_zero_input_unchanged_under_all_modes(self):
+		"""Zero is identity under all three transforms. Pinned because
+		`abs(0) == 0` and `-0 == 0` are language-level promises but a
+		future refactor that, say, special-cases zero could regress
+		this and the test would catch it.
 		"""
-		snapshot_date = getdate(today())
-		sundry = float(frappe.db.get_value(
-			"DGV Spotlight Cache",
-			{"card_id": "sundry_creditors", "snapshot_date": snapshot_date},
-			"value",
-		) or 0)
-		advances = float(frappe.db.get_value(
-			"DGV Spotlight Cache",
-			{"card_id": "supplier_advances", "snapshot_date": snapshot_date},
-			"value",
-		) or 0)
-		split_total = round(sundry + advances, 2)
-		# Pre-split aggregation: ALL Payable leaves, any sign.
-		net_row = frappe.db.sql(
-			"""
-			SELECT COALESCE(SUM(
-				CASE WHEN root_type IN ('Liability', 'Equity', 'Income')
-				     THEN -balance
-				     ELSE balance
-				END
-			), 0)
-			FROM `tabDGV TB Snapshot Row`
-			WHERE snapshot_date = %s
-			  AND account_type = 'Payable'
-			""",
-			(snapshot_date,),
+		from dux_groupview.dux_groupview.snapshots.spotlight_refresh import (
+			_apply_display_sign,
 		)
-		net_value = round(float(net_row[0][0] or 0), 2)
-		self.assertAlmostEqual(
-			split_total, net_value, places=2,
+		for mode in ("natural", "absolute", "negated"):
+			self.assertEqual(
+				_apply_display_sign({"display_sign": mode}, 0.0), 0.0,
+				msg=f"display_sign={mode!r} did not preserve zero",
+			)
+
+	def test_omitted_field_defaults_to_natural(self):
+		"""Card definitions without a `display_sign` key -- i.e. all
+		10 cards other than supplier_advances -- get the no-op
+		passthrough. Regression-safe for the entire existing card set.
+		"""
+		from dux_groupview.dux_groupview.snapshots.spotlight_refresh import (
+			_apply_display_sign,
+		)
+		self.assertEqual(_apply_display_sign({}, 7.5), 7.5)
+		self.assertEqual(_apply_display_sign({}, -7.5), -7.5)
+
+	def test_invalid_string_value_falls_back_to_natural(self):
+		"""Invalid string value -> logged warning + natural passthrough.
+		Captured by a log monkey-patch so the test asserts BOTH the
+		fallback behaviour AND the surfaced warning (the warning is
+		what makes the bug findable in production logs).
+		"""
+		from dux_groupview.dux_groupview.snapshots.spotlight_refresh import (
+			_apply_display_sign,
+		)
+		warnings_captured = []
+
+		class _StubLogger:
+			def warning(self, msg):
+				warnings_captured.append(msg)
+
+		original_logger = frappe.logger
+		frappe.logger = lambda: _StubLogger()
+		try:
+			result = _apply_display_sign(
+				{"id": "test_invalid", "display_sign": "flipped"}, -3.0,
+			)
+		finally:
+			frappe.logger = original_logger
+
+		self.assertEqual(
+			result, -3.0,
 			msg=(
-				f"Split invariant violated: sundry_creditors ({sundry}) "
-				f"+ supplier_advances ({advances}) = {split_total}, "
-				f"but pre-split net (all-sign Payable sum) = {net_value}. "
-				f"Difference of {round(split_total - net_value, 2)} "
-				f"indicates either double-counting (one or more leaves "
-				f"in both sign sets -- likely a boundary bug) or "
-				f"missing leaves (one or more leaves in neither sign "
-				f"set -- likely a balance==0 edge case mis-handled)."
+				"Invalid display_sign must fall back to natural "
+				"(input value returned unchanged). A crash here "
+				"would take down spotlight refresh on a typo'd "
+				"card definition -- unacceptable."
 			),
 		)
+		self.assertEqual(
+			len(warnings_captured), 1,
+			msg=(
+				f"Expected exactly one warning logged; got "
+				f"{len(warnings_captured)}: {warnings_captured}"
+			),
+		)
+		self.assertIn("display_sign", warnings_captured[0])
+		self.assertIn("'flipped'", warnings_captured[0])
+
+	def test_non_string_value_falls_back_to_natural(self):
+		"""Non-string values (e.g. an int 42, bool True, None) hit
+		the same warn + natural fallback. None is the most likely real-
+		world misuse -- a card author setting `display_sign: None`
+		expecting it to mean "default" -- so it's explicitly covered.
+		"""
+		from dux_groupview.dux_groupview.snapshots.spotlight_refresh import (
+			_apply_display_sign,
+		)
+		original_logger = frappe.logger
+		frappe.logger = lambda: type("S", (), {"warning": lambda self, m: None})()
+		try:
+			for bad in (42, True, None, ["absolute"], {"absolute": True}):
+				with self.subTest(bad=bad):
+					# `None` evaluates as `card.get("display_sign", "natural")`
+					# returning None (key present, value is None); branch lands
+					# in the warn-fallback path.
+					if bad is None:
+						card = {"id": "test_none", "display_sign": None}
+					else:
+						card = {"id": f"test_{type(bad).__name__}",
+						        "display_sign": bad}
+					self.assertEqual(
+						_apply_display_sign(card, 5.0), 5.0,
+						msg=(
+							f"Non-string display_sign={bad!r} must fall "
+							f"back to natural (return input unchanged), "
+							f"not crash."
+						),
+					)
+		finally:
+			frappe.logger = original_logger
+
+	def test_delta_math_under_absolute_with_monotonic_data(self):
+		"""When the underlying value is monotonic and same-signed
+		across the period, `display_sign=absolute` produces a delta
+		on the absolute axis that matches the directional delta in
+		magnitude. Pinned because this is the common case -- a card
+		whose underlying value never crosses zero behaves naturally
+		under `absolute`.
+		"""
+		from dux_groupview.dux_groupview.snapshots.spotlight_refresh import (
+			_apply_display_sign,
+		)
+		card = {"display_sign": "absolute"}
+		# Underlying: -2.0 last month, -3.0 this month (more negative).
+		# Absolute: 2.0 last month, 3.0 this month.
+		this_month = _apply_display_sign(card, -3.0)
+		last_month = _apply_display_sign(card, -2.0)
+		delta = round(this_month - last_month, 2)
+		self.assertEqual(
+			delta, 1.0,
+			msg=(
+				"Monotonic negative-side growth -2 -> -3 should "
+				"yield delta=+1 on the absolute axis (magnitude "
+				"grew by 1). Anything else means delta math broke."
+			),
+		)
+
+	def test_delta_math_under_absolute_with_sign_crossing_data(self):
+		"""When the underlying value crosses zero across the period,
+		`display_sign=absolute` produces a delta that is NOT the same
+		as the directional delta -- this is the documented caveat in
+		cards.py. Test pins the documented (counter-intuitive)
+		behaviour so future readers don't get a different result
+		without code review.
+		"""
+		from dux_groupview.dux_groupview.snapshots.spotlight_refresh import (
+			_apply_display_sign,
+		)
+		card = {"display_sign": "absolute"}
+		# Underlying: -2.0 last month, +3.0 this month (crossed zero).
+		# Natural delta would be: 3.0 - (-2.0) = +5.0 (positive change).
+		# Absolute delta: 3.0 - 2.0 = +1.0 (just the magnitude difference).
+		this_month = _apply_display_sign(card, 3.0)
+		last_month = _apply_display_sign(card, -2.0)
+		absolute_delta = round(this_month - last_month, 2)
+		natural_delta = 3.0 - (-2.0)
+		self.assertEqual(
+			absolute_delta, 1.0,
+			msg=(
+				"Sign-crossing -2 -> +3 under display_sign=absolute "
+				"should yield delta=+1 (magnitude difference of "
+				"2 -> 3), NOT the natural directional delta of +5. "
+				"The cards.py docstring documents this non-intuitive "
+				"behaviour; cards using `absolute` are expected not "
+				"to cross zero in practice."
+			),
+		)
+		# Pin the asymmetry explicitly so future readers see WHY this
+		# is documented as a caveat.
+		self.assertNotEqual(
+			absolute_delta, natural_delta,
+			msg=(
+				"Absolute and natural deltas must differ when the "
+				"input crosses zero. If they ever match in this case, "
+				"either the test inputs changed or the transform "
+				"semantics drifted -- both warrant review."
+			),
+		)
+
+
+class TestExcludeParentStemsRefresh(FrappeTestCase):
+	"""Refresh-path tests for the `exclude_parent_stems` predicate
+	extension on `by_account_type` and `by_parent_account_stem_in`.
+
+	Pinned at two levels:
+	  1. Emitted-clause shape (`_match_clause` returns the right SQL
+	     fragment + params for various input shapes).
+	  2. Defensive behaviour for empty / missing / non-list / mixed-
+	     type inputs.
+
+	The arithmetic correctness against real production data is pinned
+	in `TestBalanceSignRefresh` (specifically the credit-only, debit-
+	only, and split-invariant tests, which were updated to account
+	for `exclude_parent_stems`).
+	"""
+
+	def test_by_account_type_emits_not_in_subquery_when_excluding(self):
+		"""`by_account_type` with `exclude_parent_stems` appends an
+		`AND account NOT IN (SELECT name FROM tabAccount ...)`
+		subquery. Pin the SQL shape so a future refactor can't
+		silently drop or restructure the exclusion.
+		"""
+		from dux_groupview.dux_groupview.snapshots.spotlight_refresh import (
+			_match_clause,
+		)
+		card = {
+			"id": "test_at_exclude",
+			"match": {"by_account_type": {
+				"account_type": "Payable",
+				"exclude_parent_stems": ["Unsecured Loans"],
+			}},
+		}
+		clause, params = _match_clause(card)
+		self.assertIsNotNone(clause)
+		self.assertIn("account_type IN", clause)
+		self.assertIn("NOT IN", clause)
+		self.assertIn("`tabAccount`", clause)
+		self.assertIn("SUBSTRING_INDEX(parent_account, ' - ', 1)", clause)
+		# Named placeholder for the excluded stem, not a raw string.
+		self.assertIn("%(ex_0)s", clause)
+		self.assertEqual(params.get("ex_0"), "Unsecured Loans")
+
+	def test_by_account_type_no_exclusion_emits_no_extra_clause(self):
+		"""Without `exclude_parent_stems`, the emitted clause is the
+		bare `account_type IN (...)` -- no tabAccount subquery,
+		regression-safe for the 9 cards that don't use the key.
+		"""
+		from dux_groupview.dux_groupview.snapshots.spotlight_refresh import (
+			_match_clause,
+		)
+		card = {
+			"id": "test_at_no_exclude",
+			"match": {"by_account_type": {"account_type": "Payable"}},
+		}
+		clause, params = _match_clause(card)
+		self.assertIsNotNone(clause)
+		self.assertNotIn("NOT IN", clause)
+		self.assertNotIn("`tabAccount`", clause)
+
+	def test_by_parent_stem_in_emits_not_in_inside_subquery(self):
+		"""`by_parent_account_stem_in` with exclusion folds the
+		`NOT IN` INSIDE the existing tabAccount subquery's WHERE,
+		not as an outer-query addition. Pin the location since the
+		SQL semantics depend on it (NOT IN outside would filter the
+		snapshot row's `account` column, which can't compute
+		`SUBSTRING_INDEX(parent_account, ...)`).
+		"""
+		from dux_groupview.dux_groupview.snapshots.spotlight_refresh import (
+			_match_clause,
+		)
+		card = {
+			"id": "test_ps_exclude",
+			"match": {"by_parent_account_stem_in": {
+				"stems": ["Bank Accounts"],
+				"root_type": "Asset",
+				"exclude_parent_stems": ["Secured Loans"],
+			}},
+		}
+		clause, params = _match_clause(card)
+		self.assertIsNotNone(clause)
+		# `IN (...)` (the inclusion list) and `NOT IN (...)` (the
+		# exclusion list) must both appear inside the same subquery.
+		# We check by their relative order and presence.
+		self.assertIn("account IN (", clause)
+		self.assertIn(") IN (", clause)  # parent_stem) IN (stems)
+		self.assertIn("NOT IN (", clause)
+		self.assertIn("%(ex_0)s", clause)
+		self.assertEqual(params.get("ex_0"), "Secured Loans")
+		# Sanity: stems still bound under `st_N`.
+		self.assertEqual(params.get("st_0"), "Bank Accounts")
+
+	def test_by_parent_stem_in_no_exclusion_emits_no_not_in(self):
+		from dux_groupview.dux_groupview.snapshots.spotlight_refresh import (
+			_match_clause,
+		)
+		card = {
+			"id": "test_ps_no_exclude",
+			"match": {"by_parent_account_stem_in": {
+				"stems": ["Bank Accounts"],
+				"root_type": "Asset",
+			}},
+		}
+		clause, params = _match_clause(card)
+		self.assertIsNotNone(clause)
+		self.assertNotIn("NOT IN", clause)
+
+	def test_empty_list_exclusion_is_noop_by_account_type(self):
+		"""Empty list `exclude_parent_stems: []` -> predicate behaves
+		identically to omitting the key.
+		"""
+		from dux_groupview.dux_groupview.snapshots.spotlight_refresh import (
+			_match_clause,
+		)
+		with_empty = _match_clause({"id": "test", "match": {
+			"by_account_type": {
+				"account_type": "Payable", "exclude_parent_stems": []}}})
+		without = _match_clause({"id": "test", "match": {
+			"by_account_type": {"account_type": "Payable"}}})
+		self.assertEqual(with_empty, without)
+
+	def test_empty_list_exclusion_is_noop_by_parent_stem_in(self):
+		from dux_groupview.dux_groupview.snapshots.spotlight_refresh import (
+			_match_clause,
+		)
+		with_empty = _match_clause({"id": "test", "match": {
+			"by_parent_account_stem_in": {
+				"stems": ["X"], "root_type": "Asset",
+				"exclude_parent_stems": []}}})
+		without = _match_clause({"id": "test", "match": {
+			"by_parent_account_stem_in": {
+				"stems": ["X"], "root_type": "Asset"}}})
+		self.assertEqual(with_empty, without)
+
+	def test_non_list_exclusion_is_noop(self):
+		"""Non-list value (string, dict, None) -> no-op, predicate
+		emits as today. Defensive shape per cards.py docstring;
+		guards against a card author writing
+		`exclude_parent_stems: "Unsecured Loans"` (without the list
+		wrapping) and silently shipping a card that doesn't exclude
+		anything.
+		"""
+		from dux_groupview.dux_groupview.snapshots.spotlight_refresh import (
+			_match_clause,
+		)
+		for bad in ("Unsecured Loans", {"x": 1}, 42, None):
+			with self.subTest(bad=bad):
+				result = _match_clause({"id": "test", "match": {
+					"by_account_type": {
+						"account_type": "Payable",
+						"exclude_parent_stems": bad,
+					}}})
+				# Same as omitting the key.
+				baseline = _match_clause({"id": "test", "match": {
+					"by_account_type": {"account_type": "Payable"}}})
+				self.assertEqual(
+					result, baseline,
+					msg=(
+						f"Non-list exclude_parent_stems={bad!r} must "
+						f"degrade to no-op (no NOT IN clause). "
+						f"Anything else risks silently shipping a "
+						f"broken exclusion -- the card author "
+						f"thinks they excluded something but didn't."
+					),
+				)
+
+	def test_non_string_element_in_list_is_noop(self):
+		"""List containing a non-string element -> no-op. Same
+		defensive shape as `stems` and `account_types` already use
+		elsewhere in `_match_clause`.
+		"""
+		from dux_groupview.dux_groupview.snapshots.spotlight_refresh import (
+			_match_clause,
+		)
+		result = _match_clause({"id": "test", "match": {
+			"by_account_type": {
+				"account_type": "Payable",
+				"exclude_parent_stems": ["Unsecured Loans", 42],
+			}}})
+		baseline = _match_clause({"id": "test", "match": {
+			"by_account_type": {"account_type": "Payable"}}})
+		self.assertEqual(result, baseline)
+
+	def test_multiple_excluded_stems_all_appear_in_clause(self):
+		"""Each excluded stem becomes a distinct named placeholder.
+		"""
+		from dux_groupview.dux_groupview.snapshots.spotlight_refresh import (
+			_match_clause,
+		)
+		card = {"id": "test", "match": {
+			"by_account_type": {
+				"account_type": "Payable",
+				"exclude_parent_stems": ["Unsecured Loans", "Other Stem"],
+			}}}
+		clause, params = _match_clause(card)
+		self.assertIn("%(ex_0)s", clause)
+		self.assertIn("%(ex_1)s", clause)
+		self.assertEqual(params.get("ex_0"), "Unsecured Loans")
+		self.assertEqual(params.get("ex_1"), "Other Stem")
+
+	def test_balance_sign_and_exclude_compose(self):
+		"""Card carrying BOTH `balance_sign` and `exclude_parent_stems`
+		(the production shape of both `sundry_creditors` and
+		`supplier_advances`) emits BOTH clauses. Composability
+		regression test.
+		"""
+		from dux_groupview.dux_groupview.snapshots.spotlight_refresh import (
+			_match_clause,
+		)
+		card = {"id": "test", "match": {
+			"by_account_type": {
+				"account_type": "Payable",
+				"balance_sign": "negative",
+				"exclude_parent_stems": ["Unsecured Loans"],
+			}}}
+		clause, params = _match_clause(card)
+		self.assertIsNotNone(clause)
+		self.assertIn("balance < 0", clause)
+		self.assertIn("NOT IN", clause)
+		# Both should bind without collision -- separate placeholder
+		# namespaces (`at_N` for account types, `ex_N` for excluded
+		# stems).
+		self.assertEqual(params.get("at_0"), "Payable")
+		self.assertEqual(params.get("ex_0"), "Unsecured Loans")
+
+
