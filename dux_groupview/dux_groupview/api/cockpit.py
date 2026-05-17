@@ -162,6 +162,11 @@ def get_spotlight_cards(snapshot_date):
 			"polarity": card["polarity"],
 			"format": card["format"],
 			"color": card["color"],
+			# `display_sign` is forwarded so the cockpit JS can pass it
+			# to the drill API when opening the panel. Drill values
+			# then render with the same sign convention as the card
+			# surface. Default "natural" for cards that don't set it.
+			"display_sign": card.get("display_sign", "natural"),
 			"value": value,
 			"delta": delta,
 			"delta_percent": delta_percent,
@@ -265,6 +270,7 @@ def _build_filtered_cards_payload(snapshot_date, allowed):
 			"polarity": card["polarity"],
 			"format": card["format"],
 			"color": card["color"],
+			"display_sign": card.get("display_sign", "natural"),
 			"value": value,
 			"delta": delta,
 			"delta_percent": delta_percent,
@@ -284,6 +290,7 @@ def _zero_card_payload(card):
 		"polarity": card["polarity"],
 		"format": card["format"],
 		"color": card["color"],
+		"display_sign": card.get("display_sign", "natural"),
 		"value": 0.0,
 		"delta": 0.0,
 		"delta_percent": 0.0,

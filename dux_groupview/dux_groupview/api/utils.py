@@ -105,6 +105,39 @@ def _walk_subtree_leaves(parent_account_name: str, company: str) -> list[str]:
 	)
 
 
+def _apply_display_sign(value, display_sign):
+	"""Apply a card's `display_sign` transform to an aggregated value.
+
+	Mirror of `spotlight_refresh._apply_display_sign` but at the drill
+	layer. Per spec/supplier-advances-display-and-exclude-fixes Fix 1,
+	the spotlight cache writes display-corrected values. The drill APIs
+	bypass the cache and aggregate live, so they need the same
+	transform applied at the response boundary so the drill panel hero,
+	by-company breakdown, by-account breakdown, and by-party breakdown
+	render with the same sign convention as the card surface.
+
+	Three values: "natural" (default, passthrough), "absolute"
+	(`abs(value)`), "negated" (`-value`). Invalid -> passthrough
+	(silent in the drill path; the spotlight refresh path logs a
+	warning, which is enough surfaces).
+
+	`value` of `None` or non-numeric returns unchanged (callers pass
+	`None` for missing sparkline points; the transform must preserve
+	that signal).
+	"""
+	if value is None:
+		return None
+	try:
+		v = float(value)
+	except (TypeError, ValueError):
+		return value
+	if display_sign == "absolute":
+		return abs(v)
+	if display_sign == "negated":
+		return -v
+	return v
+
+
 def _named_in(prefix: str, values):
 	"""Build named placeholders for a SQL IN clause.
 

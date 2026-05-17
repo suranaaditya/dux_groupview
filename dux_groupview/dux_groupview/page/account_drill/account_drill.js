@@ -153,6 +153,10 @@ frappe.pages['account-drill'].on_page_load = function(wrapper) {
 						return;
 					}
 					state.resolvedLabel = card.label;
+					// Capture display_sign so the page's drill calls
+					// can forward it. Default "natural" for cards that
+					// don't carry the field.
+					state.displaySign = card.display_sign || 'natural';
 					// Resolve match predicate to leaf accounts.
 					frappe.call({
 						method: 'dux_groupview.dux_groupview.api.cards_v1.resolve_match_to_accounts',
@@ -190,6 +194,7 @@ frappe.pages['account-drill'].on_page_load = function(wrapper) {
 		}
 		if (state.as_of_date) args.as_of_date = state.as_of_date;
 		if (state.companies)  args.companies = JSON.stringify(state.companies);
+		if (state.displaySign) args.display_sign = state.displaySign;
 
 		frappe.call({
 			method: 'dux_groupview.dux_groupview.api.account_drill_v1.get_account_breakdown',
@@ -223,6 +228,7 @@ frappe.pages['account-drill'].on_page_load = function(wrapper) {
 		}
 		if (state.as_of_date) args.as_of_date = state.as_of_date;
 		if (state.companies)  args.companies = JSON.stringify(state.companies);
+		if (state.displaySign) args.display_sign = state.displaySign;
 
 		frappe.call({
 			method: 'dux_groupview.dux_groupview.api.party_drill_v1.get_party_breakdown',
@@ -298,6 +304,11 @@ frappe.pages['account-drill'].on_page_load = function(wrapper) {
 				scope_label: state.resolvedLabel || state.scope.id || '',
 				as_of_date: state.as_of_date,
 				companies: state.companies || undefined,
+				// Forward display_sign to bindCompanyRowExpansion ->
+				// fetchAccountsForCompany so the per-account expand
+				// table on the FULL PAGE matches the by-company values
+				// already on screen.
+				display_sign: state.displaySign || undefined,
 			};
 			const drillCtx = isCard
 				? {
