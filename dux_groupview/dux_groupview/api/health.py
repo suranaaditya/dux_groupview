@@ -116,10 +116,20 @@ def _scheduler_status():
 
 @frappe.whitelist()
 def trigger_manual_refresh():
-	"""Enqueue a refresh for today; return immediately with the job id."""
+	"""Enqueue a refresh for today; return immediately with the job id.
+
+	Points at `_refresh_with_spotlight` rather than `refresh_tb_snapshot`
+	directly so the manual button matches the scheduled cron: TB refresh
+	is followed by spotlight cache refresh. Hitting `refresh_tb_snapshot`
+	alone leaves `tabDGV Spotlight Cache` stale -- the cockpit cards keep
+	rendering the previous run's values until the next scheduled cron
+	fires. Discovered post-deploy of PR #19 (supplier-advances display +
+	exclude fixes): the manual button on the Snapshot Health page
+	refreshed TB but cards still showed pre-deploy sign.
+	"""
 	_require_system_manager()
 	job = frappe.enqueue(
-		"dux_groupview.dux_groupview.snapshots.refresh.refresh_tb_snapshot",
+		"dux_groupview.dux_groupview.snapshots.refresh._refresh_with_spotlight",
 		queue="default",
 		timeout=600,
 		job_name="dgv-manual-refresh",
