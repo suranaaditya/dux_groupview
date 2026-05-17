@@ -70,6 +70,41 @@ def _normalise_display_sign(value):
 	return "natural"
 
 
+_VALID_BALANCE_SIGNS = {"positive", "negative", "any"}
+
+
+def _normalise_balance_sign(value):
+	"""Coerce caller input to a valid `balance_sign` value.
+
+	Mirrors `spotlight_refresh._match_clause`'s defensive shape:
+	"positive" / "negative" / "any". None or any unrecognised value
+	coerces to "any" (no filter applied), regression-safe for callers
+	that don't pass the field.
+	"""
+	if isinstance(value, str) and value in _VALID_BALANCE_SIGNS:
+		return value
+	return "any"
+
+
+def _party_raw_balance_having(balance_sign):
+	"""Build the HAVING-clause fragment for a party-level balance_sign
+	filter. Returns "" for "any" so the surrounding query stays
+	identical to its pre-fix shape (regression-safe).
+
+	The filter compares against raw_balance := SUM(g.debit - g.credit)
+	rather than the natural-side aggregate so the semantic matches the
+	snapshot card predicate exactly. Snapshot card filters on
+	`balance > 0` (raw) for advance-side; at the party level we want
+	the same: parties whose summed (debit - credit) is positive are
+	debit-balanced -- "we paid more than they invoiced" = advance.
+	"""
+	if balance_sign == "positive":
+		return " AND SUM(g.debit - g.credit) > 0"
+	if balance_sign == "negative":
+		return " AND SUM(g.debit - g.credit) < 0"
+	return ""
+
+
 DEFAULT_PAGE_SIZE = 10
 MAX_PAGE_SIZE = 200
 ALLOWED_SORTS = ("balance_desc", "balance_asc", "name_asc")
@@ -94,7 +129,7 @@ PAGE_MODE_ALLOWED_SORTS = (
 def get_party_breakdown(scope=None, accounts=None, as_of_date=None,
                         companies=None, page=1, page_size=None,
                         sort="balance_desc", mode="card",
-                        display_sign=None):
+                        display_sign=None, balance_sign=None):
 	"""Group GL entries by party across companies in scope.
 
 	Two modes (per spec v0.6 §5.4):
@@ -113,6 +148,35 @@ def get_party_breakdown(scope=None, accounts=None, as_of_date=None,
 	`mode` is normalised to a known value via `_normalise_mode`; an
 	invalid mode raises ValidationError so a typo from a hand-crafted
 	URL gets a clear error rather than silently degrading.
+
+	Optional `balance_sign` (added 2026-05-17 fix): filters the party
+	list to parties whose individual raw balance (SUM(debit - credit)
+	across the scope's accounts + companies) matches the requested
+	sign. Mirrors `spotlight_refresh._match_clause`'s `balance_sign`
+	filter from the SNAPSHOT layer to the GL-EntryParty-aggregation
+	layer.
+
+	Background: `supplier_advances` card uses `balance_sign="positive"`
+	to filter snapshot rows whose ACCOUNT-LEVEL net balance is debit
+	(advance side). But a company's "Sundry Creditors" account
+	aggregates all parties' balances together. If the company's net is
+	debit (advances exceed credits at that account), the whole
+	account-level row passes the filter. Without a party-level
+	balance_sign check, the by-party list then surfaces EVERY party
+	posting to those accounts -- including parties with credit
+	balances (real sundry creditors). Symptom: ADARSH STEEL
+	(+Rs 25.95L, a normal creditor) appearing in the Supplier
+	Advances by-party list alongside Achivers Pillars (-Rs 49L, a
+	true advance).
+
+	Values: "positive" / "negative" / "any" / None. None / "any" =
+	no filter (pre-fix behaviour). "positive" = HAVING raw_balance > 0
+	(debit-balanced party). "negative" = HAVING raw_balance < 0
+	(credit-balanced party). Aligns 1:1 with the snapshot card
+	predicate; the JS extracts the value from
+	`card.match.by_account_type.balance_sign` or
+	`card.match.by_parent_account_stem_in.balance_sign` and forwards
+	it on the API call.
 	"""
 	from dux_groupview.dux_groupview.api.pivot import (
 		_require_cockpit_role,
@@ -124,6 +188,7 @@ def get_party_breakdown(scope=None, accounts=None, as_of_date=None,
 	scope = _ensure_dict(scope)
 	accounts = _ensure_list(accounts)
 	display_sign = _normalise_display_sign(display_sign)
+	balance_sign = _normalise_balance_sign(balance_sign)
 
 	mode = _normalise_mode(mode)
 	default_size, max_size, allowed_sorts = _mode_knobs(mode)
@@ -144,6 +209,7 @@ def get_party_breakdown(scope=None, accounts=None, as_of_date=None,
 	common_where, common_params, flip_ph = _common_where_clause(
 		leaves, allowed, target_date,
 	)
+	having_balance_sign = _party_raw_balance_having(balance_sign)
 
 	# Total row count -- HAVING ABS(balance) >= 1 to drop net-zero AND
 	# sub-rupee residual parties (commit 3.1). The original threshold of
@@ -151,7 +217,14 @@ def get_party_breakdown(scope=None, accounts=None, as_of_date=None,
 	# augmented AP/AR seed (side PR #11) which then rendered as "Rs 0"
 	# rows in the panel. Threshold of one rupee is conservative -- it
 	# only drops what's clearly noise, never real small balances.
-	total = _count_parties(common_where, common_params, flip_ph)
+	#
+	# `having_balance_sign` is the optional party-level balance-sign
+	# filter (empty string when balance_sign == "any"); appended so the
+	# count agrees with the paged result set.
+	total = _count_parties(
+		common_where, common_params, flip_ph,
+		having_extra=having_balance_sign,
+	)
 	if total == 0:
 		return _empty_party_breakdown(page, page_size, mode=mode,
 		                              scope=scope, accounts=accounts)
@@ -194,7 +267,7 @@ def get_party_breakdown(scope=None, accounts=None, as_of_date=None,
 		JOIN `tabAccount` a ON a.name = g.account
 		{common_where}
 		GROUP BY g.party_type, g.party
-		HAVING ABS(balance) >= 1
+		HAVING ABS(balance) >= 1{having_balance_sign}
 		ORDER BY {sort_clause}
 		LIMIT %(page_size)s OFFSET %(offset)s
 		""",
@@ -564,7 +637,16 @@ def _common_where_clause(leaves, allowed, target_date):
 	return where, params, f_ph
 
 
-def _count_parties(common_where, common_params, flip_ph):
+def _count_parties(common_where, common_params, flip_ph, having_extra=""):
+	"""Count distinct parties whose aggregated balance passes the
+	HAVING filter.
+
+	`having_extra` is an optional clause fragment appended to the
+	HAVING (must start with " AND ..."). Used to pin the count to the
+	same `balance_sign` filter the data query applies, so pagination
+	math stays consistent. Default empty string == no extra filter ==
+	pre-fix shape.
+	"""
 	row = frappe.db.sql(
 		f"""
 		SELECT COUNT(*) FROM (
@@ -575,7 +657,7 @@ def _count_parties(common_where, common_params, flip_ph):
 		  GROUP BY g.party_type, g.party
 		  HAVING ABS(SUM(CASE WHEN a.root_type IN ({flip_ph})
 		                      THEN g.credit - g.debit
-		                      ELSE g.debit - g.credit END)) >= 1
+		                      ELSE g.debit - g.credit END)) >= 1{having_extra}
 		) AS sub
 		""",
 		common_params,
@@ -610,7 +692,7 @@ PARTY_CSV_HARD_TRUNCATE_AT = 50_000
 @frappe.whitelist()
 def export_party_list_csv(scope=None, accounts=None, scope_label=None,
                           as_of_date=None, companies=None,
-                          sort="balance_desc"):
+                          sort="balance_desc", balance_sign=None):
 	"""Stream the party list for one drill scope as a CSV download.
 
 	Honors the same scope/companies/sort args as `get_party_breakdown`
@@ -643,6 +725,7 @@ def export_party_list_csv(scope=None, accounts=None, scope_label=None,
 
 	scope = _ensure_dict(scope)
 	accounts = _ensure_list(accounts)
+	balance_sign = _normalise_balance_sign(balance_sign)
 	# Sort allow-list matches mode='page' (4 sorts incl name_desc).
 	sort = sort if sort in PAGE_MODE_ALLOWED_SORTS else "balance_desc"
 
@@ -669,9 +752,13 @@ def export_party_list_csv(scope=None, accounts=None, scope_label=None,
 	common_where, common_params, flip_ph = _common_where_clause(
 		leaves, allowed, target_date,
 	)
+	having_balance_sign = _party_raw_balance_having(balance_sign)
 
 	# Cap check before the expensive query.
-	total = _count_parties(common_where, common_params, flip_ph)
+	total = _count_parties(
+		common_where, common_params, flip_ph,
+		having_extra=having_balance_sign,
+	)
 	if total > PARTY_CSV_HARD_TRUNCATE_AT:
 		frappe.throw(
 			_(PARTY_EXPORT_TOO_LARGE_MSG).format(n=f"{total:,}"),
@@ -708,7 +795,7 @@ def export_party_list_csv(scope=None, accounts=None, scope_label=None,
 		JOIN `tabAccount` a ON a.name = g.account
 		{common_where}
 		GROUP BY g.party_type, g.party
-		HAVING ABS(balance) >= 1
+		HAVING ABS(balance) >= 1{having_balance_sign}
 		ORDER BY {sort_clause}
 		LIMIT %(cap)s
 		""",

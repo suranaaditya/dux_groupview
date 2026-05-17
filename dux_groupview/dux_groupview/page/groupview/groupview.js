@@ -897,7 +897,37 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 			// absent on the card payload -- regression-safe for all
 			// pre-supplier-advances cards.
 			display_sign: card.display_sign || 'natural',
+			// Forward `balance_sign` extracted from the card's match
+			// predicate. The party drill API uses this to filter the
+			// by-party list to only parties whose individual balance
+			// matches the card's direction -- without this, a
+			// supplier-advances card would surface parties with both
+			// debit (advance) AND credit (creditor) balances because
+			// the snapshot-level filter granularity is the account,
+			// not the party. See party_drill_v1.get_party_breakdown
+			// docstring.
+			balance_sign: dgvExtractBalanceSign(card.match),
 		});
+	}
+
+	// Pull `balance_sign` out of a card's `match` dict if present.
+	// Handles both supported shapes:
+	//   {by_account_type: {account_type: ..., balance_sign: "positive"}}
+	//   {by_parent_account_stem_in: {stems: [...], balance_sign: "..."}}
+	// Returns null when absent (drill API defaults to "any" = no filter).
+	function dgvExtractBalanceSign(match) {
+		if (!match || typeof match !== 'object') return null;
+		const at = match.by_account_type;
+		if (at && typeof at === 'object' && !Array.isArray(at)
+		    && typeof at.balance_sign === 'string') {
+			return at.balance_sign;
+		}
+		const psi = match.by_parent_account_stem_in;
+		if (psi && typeof psi === 'object'
+		    && typeof psi.balance_sign === 'string') {
+			return psi.balance_sign;
+		}
+		return null;
 	}
 
 	function formatFigure(rupeeValue) {

@@ -530,6 +530,14 @@
 		if (args.as_of_date) apiArgs.as_of_date = args.as_of_date;
 		if (args.companies)  apiArgs.companies = JSON.stringify(args.companies);
 		if (args.display_sign) apiArgs.display_sign = args.display_sign;
+		// Forward `balance_sign` so the party list is filtered to
+		// parties whose individual balance matches the card direction
+		// (supplier_advances => debit-balanced parties only;
+		// sundry_creditors => credit-balanced parties only). Without
+		// this the panel surfaces both kinds of parties under either
+		// card, because the snapshot-level filter is account-grained
+		// while parties are sub-grained.
+		if (args.balance_sign) apiArgs.balance_sign = args.balance_sign;
 
 		var myToken = panelFetchToken;
 		frappe.call({
@@ -1346,6 +1354,7 @@
 				as_of_date: currentRequest.as_of_date || null,
 				companies: currentRequest.companies || null,
 				display_sign: currentRequest.display_sign || null,
+				balance_sign: currentRequest.balance_sign || null,
 			},
 			expanded: Array.from(expandedCompanies),
 			ts: Date.now(),

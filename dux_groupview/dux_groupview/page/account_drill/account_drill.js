@@ -157,6 +157,24 @@ frappe.pages['account-drill'].on_page_load = function(wrapper) {
 					// can forward it. Default "natural" for cards that
 					// don't carry the field.
 					state.displaySign = card.display_sign || 'natural';
+					// Pull `balance_sign` from `card.match` so the
+					// party drill can filter parties to those whose
+					// individual balance matches the card direction.
+					// Two shapes accepted; see party_drill_v1
+					// docstring. null when the card has no
+					// balance_sign filter (resolves server-side to
+					// "any" = no extra HAVING -- regression-safe).
+					var _bsmatch = card.match || {};
+					var _bsat = _bsmatch.by_account_type;
+					var _bspsi = _bsmatch.by_parent_account_stem_in;
+					state.balanceSign = null;
+					if (_bsat && typeof _bsat === 'object' && !Array.isArray(_bsat)
+					    && typeof _bsat.balance_sign === 'string') {
+						state.balanceSign = _bsat.balance_sign;
+					} else if (_bspsi && typeof _bspsi === 'object'
+					           && typeof _bspsi.balance_sign === 'string') {
+						state.balanceSign = _bspsi.balance_sign;
+					}
 					// Resolve match predicate to leaf accounts.
 					frappe.call({
 						method: 'dux_groupview.dux_groupview.api.cards_v1.resolve_match_to_accounts',
@@ -229,6 +247,7 @@ frappe.pages['account-drill'].on_page_load = function(wrapper) {
 		if (state.as_of_date) args.as_of_date = state.as_of_date;
 		if (state.companies)  args.companies = JSON.stringify(state.companies);
 		if (state.displaySign) args.display_sign = state.displaySign;
+		if (state.balanceSign) args.balance_sign = state.balanceSign;
 
 		frappe.call({
 			method: 'dux_groupview.dux_groupview.api.party_drill_v1.get_party_breakdown',
