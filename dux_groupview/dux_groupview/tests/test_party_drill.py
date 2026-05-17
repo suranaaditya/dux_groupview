@@ -846,3 +846,223 @@ class TestExportPartyListCsv(_PartyDrillFixtureBase):
 				float(cell)
 			except ValueError:
 				self.fail(f"Balance cell {cell!r} does not parse as float")
+
+
+class TestPartyLevelBalanceSignFilter(_PartyDrillFixtureBase):
+	"""Tests for the party-level `balance_sign` filter on
+	`get_party_breakdown` (added 2026-05-17).
+
+	The snapshot card filters at the (date, company, account) row
+	level, which can let through accounts whose NET balance is on
+	one side even though individual parties on that account are on
+	both sides. This filter, applied at the party-aggregation level
+	in GL Entry, restricts the by-party list to parties whose
+	individual balance direction matches the card semantic.
+
+	Concretely: a "Supplier Advances" card (raw balance > 0 at snap
+	level = debit-balanced = advance) should surface ONLY parties
+	whose own raw balance is also > 0. The visible bug fixed here is
+	parties like "ADARSH STEEL" (a normal sundry creditor with a
+	credit balance) appearing in the Supplier Advances by-party list
+	because the company-level Payable account had a net-debit
+	aggregate.
+	"""
+
+	def test_no_balance_sign_arg_returns_all_parties(self):
+		"""Default behaviour (no arg) is unchanged from PR #21 -- all
+		parties whose ABS(balance) >= 1 are returned. Regression-safe
+		guarantee for callers that don't pass the field.
+		"""
+		out = party_drill_v1.get_party_breakdown(
+			accounts=self._payable_leaves(),
+			as_of_date=str(FIXTURE_AS_OF_DATE),
+			companies=self.state["companies"],
+			page_size=200,
+		)
+		self.assertEqual(out["total_parties"], 3)
+
+	def test_balance_sign_any_matches_default(self):
+		"""Explicit `balance_sign='any'` returns the same set as the
+		default. Pinned because the normaliser coerces None to
+		'any' -- the two should be operationally identical.
+		"""
+		out_any = party_drill_v1.get_party_breakdown(
+			accounts=self._payable_leaves(),
+			as_of_date=str(FIXTURE_AS_OF_DATE),
+			companies=self.state["companies"],
+			page_size=200,
+			balance_sign="any",
+		)
+		out_default = party_drill_v1.get_party_breakdown(
+			accounts=self._payable_leaves(),
+			as_of_date=str(FIXTURE_AS_OF_DATE),
+			companies=self.state["companies"],
+			page_size=200,
+		)
+		self.assertEqual(
+			{p["party"] for p in out_any["parties"]},
+			{p["party"] for p in out_default["parties"]},
+		)
+		self.assertEqual(out_any["total_parties"], out_default["total_parties"])
+
+	def test_negative_filter_returns_credit_balanced_suppliers(self):
+		"""All fixture suppliers are credit-balanced (we owe them ->
+		`SUM(g.debit - g.credit) < 0`). `balance_sign='negative'`
+		returns the same 3 suppliers; this is the `sundry_creditors`
+		card's filter semantic.
+		"""
+		out = party_drill_v1.get_party_breakdown(
+			accounts=self._payable_leaves(),
+			as_of_date=str(FIXTURE_AS_OF_DATE),
+			companies=self.state["companies"],
+			page_size=200,
+			balance_sign="negative",
+		)
+		names = {p["party"] for p in out["parties"]}
+		self.assertEqual(
+			names, {"Asha Stationers", "Vidarbha Lab Supplies", "Single Co Vendor"},
+			msg=(
+				"balance_sign='negative' on Payable should return all "
+				"three fixture suppliers (all credit-balanced)."
+			),
+		)
+		self.assertEqual(out["total_parties"], 3)
+
+	def test_positive_filter_excludes_credit_balanced_suppliers(self):
+		"""`balance_sign='positive'` filters to debit-balanced parties
+		(advance side). The fixture has zero advance-side suppliers,
+		so the filtered set is empty -- which is the load-bearing
+		assertion for the "ADARSH STEEL no longer shows up in
+		Supplier Advances" bug fix.
+		"""
+		out = party_drill_v1.get_party_breakdown(
+			accounts=self._payable_leaves(),
+			as_of_date=str(FIXTURE_AS_OF_DATE),
+			companies=self.state["companies"],
+			page_size=200,
+			balance_sign="positive",
+		)
+		self.assertEqual(
+			out["parties"], [],
+			msg=(
+				"balance_sign='positive' on Payable must EXCLUDE the "
+				"three fixture creditors (raw balance < 0). The bug "
+				"fix relies on this filter pushing down into the SQL "
+				"HAVING -- if the filter is dropped or wrong, the "
+				"list will not be empty."
+			),
+		)
+		self.assertEqual(out["total_parties"], 0)
+
+	def test_positive_filter_returns_receivable_customers(self):
+		"""Inverse symmetric case: Receivable customer parties (Acme
+		etc.) are debit-balanced (they owe us -> SUM(debit - credit) > 0).
+		`balance_sign='positive'` should return them; 'negative' should
+		exclude. Confirms the filter direction is right for the
+		Receivable predicate too.
+		"""
+		out_pos = party_drill_v1.get_party_breakdown(
+			accounts=self._receivable_leaves(),
+			as_of_date=str(FIXTURE_AS_OF_DATE),
+			companies=self.state["companies"],
+			page_size=200,
+			balance_sign="positive",
+		)
+		party_names = {p["party"] for p in out_pos["parties"]}
+		# At least Acme is debit-balanced (positive raw on Receivable).
+		# The group-co customer might or might not be -- depends on the
+		# fixture's exact composition; we assert the inclusion of Acme.
+		self.assertIn("Acme Co", party_names)
+		# Net Zero Party gets dropped regardless of sign filter
+		# (its sub-Re-1 magnitude trips the ABS >= 1 filter).
+		self.assertNotIn("Net Zero Party", party_names)
+
+	def test_sum_invariant_positive_plus_negative_equals_all(self):
+		"""For any account set, the union of (balance_sign='positive')
+		and (balance_sign='negative') party sets equals the unfiltered
+		set (`balance_sign='any'`).
+
+		This is the load-bearing sanity check that the two sign
+		filters partition the universe correctly -- no parties lost
+		in transit, no parties counted twice.
+		"""
+		all_accts = self._all_fixture_party_leaves()
+		out_pos = party_drill_v1.get_party_breakdown(
+			accounts=all_accts,
+			as_of_date=str(FIXTURE_AS_OF_DATE),
+			companies=self.state["companies"],
+			page_size=500,
+			balance_sign="positive",
+		)
+		out_neg = party_drill_v1.get_party_breakdown(
+			accounts=all_accts,
+			as_of_date=str(FIXTURE_AS_OF_DATE),
+			companies=self.state["companies"],
+			page_size=500,
+			balance_sign="negative",
+		)
+		out_any = party_drill_v1.get_party_breakdown(
+			accounts=all_accts,
+			as_of_date=str(FIXTURE_AS_OF_DATE),
+			companies=self.state["companies"],
+			page_size=500,
+		)
+		pos_keys = {(p["party_type"], p["party"]) for p in out_pos["parties"]}
+		neg_keys = {(p["party_type"], p["party"]) for p in out_neg["parties"]}
+		any_keys = {(p["party_type"], p["party"]) for p in out_any["parties"]}
+		# Disjoint
+		self.assertEqual(
+			pos_keys & neg_keys, set(),
+			msg=(
+				"positive and negative party sets must be disjoint -- "
+				"a single party can't be both debit- and credit-balanced "
+				"at the same instant."
+			),
+		)
+		# Union equals 'any'
+		self.assertEqual(
+			pos_keys | neg_keys, any_keys,
+			msg=(
+				"Union of positive + negative party sets must equal the "
+				"unfiltered set. Any party in 'any' but not in either "
+				"sign-filtered set indicates a SQL bug -- likely the "
+				"raw_balance HAVING clause not matching the natural-side "
+				"ABS >= 1 boundary correctly."
+			),
+		)
+
+	def test_invalid_balance_sign_treated_as_any(self):
+		"""Unrecognised string (typo) coerces to 'any' -- defensive
+		shape so a malformed caller doesn't crash the panel.
+		"""
+		out = party_drill_v1.get_party_breakdown(
+			accounts=self._payable_leaves(),
+			as_of_date=str(FIXTURE_AS_OF_DATE),
+			companies=self.state["companies"],
+			page_size=200,
+			balance_sign="weird-typo",
+		)
+		# Falls back to no-filter behaviour -- 3 creditors.
+		self.assertEqual(out["total_parties"], 3)
+
+	def test_total_count_matches_filtered_parties_length(self):
+		"""Pagination math: `total_parties` reflects the FILTERED count,
+		not the unfiltered count. If `_count_parties` is missing the
+		HAVING extension, this would surface as a mismatch where the
+		caller sees `total_parties=3` but `parties=[]`.
+		"""
+		out = party_drill_v1.get_party_breakdown(
+			accounts=self._payable_leaves(),
+			as_of_date=str(FIXTURE_AS_OF_DATE),
+			companies=self.state["companies"],
+			page_size=200,
+			balance_sign="positive",
+		)
+		self.assertEqual(
+			out["total_parties"], len(out["parties"]),
+			msg=(
+				"total_parties out of sync with returned parties[] "
+				"under balance_sign filter -- _count_parties must "
+				"apply the same HAVING extension as the data query."
+			),
+		)

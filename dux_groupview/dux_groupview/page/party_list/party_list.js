@@ -292,6 +292,21 @@ frappe.pages['party-list'].on_page_load = function(wrapper) {
 					}
 					state.resolvedLabel = card.label;
 					state.displaySign = card.display_sign || 'natural';
+					// Extract balance_sign from card.match so the
+					// party list page filters parties by their
+					// individual balance direction (advance vs
+					// creditor) matching the card semantic.
+					var _bsmatch = card.match || {};
+					var _bsat = _bsmatch.by_account_type;
+					var _bspsi = _bsmatch.by_parent_account_stem_in;
+					state.balanceSign = null;
+					if (_bsat && typeof _bsat === 'object' && !Array.isArray(_bsat)
+					    && typeof _bsat.balance_sign === 'string') {
+						state.balanceSign = _bsat.balance_sign;
+					} else if (_bspsi && typeof _bspsi === 'object'
+					           && typeof _bspsi.balance_sign === 'string') {
+						state.balanceSign = _bspsi.balance_sign;
+					}
 					frappe.call({
 						method: 'dux_groupview.dux_groupview.api.cards_v1.resolve_match_to_accounts',
 						args: {
@@ -344,6 +359,7 @@ frappe.pages['party-list'].on_page_load = function(wrapper) {
 		if (state.as_of_date) args.as_of_date = state.as_of_date;
 		if (state.companies)  args.companies = JSON.stringify(state.companies);
 		if (state.displaySign) args.display_sign = state.displaySign;
+		if (state.balanceSign) args.balance_sign = state.balanceSign;
 
 		$('#dgv-pl-prev').prop('disabled', true);
 		$('#dgv-pl-next').prop('disabled', true);
@@ -399,6 +415,12 @@ frappe.pages['party-list'].on_page_load = function(wrapper) {
 		if (state.as_of_date) qs.push('as_of_date=' + encodeURIComponent(state.as_of_date));
 		if (state.companies)  qs.push('companies=' + encodeURIComponent(JSON.stringify(state.companies)));
 		qs.push('sort=' + encodeURIComponent(state.sort));
+		// Forward balance_sign so the exported CSV matches the party
+		// set the user sees on the page (e.g. supplier_advances
+		// exports only debit-balanced parties).
+		if (state.balanceSign) {
+			qs.push('balance_sign=' + encodeURIComponent(state.balanceSign));
+		}
 		return '/api/method/dux_groupview.dux_groupview.api.party_drill_v1.export_party_list_csv?'
 			+ qs.join('&');
 	}
