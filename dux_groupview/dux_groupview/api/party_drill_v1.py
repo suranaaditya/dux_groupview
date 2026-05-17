@@ -52,9 +52,22 @@ from frappe.utils import flt, getdate, today
 
 from dux_groupview.dux_groupview.api.utils import (
 	FLIP_ROOT_TYPES,
+	_apply_display_sign,
 	_named_in,
 	_resolve_scope_to_leaves,
 )
+
+
+# Mirror of the same constants in `api/account_drill_v1.py`. Kept local
+# to avoid a circular import; the two endpoints both apply `display_sign`
+# at the response boundary and need the same coercion shape.
+_VALID_DISPLAY_SIGNS = {"natural", "absolute", "negated"}
+
+
+def _normalise_display_sign(value):
+	if isinstance(value, str) and value in _VALID_DISPLAY_SIGNS:
+		return value
+	return "natural"
 
 
 DEFAULT_PAGE_SIZE = 10
@@ -80,7 +93,8 @@ PAGE_MODE_ALLOWED_SORTS = (
 @frappe.whitelist()
 def get_party_breakdown(scope=None, accounts=None, as_of_date=None,
                         companies=None, page=1, page_size=None,
-                        sort="balance_desc", mode="card"):
+                        sort="balance_desc", mode="card",
+                        display_sign=None):
 	"""Group GL entries by party across companies in scope.
 
 	Two modes (per spec v0.6 §5.4):
@@ -109,6 +123,7 @@ def get_party_breakdown(scope=None, accounts=None, as_of_date=None,
 
 	scope = _ensure_dict(scope)
 	accounts = _ensure_list(accounts)
+	display_sign = _normalise_display_sign(display_sign)
 
 	mode = _normalise_mode(mode)
 	default_size, max_size, allowed_sorts = _mode_knobs(mode)
@@ -188,11 +203,17 @@ def get_party_breakdown(scope=None, accounts=None, as_of_date=None,
 	)
 
 	group_co_names = _group_company_names()
+	# Apply display_sign to per-party balance so the panel's party
+	# list matches the card surface. Sorting was already done by
+	# ABS(balance) at SQL time so the order is unaffected by the
+	# transform.
 	parties = [
 		{
 			"party_type": r["party_type"],
 			"party": r["party"],
-			"balance": round(flt(r["balance"]), 2),
+			"balance": _apply_display_sign(
+				round(flt(r["balance"]), 2), display_sign,
+			),
 			"company_count": int(r["company_count"]),
 			"is_group_company": r["party"] in group_co_names,
 		}
@@ -223,7 +244,9 @@ def get_party_breakdown(scope=None, accounts=None, as_of_date=None,
 
 @frappe.whitelist()
 def get_party_company_breakdown(scope=None, accounts=None, as_of_date=None,
-                                companies=None, party=None, party_type=None):
+                                companies=None, party=None, party_type=None,
+                                display_sign=None,
+                                include_zero_balance_companies=False):
 	"""Group GL entries by company for one (party, party_type).
 
 	Used by the disambiguation popover (commit 5) when a party row
@@ -243,6 +266,18 @@ def get_party_company_breakdown(scope=None, accounts=None, as_of_date=None,
 
 	scope = _ensure_dict(scope)
 	accounts = _ensure_list(accounts)
+	display_sign = _normalise_display_sign(display_sign)
+	# `include_zero_balance_companies` controls the HAVING filter on
+	# the per-company query. Default False preserves the original
+	# behaviour (drop companies whose balance nets to zero). The party-
+	# list multi-co picker passes True so the picker can show every
+	# company where the party has ANY activity, matching the
+	# `company_count` badge on the party row -- otherwise a party with
+	# 2 cos badge but 1 nonzero co would auto-navigate without
+	# disambiguation, surprising the user.
+	include_zero = bool(include_zero_balance_companies) and (
+		str(include_zero_balance_companies).lower() not in ("false", "0", "")
+	)
 
 	allowed = _resolve_scope(companies)
 	target_date = getdate(as_of_date) if as_of_date else getdate(today())
@@ -260,6 +295,22 @@ def get_party_company_breakdown(scope=None, accounts=None, as_of_date=None,
 	c_ph, c_params = _named_in("c", allowed)
 	f_ph, f_params = _named_in("f", FLIP_ROOT_TYPES)
 
+	# `include_zero` widens the result set so the picker can show
+	# zero-balance companies too. Without it, a party with activity
+	# in 2 companies but a net-zero balance in one would only return
+	# the non-zero company, and the picker's `length <= 1` short-
+	# circuit would auto-navigate without asking -- contradicting the
+	# "2 cos" badge shown on the party row.
+	having_clause = "HAVING TRUE" if include_zero else "HAVING balance != 0"
+	# MariaDB doesn't allow ABS() on an aggregate alias in ORDER BY
+	# (only HAVING resolves aliased aggregates that way), so inline
+	# the SUM(CASE...) expression. Same pattern as get_party_breakdown
+	# uses for its `balance_desc` / `balance_asc` sort clauses.
+	abs_balance_expr = (
+		f"ABS(SUM(CASE WHEN a.root_type IN ({f_ph}) "
+		"THEN g.credit - g.debit "
+		"ELSE g.debit - g.credit END))"
+	)
 	rows = frappe.db.sql(
 		f"""
 		SELECT
@@ -277,8 +328,8 @@ def get_party_company_breakdown(scope=None, accounts=None, as_of_date=None,
 		  AND g.party = %(party)s
 		  AND g.party_type = %(party_type)s
 		GROUP BY g.company
-		HAVING balance != 0
-		ORDER BY balance DESC
+		{having_clause}
+		ORDER BY {abs_balance_expr} DESC, g.company ASC
 		""",
 		{
 			**a_params, **c_params, **f_params,
@@ -290,7 +341,12 @@ def get_party_company_breakdown(scope=None, accounts=None, as_of_date=None,
 	)
 
 	by_company = [
-		{"company": r["company"], "balance": round(flt(r["balance"]), 2)}
+		{
+			"company": r["company"],
+			"balance": _apply_display_sign(
+				round(flt(r["balance"]), 2), display_sign,
+			),
+		}
 		for r in rows
 	]
 

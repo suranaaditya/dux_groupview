@@ -34,9 +34,31 @@ from frappe.utils import flt, getdate, today
 from dux_groupview.dux_groupview.api.utils import (
 	FLIP_ROOT_TYPES,
 	PARTY_TRACKABLE_ACCOUNT_TYPES,
+	_apply_display_sign,
 	_named_in,
 	_resolve_scope_to_leaves,
 )
+
+
+# `display_sign` values accepted by the drill endpoints. Mirror of
+# `cards.py` schema. Invalid values are silently treated as "natural"
+# rather than rejected -- the spotlight refresh path logs the warning
+# at card-definition time, which is sufficient surface; the drill
+# accepts anything so a typo on the caller side doesn't crash the
+# drill panel.
+_VALID_DISPLAY_SIGNS = {"natural", "absolute", "negated"}
+
+
+def _normalise_display_sign(value):
+	"""Coerce caller input to a valid `display_sign` value.
+
+	Defensive shape: accepts None / unrecognised strings / non-strings,
+	returns "natural" in all such cases. JS callers may serialise as
+	a string; whitelist deserialisation passes it through unchanged.
+	"""
+	if isinstance(value, str) and value in _VALID_DISPLAY_SIGNS:
+		return value
+	return "natural"
 from dux_groupview.dux_groupview.snapshots.spotlight_refresh import (
 	SPARKLINE_LENGTH,
 )
@@ -44,14 +66,15 @@ from dux_groupview.dux_groupview.snapshots.spotlight_refresh import (
 
 @frappe.whitelist()
 def get_account_breakdown(scope=None, accounts=None, scope_label=None,
-                          as_of_date=None, companies=None):
+                          as_of_date=None, companies=None,
+                          display_sign=None):
 	"""Return the account drill panel data for one scope.
 
 	Output shape per spec §4.1:
 
 	    {
 	      "scope_label": str,
-	      "group_total": float,           # natural-side, raw rupees
+	      "group_total": float,           # display-corrected, raw rupees
 	      "is_party_trackable": bool,
 	      "trend_12mo": [{"month": "YYYY-MM", "value": float|None}, ...],
 	      "by_company": [
@@ -59,6 +82,16 @@ def get_account_breakdown(scope=None, accounts=None, scope_label=None,
 	        ...
 	      ]
 	    }
+
+	Optional `display_sign` (spec/supplier-advances-display-and-exclude-
+	fixes follow-up): applies the same final transform the spotlight
+	cache write applies, so the drill panel hero, breakdown, and
+	trend all render with the same sign convention as the card
+	surface. Three values: "natural" (default), "absolute", "negated".
+	Default "natural" preserves the existing behaviour for non-card
+	drill entry points (pivot row click, account drill page from
+	subtree URL, etc.) -- those callers don't have a card definition
+	to consult.
 	"""
 	from dux_groupview.dux_groupview.api.pivot import (
 		_require_cockpit_role,
@@ -69,6 +102,7 @@ def get_account_breakdown(scope=None, accounts=None, scope_label=None,
 
 	scope = _ensure_dict(scope)
 	accounts = _ensure_list(accounts)
+	display_sign = _normalise_display_sign(display_sign)
 
 	allowed = _resolve_scope(companies)
 	target_date = getdate(as_of_date) if as_of_date else getdate(today())
@@ -110,46 +144,71 @@ def get_account_breakdown(scope=None, accounts=None, scope_label=None,
 	# by_company: one entry per company that has any non-zero value
 	# in any of the trend dates. Prevents empty rows cluttering the
 	# panel for companies whose scope has no balance.
+	#
+	# `display_sign` applied per-row AND per-sparkline-point so the
+	# breakdown matches the card surface. Non-zero detection runs on
+	# the natural-side value (before transform) -- a leaf that is
+	# zero on natural-side is still zero after abs/negate; filtering
+	# at the natural-side preserves the existing "hide empty rows"
+	# behaviour exactly.
 	by_company = []
 	for c in sorted(allowed):
-		current_value = (
+		current_value_natural = (
 			agg.get((current_date, c), 0.0) if current_date else 0.0
 		)
-		sparkline = []
+		sparkline_natural = []
 		any_nonzero = False
 		for _label, snap in trend:
 			if snap is None:
-				sparkline.append(None)
+				sparkline_natural.append(None)
 			else:
 				v = round(flt(agg.get((snap, c), 0.0)), 2)
-				sparkline.append(v)
+				sparkline_natural.append(v)
 				if v != 0:
 					any_nonzero = True
-		if not any_nonzero and round(flt(current_value), 2) == 0:
+		if not any_nonzero and round(flt(current_value_natural), 2) == 0:
 			continue
 		by_company.append({
 			"company": c,
-			"value": round(flt(current_value), 2),
-			"sparkline": sparkline,
+			"value": _apply_display_sign(
+				round(flt(current_value_natural), 2), display_sign,
+			),
+			"sparkline": [
+				_apply_display_sign(p, display_sign)
+				for p in sparkline_natural
+			],
 		})
 
 	# Sort by_company by absolute value desc (largest contributors first).
+	# Sorting on `abs(value)` is unaffected by `display_sign` (abs of
+	# abs is abs; abs of -x is the same as abs of x), so the order is
+	# stable across display_sign modes.
 	by_company.sort(key=lambda r: abs(r["value"]), reverse=True)
 
-	# trend_12mo: sum across companies for each trend date
+	# trend_12mo: sum across companies for each trend date.
+	# Apply display_sign per-point so the trend chart line matches the
+	# card sparkline orientation.
 	trend_12mo = []
 	for label, snap in trend:
 		if snap is None:
 			trend_12mo.append({"month": label, "value": None})
 		else:
-			value = sum(
+			natural = sum(
 				flt(agg.get((snap, c), 0.0)) for c in allowed
 			)
 			trend_12mo.append({
 				"month": label,
-				"value": round(value, 2),
+				"value": _apply_display_sign(
+					round(natural, 2), display_sign,
+				),
 			})
 
+	# group_total: sum the already-transformed by_company values. Math
+	# is consistent (sum of abs is abs of sum when all components have
+	# the same sign; for sign-crossing data the transform applied
+	# per-row matches what the user sees in the table). For
+	# `display_sign="natural"` this is byte-identical to the pre-PR
+	# behaviour.
 	group_total = sum(r["value"] for r in by_company)
 
 	return {
@@ -176,7 +235,8 @@ PER_COMPANY_ACCOUNT_CAP = 200
 @frappe.whitelist()
 def get_account_breakdown_for_company(scope=None, accounts=None,
                                        scope_label=None, company=None,
-                                       as_of_date=None):
+                                       as_of_date=None,
+                                       display_sign=None):
 	"""Per-account breakdown within one company for a card / pivot scope.
 
 	Output shape (per spec §5.2):
@@ -225,6 +285,7 @@ def get_account_breakdown_for_company(scope=None, accounts=None,
 
 	scope = _ensure_dict(scope)
 	accounts = _ensure_list(accounts)
+	display_sign = _normalise_display_sign(display_sign)
 
 	# --- Malformed-scope checks (stale-deep-link path) ---
 	if not isinstance(company, str) or not company.strip():
@@ -326,11 +387,18 @@ def get_account_breakdown_for_company(scope=None, accounts=None,
 	truncated = len(rows) > PER_COMPANY_ACCOUNT_CAP
 	visible_rows = rows[:PER_COMPANY_ACCOUNT_CAP]
 
+	# Apply display_sign to per-account balances so the per-account
+	# breakdown table matches the card surface. Filter `HAVING ABS >=
+	# 0.01` ran on the natural-side; the transform is monotonic in
+	# magnitude so a leaf included before the transform remains
+	# included after (no need to re-filter).
 	accounts_out = [
 		{
 			"account": r["account"],
 			"account_name": r["account_name"],
-			"balance": round(flt(r["balance"]), 2),
+			"balance": _apply_display_sign(
+				round(flt(r["balance"]), 2), display_sign,
+			),
 			"currency": r.get("currency") or "",
 		}
 		for r in visible_rows
@@ -372,9 +440,15 @@ def get_account_breakdown_for_company(scope=None, accounts=None,
 			as_dict=True,
 		)[0]
 		total_accounts = int(total_row["total_accounts"])
-		company_total = round(flt(total_row["company_total"]), 2)
+		company_total = _apply_display_sign(
+			round(flt(total_row["company_total"]), 2), display_sign,
+		)
 	else:
 		total_accounts = len(accounts_out)
+		# Sum the already-transformed per-account balances so
+		# company_total == sum(accounts[].balance). Adding-up
+		# consistency on the cap-untruncated case is load-bearing for
+		# the UI's "scroll down to see the rows that add to N" trust.
 		company_total = round(sum(a["balance"] for a in accounts_out), 2)
 
 	return {
@@ -536,7 +610,8 @@ ACCOUNT_BREAKDOWN_CSV_HEADERS = ("Company", "Account", "Balance", "Currency")
 
 @frappe.whitelist()
 def export_account_breakdown_csv(scope=None, accounts=None, scope_label=None,
-                                 as_of_date=None, companies=None):
+                                 as_of_date=None, companies=None,
+                                 display_sign=None):
 	"""Per-(company, account) breakdown CSV for the current scope.
 
 	Reads `tabDGV TB Snapshot Row` only -- this is a cockpit read,
@@ -572,6 +647,7 @@ def export_account_breakdown_csv(scope=None, accounts=None, scope_label=None,
 
 	scope = _ensure_dict(scope)
 	accounts = _ensure_list(accounts)
+	display_sign = _normalise_display_sign(display_sign)
 
 	allowed = _resolve_scope(companies)
 	target_date = getdate(as_of_date) if as_of_date else getdate(today())
@@ -639,7 +715,22 @@ def export_account_breakdown_csv(scope=None, accounts=None, scope_label=None,
 		as_dict=True,
 	)
 
-	csv_string = _build_account_breakdown_csv(rows)
+	# Apply display_sign to the balance column so the exported CSV
+	# matches what the user sees in the drill panel (and the card
+	# surface). Currency, company, account are pass-through.
+	transformed_rows = [
+		{
+			"company": r["company"],
+			"account": r["account"],
+			"balance": _apply_display_sign(
+				flt(r["balance"]), display_sign,
+			),
+			"currency": r.get("currency"),
+		}
+		for r in rows
+	]
+
+	csv_string = _build_account_breakdown_csv(transformed_rows)
 	_set_csv_response(
 		_csv_filename("account_breakdown", resolved_label, target_date),
 		csv_string,

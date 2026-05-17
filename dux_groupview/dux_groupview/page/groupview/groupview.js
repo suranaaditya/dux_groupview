@@ -890,6 +890,13 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 			scope_label: card.label,
 			as_of_date: currentDate,
 			companies: scopeCompanies,  // null = all
+			// Forward the card's display_sign config so the drill
+			// panel hero / breakdown / sparkline / trend all render
+			// with the same sign convention as the card surface.
+			// Default `"natural"` (passthrough) when the field is
+			// absent on the card payload -- regression-safe for all
+			// pre-supplier-advances cards.
+			display_sign: card.display_sign || 'natural',
 		});
 	}
 

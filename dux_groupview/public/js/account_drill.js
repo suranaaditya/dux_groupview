@@ -447,6 +447,12 @@
 		};
 		if (args.as_of_date) apiArgs.as_of_date = args.as_of_date;
 		if (args.companies)  apiArgs.companies = JSON.stringify(args.companies);
+		// Forward `display_sign` when the drill was opened from a
+		// spotlight card. Server defaults to "natural" (passthrough)
+		// for callers that don't pass the field, so subtree / pivot
+		// entry points (which don't have a card definition) are
+		// regression-safe.
+		if (args.display_sign) apiArgs.display_sign = args.display_sign;
 
 		var myToken = panelFetchToken;
 		frappe.call({
@@ -483,6 +489,7 @@
 		if (args.scope_label) apiArgs.scope_label = args.scope_label;
 		if (args.as_of_date)  apiArgs.as_of_date = args.as_of_date;
 		if (args.companies)   apiArgs.companies = JSON.stringify(args.companies);
+		if (args.display_sign) apiArgs.display_sign = args.display_sign;
 
 		var myToken = panelFetchToken;
 		frappe.call({
@@ -522,6 +529,7 @@
 		}
 		if (args.as_of_date) apiArgs.as_of_date = args.as_of_date;
 		if (args.companies)  apiArgs.companies = JSON.stringify(args.companies);
+		if (args.display_sign) apiArgs.display_sign = args.display_sign;
 
 		var myToken = panelFetchToken;
 		frappe.call({
@@ -1156,6 +1164,9 @@
 			apiArgs.scope_label = args.scope_label || '';
 		}
 		if (args.as_of_date) apiArgs.as_of_date = args.as_of_date;
+		// Forward display_sign so the per-account expansion table
+		// values match the by-company aggregate the user just clicked.
+		if (args.display_sign) apiArgs.display_sign = args.display_sign;
 
 		frappe.call({
 			method: 'dux_groupview.dux_groupview.api.account_drill_v1.' +
@@ -1334,6 +1345,7 @@
 				scope_label: currentRequest.scope_label || '',
 				as_of_date: currentRequest.as_of_date || null,
 				companies: currentRequest.companies || null,
+				display_sign: currentRequest.display_sign || null,
 			},
 			expanded: Array.from(expandedCompanies),
 			ts: Date.now(),
@@ -1899,6 +1911,11 @@
 		}
 		if (args && args.companies && args.companies.length) {
 			qs.push('companies=' + encodeURIComponent(JSON.stringify(args.companies)));
+		}
+		// Forward display_sign so the exported CSV's balance column
+		// matches the in-app per-account breakdown.
+		if (args && args.display_sign) {
+			qs.push('display_sign=' + encodeURIComponent(args.display_sign));
 		}
 		return '/api/method/dux_groupview.dux_groupview.api.account_drill_v1.export_account_breakdown_csv?'
 			+ qs.join('&');

@@ -815,3 +815,343 @@ class TestZeroPartiesNotFour04(FrappeTestCase):
 		)
 		self.assertEqual(out["parties"], [])
 		self.assertEqual(out["total_parties"], 0)
+
+
+class TestDrillDisplaySignPlumbing(FrappeTestCase):
+	"""Tests for the `display_sign` parameter plumbed through the
+	drill endpoints (follow-up to PR #19).
+
+	Spec: cards with `display_sign: "absolute"` need the drill panel
+	values (hero, by-company, by-account, trend, sparkline) to render
+	with the same sign convention as the card surface. The drill API
+	accepts the parameter and applies the transform at the response
+	boundary.
+
+	Default value when the parameter is omitted is `"natural"`
+	(passthrough), so pivot / subtree / account-scope drill calls
+	(which don't have a card definition to consult) are
+	regression-safe.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		_ensure_today_data()
+
+	# ------------------------------------------------------------------
+	# get_account_breakdown
+	# ------------------------------------------------------------------
+
+	def test_default_display_sign_is_natural(self):
+		"""No `display_sign` arg -> response identical to passing
+		`"natural"`. Pin the regression-safety guarantee for all
+		existing callers.
+		"""
+		out_default = account_drill_v1.get_account_breakdown(
+			scope={"type": "account", "value": "Sundry Creditors"},
+		)
+		out_natural = account_drill_v1.get_account_breakdown(
+			scope={"type": "account", "value": "Sundry Creditors"},
+			display_sign="natural",
+		)
+		self.assertEqual(out_default["group_total"], out_natural["group_total"])
+		self.assertEqual(
+			[r["value"] for r in out_default["by_company"]],
+			[r["value"] for r in out_natural["by_company"]],
+			msg="display_sign default must be byte-identical to 'natural'",
+		)
+
+	def test_absolute_produces_non_negative_by_company(self):
+		"""Every by_company value is >= 0 under display_sign='absolute'.
+		The natural-side aggregate may include negative entries
+		(Liability+debit, Asset+credit, etc.); abs turns them all
+		positive. Useful for cards like supplier_advances whose
+		semantic is "magnitude parked with suppliers".
+		"""
+		out = account_drill_v1.get_account_breakdown(
+			scope={"type": "account", "value": "Sundry Creditors"},
+			display_sign="absolute",
+		)
+		for r in out["by_company"]:
+			self.assertGreaterEqual(
+				r["value"], 0.0,
+				msg=(
+					f"Company {r['company']} returned value={r['value']} "
+					f"under display_sign='absolute' -- abs() must "
+					f"guarantee non-negative."
+				),
+			)
+		self.assertGreaterEqual(out["group_total"], 0.0)
+
+	def test_absolute_matches_natural_magnitudes(self):
+		"""For each by_company entry, |natural value| == absolute
+		value. Pin the per-row consistency so a refactor that
+		introduces a bug at the aggregate level (e.g. abs(sum) vs
+		sum(abs)) is caught.
+		"""
+		out_nat = account_drill_v1.get_account_breakdown(
+			scope={"type": "account", "value": "Sundry Creditors"},
+			display_sign="natural",
+		)
+		out_abs = account_drill_v1.get_account_breakdown(
+			scope={"type": "account", "value": "Sundry Creditors"},
+			display_sign="absolute",
+		)
+		nat_by_co = {r["company"]: r["value"] for r in out_nat["by_company"]}
+		abs_by_co = {r["company"]: r["value"] for r in out_abs["by_company"]}
+		self.assertEqual(
+			set(nat_by_co.keys()), set(abs_by_co.keys()),
+			msg="display_sign must not change the company set (it's a "
+			    "value transform, not a filter)",
+		)
+		for company, nat_val in nat_by_co.items():
+			self.assertAlmostEqual(
+				abs(nat_val), abs_by_co[company], places=2,
+				msg=f"abs({nat_val}) != {abs_by_co[company]} for {company}",
+			)
+
+	def test_negated_inverts_sign(self):
+		"""`display_sign='negated'` returns -value. Included for
+		completeness even though no card uses it today.
+		"""
+		out_nat = account_drill_v1.get_account_breakdown(
+			scope={"type": "account", "value": "Sundry Creditors"},
+			display_sign="natural",
+		)
+		out_neg = account_drill_v1.get_account_breakdown(
+			scope={"type": "account", "value": "Sundry Creditors"},
+			display_sign="negated",
+		)
+		nat_by_co = {r["company"]: r["value"] for r in out_nat["by_company"]}
+		neg_by_co = {r["company"]: r["value"] for r in out_neg["by_company"]}
+		for company, nat_val in nat_by_co.items():
+			self.assertAlmostEqual(
+				-nat_val, neg_by_co[company], places=2,
+			)
+
+	def test_invalid_display_sign_treated_as_natural(self):
+		"""Unrecognised string (typo, etc.) silently degrades to
+		natural -- the response stays sane rather than crashing the
+		drill panel. Same defensive shape as
+		`spotlight_refresh._apply_display_sign`.
+		"""
+		out_bad = account_drill_v1.get_account_breakdown(
+			scope={"type": "account", "value": "Sundry Creditors"},
+			display_sign="weird-mode",
+		)
+		out_nat = account_drill_v1.get_account_breakdown(
+			scope={"type": "account", "value": "Sundry Creditors"},
+			display_sign="natural",
+		)
+		self.assertEqual(out_bad["group_total"], out_nat["group_total"])
+
+	def test_trend_points_apply_display_sign(self):
+		"""Sparkline / trend points are transformed too -- otherwise
+		the chart line on the drill panel hero would render with the
+		wrong sign convention from the card sparkline.
+		"""
+		out_nat = account_drill_v1.get_account_breakdown(
+			scope={"type": "account", "value": "Sundry Creditors"},
+			display_sign="natural",
+		)
+		out_abs = account_drill_v1.get_account_breakdown(
+			scope={"type": "account", "value": "Sundry Creditors"},
+			display_sign="absolute",
+		)
+		for i, (n, a) in enumerate(zip(
+			out_nat["trend_12mo"], out_abs["trend_12mo"],
+		)):
+			if n["value"] is None or a["value"] is None:
+				self.assertEqual(
+					n["value"], a["value"],
+					msg=f"trend[{i}] None-passthrough broken",
+				)
+				continue
+			self.assertAlmostEqual(
+				abs(n["value"]), a["value"], places=2,
+				msg=f"trend[{i}]: |{n['value']}| != {a['value']}",
+			)
+
+	# ------------------------------------------------------------------
+	# get_account_breakdown_for_company
+	# ------------------------------------------------------------------
+
+	def test_per_company_absolute_matches_natural_magnitudes(self):
+		"""Same per-row magnitude invariant on the per-company
+		expansion endpoint. Picks the first company that has
+		matching rows; skips silently if no Sundry Creditors leaves
+		exist on dev for any company.
+		"""
+		# Find a company that has matching rows.
+		all_cos = frappe.db.sql_list(
+			"SELECT name FROM `tabCompany` ORDER BY name LIMIT 10"
+		)
+		picked = None
+		for co in all_cos:
+			out = account_drill_v1.get_account_breakdown_for_company(
+				scope={"type": "account", "value": "Sundry Creditors"},
+				company=co,
+			)
+			if out["accounts"]:
+				picked = co
+				break
+		if not picked:
+			self.skipTest("No Sundry Creditors leaves on dev for any company")
+
+		nat = account_drill_v1.get_account_breakdown_for_company(
+			scope={"type": "account", "value": "Sundry Creditors"},
+			company=picked, display_sign="natural",
+		)
+		ab = account_drill_v1.get_account_breakdown_for_company(
+			scope={"type": "account", "value": "Sundry Creditors"},
+			company=picked, display_sign="absolute",
+		)
+		for n_row, a_row in zip(nat["accounts"], ab["accounts"]):
+			self.assertEqual(n_row["account"], a_row["account"])
+			self.assertAlmostEqual(
+				abs(n_row["balance"]), a_row["balance"], places=2,
+			)
+		# company_total under absolute is non-negative (always; the
+		# accounts list is summed under abs and abs of sum-of-abs is
+		# the sum itself).
+		self.assertGreaterEqual(ab["company_total"], 0.0)
+
+
+class TestPartyCompanyBreakdownPickerSupport(FrappeTestCase):
+	"""Tests for the `include_zero_balance_companies` flag on
+	`get_party_company_breakdown` (follow-up to PR #19).
+
+	Spec: when a party row in the account drill / party list shows
+	"N cos" badge (N = count of companies with ANY GL activity for
+	the party), clicking the row must surface a picker offering all
+	N companies -- not just the ones with non-zero net balance.
+	Otherwise a "2 cos" row can silently auto-navigate to one company
+	without disambiguation when the other company nets to zero.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		_ensure_today_data()
+
+	def test_default_excludes_zero_balance_companies(self):
+		"""Default behaviour (no flag) is unchanged from PR-18: only
+		companies with non-zero net balance are returned. Pin so a
+		future refactor doesn't accidentally widen by default.
+		"""
+		# Pick a Payable-tracked party from the seeded fixture; the
+		# specific party doesn't matter as long as it has GL activity.
+		party_row = frappe.db.sql(
+			"""
+			SELECT party, party_type
+			FROM `tabGL Entry`
+			WHERE party_type IN ('Supplier', 'Customer')
+			  AND party != ''
+			  AND docstatus = 1
+			  AND is_cancelled = 0
+			LIMIT 1
+			""",
+			as_dict=True,
+		)
+		if not party_row:
+			self.skipTest("No tagged parties on dev")
+		party = party_row[0]
+		out = party_drill_v1.get_party_company_breakdown(
+			scope={"type": "account", "value": "Sundry Creditors"},
+			party=party["party"],
+			party_type=party["party_type"],
+		)
+		# All returned rows have non-zero balance.
+		for r in out["by_company"]:
+			self.assertNotEqual(
+				r["balance"], 0,
+				msg=f"Default excluded-zero shape returned zero-balance "
+				    f"row for {r['company']}",
+			)
+
+	def test_include_zero_widens_results(self):
+		"""With `include_zero_balance_companies=True`, the result set
+		is a (non-strict) superset of the default. Empirically this
+		can be equal (no zero-balance companies for the chosen party)
+		or strictly larger -- both are valid; the test pins the
+		superset relationship.
+		"""
+		party_row = frappe.db.sql(
+			"""
+			SELECT party, party_type
+			FROM `tabGL Entry`
+			WHERE party_type IN ('Supplier', 'Customer')
+			  AND party != ''
+			  AND docstatus = 1
+			  AND is_cancelled = 0
+			LIMIT 1
+			""",
+			as_dict=True,
+		)
+		if not party_row:
+			self.skipTest("No tagged parties on dev")
+		party = party_row[0]
+		narrow = party_drill_v1.get_party_company_breakdown(
+			scope={"type": "account", "value": "Sundry Creditors"},
+			party=party["party"], party_type=party["party_type"],
+		)
+		wide = party_drill_v1.get_party_company_breakdown(
+			scope={"type": "account", "value": "Sundry Creditors"},
+			party=party["party"], party_type=party["party_type"],
+			include_zero_balance_companies=True,
+		)
+		narrow_cos = {r["company"] for r in narrow["by_company"]}
+		wide_cos = {r["company"] for r in wide["by_company"]}
+		self.assertTrue(
+			narrow_cos.issubset(wide_cos),
+			msg=(
+				f"narrow companies {narrow_cos} not a subset of wide "
+				f"companies {wide_cos} -- the include_zero flag must "
+				f"only ADD companies, never remove."
+			),
+		)
+
+	def test_include_zero_string_coercion(self):
+		"""Whitelist serialisation passes booleans as strings. The
+		coercion in `get_party_company_breakdown` must treat any
+		truthy string as True (excepts the explicitly-false trio
+		"false", "0", "").
+		"""
+		party_row = frappe.db.sql(
+			"""
+			SELECT party, party_type
+			FROM `tabGL Entry`
+			WHERE party_type IN ('Supplier', 'Customer')
+			  AND party != ''
+			  AND docstatus = 1
+			  AND is_cancelled = 0
+			LIMIT 1
+			""",
+			as_dict=True,
+		)
+		if not party_row:
+			self.skipTest("No tagged parties on dev")
+		party = party_row[0]
+		# Various truthy / falsy string spellings.
+		for falsy in (False, "false", "0", ""):
+			out = party_drill_v1.get_party_company_breakdown(
+				scope={"type": "account", "value": "Sundry Creditors"},
+				party=party["party"], party_type=party["party_type"],
+				include_zero_balance_companies=falsy,
+			)
+			# Equivalent to default -- no zero-balance rows.
+			for r in out["by_company"]:
+				self.assertNotEqual(
+					r["balance"], 0,
+					msg=f"Falsy include_zero={falsy!r} should not widen",
+				)
+		for truthy in (True, "true", "True", "1"):
+			out = party_drill_v1.get_party_company_breakdown(
+				scope={"type": "account", "value": "Sundry Creditors"},
+				party=party["party"], party_type=party["party_type"],
+				include_zero_balance_companies=truthy,
+			)
+			# Just verify no crash; the result may or may not include
+			# zero-balance rows depending on dev data.
+			self.assertIsInstance(out["by_company"], list)
+

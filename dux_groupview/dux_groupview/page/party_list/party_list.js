@@ -291,6 +291,7 @@ frappe.pages['party-list'].on_page_load = function(wrapper) {
 						return;
 					}
 					state.resolvedLabel = card.label;
+					state.displaySign = card.display_sign || 'natural';
 					frappe.call({
 						method: 'dux_groupview.dux_groupview.api.cards_v1.resolve_match_to_accounts',
 						args: {
@@ -342,6 +343,7 @@ frappe.pages['party-list'].on_page_load = function(wrapper) {
 		}
 		if (state.as_of_date) args.as_of_date = state.as_of_date;
 		if (state.companies)  args.companies = JSON.stringify(state.companies);
+		if (state.displaySign) args.display_sign = state.displaySign;
 
 		$('#dgv-pl-prev').prop('disabled', true);
 		$('#dgv-pl-next').prop('disabled', true);
@@ -494,32 +496,36 @@ frappe.pages['party-list'].on_page_load = function(wrapper) {
 				const ptype = row.getAttribute('data-party-type');
 				if (!party || !ptype) return;
 
-				// Spec v0.9: GL drill is per-company. Two cases:
-				//   - Party in 1 company under the current scope:
-				//     navigate directly to GL drill with that single
-				//     company in the URL.
-				//   - Party in >1 companies: open the picker so the
-				//     user picks one before navigating.
-				//
-				// The row carries `data-company-count` but NOT the
-				// company name(s), so even the single-co case needs a
-				// server fetch to learn which company. Both paths
-				// route through `openPickerForParty` → `get_party_
-				// company_breakdown`; `openPickerWithCompanies`'s
-				// defensive check at the join point auto-navigates
-				// when the resolved company list has length ≤ 1 (no
-				// picker rendered). Multi-co goes through the picker.
-				//
-				// Cost vs the original direct-nav was one extra ~100ms
-				// roundtrip on single-co clicks; the prior path
-				// stripped the company from the URL (state.companies
-				// is empty on a scope-less party-list landing) which
-				// tripped the server-side per-company assertion.
-				//
+				// `data-company-count` is the count the row badge shows
+				// the user ("2 cos"). It's the COUNT(DISTINCT company)
+				// over ALL the party's GL entries in scope, regardless
+				// of net balance. The picker must honour THIS count --
+				// otherwise the badge promise and the click behaviour
+				// diverge (a "2 cos" row that goes straight to one
+				// company without disambiguation is the bug fix landed
+				// in this PR).
+				const rowCount = parseInt(
+					row.getAttribute('data-company-count') || '1', 10,
+				);
+
 				// `window.dgvOpenCompanyPickerForGlDrill` gate is a
 				// defensive check against older cached `account_drill.js`
-				// that doesn't expose the helper; falls back to
-				// (broken) direct nav rather than failing silently.
+				// that doesn't expose the helper; falls back to direct
+				// nav rather than failing silently. Direct nav for the
+				// fallback case lets the GL drill page render the
+				// server-side per-company assertion error if relevant,
+				// which is louder than this page silently navigating
+				// to the wrong place.
+				if (window.dgvOpenCompanyPickerForGlDrill && rowCount > 1) {
+					openPickerForParty(party, ptype);
+					return;
+				}
+				// rowCount <= 1: still call openPickerForParty so the
+				// (single) company name comes back from the breakdown
+				// API -- direct nav without a company in the URL trips
+				// the GL drill's per-company assertion when the page's
+				// `state.companies` is empty (the scope-less party-list
+				// landing case).
 				if (window.dgvOpenCompanyPickerForGlDrill) {
 					openPickerForParty(party, ptype);
 					return;
@@ -547,6 +553,15 @@ frappe.pages['party-list'].on_page_load = function(wrapper) {
 		const args = {
 			party: party,
 			party_type: party_type,
+			// `include_zero_balance_companies=true` widens the breakdown
+			// so the picker can show every company where the party has
+			// ANY GL activity (regardless of net balance). Aligns the
+			// picker with the row badge's `data-company-count` (which
+			// is also a "any activity" count). Without this, a party
+			// in 2 companies with one company net-zero would only
+			// surface the non-zero company and the picker would silently
+			// auto-navigate -- which is the bug fix landed in this PR.
+			include_zero_balance_companies: true,
 		};
 		if (state.resolvedAccounts !== null) {
 			args.accounts = JSON.stringify(state.resolvedAccounts);
@@ -586,9 +601,13 @@ frappe.pages['party-list'].on_page_load = function(wrapper) {
 	}
 
 	function openPickerWithCompanies(party, party_type, companies) {
-		// Single-co edge case (defensive -- if the breakdown returned
-		// only one company despite company_count > 1 on the row, just
-		// navigate directly without the picker).
+		// length <= 1: nothing to disambiguate -- direct nav with the
+		// single company. (The "2 cos badge promised a picker" case is
+		// handled UPSTREAM in bindRowClicks; by the time we get here
+		// with 1 company, either the row genuinely had 1 co, or the
+		// breakdown returned 1 even with include_zero=true, which
+		// means the row badge itself was stale -- not worth showing
+		// a 1-row picker just to confirm.)
 		if (companies.length <= 1) {
 			window.location.href = buildGlDrillForPartyUrl(
 				party, party_type, companies[0]);
