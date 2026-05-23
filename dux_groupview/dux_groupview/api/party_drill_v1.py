@@ -692,7 +692,8 @@ PARTY_CSV_HARD_TRUNCATE_AT = 50_000
 @frappe.whitelist()
 def export_party_list_csv(scope=None, accounts=None, scope_label=None,
                           as_of_date=None, companies=None,
-                          sort="balance_desc", balance_sign=None):
+                          sort="balance_desc", balance_sign=None,
+                          match=None):
 	"""Stream the party list for one drill scope as a CSV download.
 
 	Honors the same scope/companies/sort args as `get_party_breakdown`
@@ -725,6 +726,7 @@ def export_party_list_csv(scope=None, accounts=None, scope_label=None,
 
 	scope = _ensure_dict(scope)
 	accounts = _ensure_list(accounts)
+	match = _ensure_dict(match)
 	balance_sign = _normalise_balance_sign(balance_sign)
 	# Sort allow-list matches mode='page' (4 sorts incl name_desc).
 	sort = sort if sort in PAGE_MODE_ALLOWED_SORTS else "balance_desc"
@@ -733,8 +735,16 @@ def export_party_list_csv(scope=None, accounts=None, scope_label=None,
 	target_date = getdate(as_of_date) if as_of_date else getdate(today())
 
 	# Resolve label for filename slug.
+	# Priority match -> accounts -> scope. `match` is the
+	# shortest-URL path (server resolves a card predicate); see the
+	# matching docstring section in
+	# `account_drill_v1.export_account_breakdown_csv` for the
+	# nginx URL-length rationale.
 	resolved_label = scope_label or ""
-	if accounts is not None:
+	if isinstance(match, dict) and match:
+		from dux_groupview.dux_groupview.api.cards_v1 import _resolve_match
+		leaves = _resolve_match(match, allowed) if allowed else []
+	elif accounts is not None:
 		leaves = [a for a in accounts if isinstance(a, str)]
 	elif isinstance(scope, dict):
 		leaves, default_label = _resolve_scope_to_leaves(scope, allowed)
