@@ -1879,26 +1879,42 @@
 	 *              resolvedAccounts } (the page resolves card scopes
 	 *            to leaves before binding the export button).
 	 *
-	 * Prefer pre-resolved `accounts` over `scope` when available --
-	 * cheaper for the server (no card-resolution round-trip) and lets
-	 * card-driven exports work even if the card definition changes
-	 * mid-session (URL captures a frozen leaf list).
+	 * Priority for the URL: `match` (card predicate, server resolves) ->
+	 * `accounts` (already resolved) -> `scope` (ScopeSpec). `match` is
+	 * smallest by far -- ~100 chars for the predicate dict vs the full
+	 * pre-resolved leaf list which on 70-company prod scope can exceed
+	 * nginx's URL header limit and cause ERR_CONNECTION_CLOSED. This
+	 * path was added 2026-05-17 after a user-visible export failure on
+	 * the all-institutions Supplier Advances CSV.
 	 */
 	function buildAccountBreakdownCsvUrl(ctx, args) {
 		var qs = [];
-		// Prefer resolved accounts list -- ctx.accounts (panel)
-		// or args.resolvedAccounts (page).
+		// Prefer `match` (smallest URL) when caller passed it through.
+		// `args.match` is set when the drill panel was opened from a
+		// card -- the cockpit forwards `card.match` for exactly this
+		// purpose. `ctx.match` is the page-level equivalent.
+		var matchDict = (args && args.match) || (ctx && ctx.match) || null;
 		var resolved = (ctx && ctx.accounts)
 			|| (args && args.resolvedAccounts)
 			|| null;
-		if (Array.isArray(resolved) && resolved.length) {
+		if (matchDict && typeof matchDict === 'object'
+		    && Object.keys(matchDict).length) {
+			qs.push('match=' + encodeURIComponent(JSON.stringify(matchDict)));
+			var matchLabel = (ctx && ctx.label) || (args && args.scope_label)
+				|| (args && args.scope && args.scope.value)
+				|| (args && args.scope && args.scope.id) || '';
+			if (matchLabel) qs.push('scope_label=' + encodeURIComponent(matchLabel));
+		}
+		// Pre-resolved accounts (page-level resolution, non-card paths
+		// that already did the lookup, etc).
+		else if (Array.isArray(resolved) && resolved.length) {
 			qs.push('accounts=' + encodeURIComponent(JSON.stringify(resolved)));
 			var label = (ctx && ctx.label) || (args && args.scope_label)
 				|| (args && args.scope && args.scope.value)
 				|| (args && args.scope && args.scope.id) || '';
 			if (label) qs.push('scope_label=' + encodeURIComponent(label));
 		}
-		// Otherwise fall back to ScopeSpec dict for {account, subtree} kinds.
+		// Fall back to ScopeSpec dict for {account, subtree} kinds.
 		else if (args && args.scope && args.scope.value) {
 			qs.push('scope=' + encodeURIComponent(JSON.stringify({
 				type: args.scope.type, value: args.scope.value,

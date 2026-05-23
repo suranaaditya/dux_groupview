@@ -157,6 +157,12 @@ frappe.pages['account-drill'].on_page_load = function(wrapper) {
 					// can forward it. Default "natural" for cards that
 					// don't carry the field.
 					state.displaySign = card.display_sign || 'natural';
+					// Cache `match` so the page-level CSV export URL
+					// can pass the small predicate dict (~100 chars)
+					// instead of the pre-resolved leaf list (which on
+					// all-companies prod scope blows past nginx's URL
+					// header limit and triggers ERR_CONNECTION_CLOSED).
+					state.match = card.match || null;
 					// Pull `balance_sign` from `card.match` so the
 					// party drill can filter parties to those whose
 					// individual balance matches the card direction.

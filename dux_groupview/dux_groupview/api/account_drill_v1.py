@@ -611,7 +611,7 @@ ACCOUNT_BREAKDOWN_CSV_HEADERS = ("Company", "Account", "Balance", "Currency")
 @frappe.whitelist()
 def export_account_breakdown_csv(scope=None, accounts=None, scope_label=None,
                                  as_of_date=None, companies=None,
-                                 display_sign=None):
+                                 display_sign=None, match=None):
 	"""Per-(company, account) breakdown CSV for the current scope.
 
 	Reads `tabDGV TB Snapshot Row` only -- this is a cockpit read,
@@ -634,6 +634,20 @@ def export_account_breakdown_csv(scope=None, accounts=None, scope_label=None,
 	    breaks numerical typing.
 	  - Empty currency renders as empty string (some accounts may
 	    have NULL `account_currency` -- rare, harmless).
+
+	Input shapes (priority order; first one provided wins):
+	  - `match`:    card predicate dict, server-resolves via
+	                `cards_v1._resolve_match`. Smallest URL footprint --
+	                use this for card-scope exports across many
+	                companies, where the pre-resolved `accounts` list
+	                would blow past nginx's 8 KB URL header limit on
+	                Frappe Cloud (symptom: `ERR_CONNECTION_CLOSED`
+	                before the request reaches the app server).
+	  - `accounts`: pre-resolved leaf list. Kept for backward compat
+	                and for non-card paths that have already resolved
+	                client-side. Fine when the list is small.
+	  - `scope`:    ScopeSpec dict for subtree/account/name_pattern
+	                paths -- server-resolves to leaves.
 	"""
 	from dux_groupview.dux_groupview.api.gl_drill_v1 import (
 		_csv_filename, _set_csv_response,
@@ -647,14 +661,24 @@ def export_account_breakdown_csv(scope=None, accounts=None, scope_label=None,
 
 	scope = _ensure_dict(scope)
 	accounts = _ensure_list(accounts)
+	match = _ensure_dict(match)
 	display_sign = _normalise_display_sign(display_sign)
 
 	allowed = _resolve_scope(companies)
 	target_date = getdate(as_of_date) if as_of_date else getdate(today())
 
 	# --- Resolve leaves + label (mirrors get_account_breakdown) ---
+	# Priority: match -> accounts -> scope. `match` is the new shortest-
+	# URL path (resolves a card predicate server-side); kept first so
+	# any caller migrating from `accounts` to `match` for length reasons
+	# wins automatically. `accounts` retains its existing semantics for
+	# backward compat (already-resolved client-side list); `scope` is the
+	# legacy ScopeSpec for non-card subtree / account / name_pattern.
 	resolved_label = scope_label or ""
-	if accounts is not None:
+	if isinstance(match, dict) and match:
+		from dux_groupview.dux_groupview.api.cards_v1 import _resolve_match
+		leaves = _resolve_match(match, allowed) if allowed else []
+	elif accounts is not None:
 		leaves = [a for a in accounts if isinstance(a, str)]
 	elif isinstance(scope, dict):
 		leaves, default_label = _resolve_scope_to_leaves(scope, allowed)

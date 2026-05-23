@@ -292,6 +292,14 @@ frappe.pages['party-list'].on_page_load = function(wrapper) {
 					}
 					state.resolvedLabel = card.label;
 					state.displaySign = card.display_sign || 'natural';
+					// Cache the card's match predicate so the CSV
+					// export URL can pass it (short) instead of the
+					// resolved leaf list (long). Without this, the
+					// all-institutions Supplier Advances CSV URL
+					// exceeds nginx's URL header limit on Frappe Cloud
+					// and the connection is closed before the request
+					// reaches the app server.
+					state.match = card.match || null;
 					// Extract balance_sign from card.match so the
 					// party list page filters parties by their
 					// individual balance direction (advance vs
@@ -402,7 +410,20 @@ frappe.pages['party-list'].on_page_load = function(wrapper) {
 
 	function buildExportCsvUrl() {
 		const qs = [];
-		if (state.resolvedAccounts !== null) {
+		// Priority: match (card predicate, server resolves; smallest URL)
+		// -> accounts (pre-resolved client-side) -> scope (ScopeSpec).
+		// The match-first path is the 2026-05-17 fix for the
+		// ERR_CONNECTION_CLOSED issue on the all-institutions
+		// Supplier Advances CSV -- nginx URL header limit gets exceeded
+		// when 200+ resolved leaf account names get URL-encoded into
+		// the query string.
+		if (state.match && typeof state.match === 'object'
+		    && Object.keys(state.match).length) {
+			qs.push('match=' + encodeURIComponent(JSON.stringify(state.match)));
+			if (state.resolvedLabel) {
+				qs.push('scope_label=' + encodeURIComponent(state.resolvedLabel));
+			}
+		} else if (state.resolvedAccounts !== null) {
 			qs.push('accounts=' + encodeURIComponent(JSON.stringify(state.resolvedAccounts)));
 			if (state.resolvedLabel) {
 				qs.push('scope_label=' + encodeURIComponent(state.resolvedLabel));
