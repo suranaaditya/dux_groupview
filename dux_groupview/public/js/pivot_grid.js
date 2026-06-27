@@ -373,21 +373,27 @@
 			if (!visibleCompanies.length) return candidates;
 			const balances = this.data.balances || {};
 			const keepNonZero = new Set();
+			// Coerce to Number explicitly: Frappe occasionally serializes
+			// decimals as strings, and `"0.00" !== 0` is true (different
+			// types), which would otherwise leak zero rows through the
+			// filter. Number("0.00") === 0 is true.
 			candidates.forEach(a => {
 				const row = balances[a.id];
 				if (!row) return;
 				for (let i = 0; i < visibleCompanies.length; i++) {
-					if ((row[visibleCompanies[i]] || 0) !== 0) {
-						keepNonZero.add(a.id);
-						let cur = a;
-						while (cur && cur.parent) {
-							const p = byId.get(cur.parent);
-							if (!p) break;
-							keepNonZero.add(p.id);
-							cur = p;
-						}
-						return;
+					const raw = row[visibleCompanies[i]];
+					if (raw == null) continue;
+					const n = Number(raw);
+					if (!isFinite(n) || n === 0) continue;
+					keepNonZero.add(a.id);
+					let cur = a;
+					while (cur && cur.parent) {
+						const p = byId.get(cur.parent);
+						if (!p) break;
+						keepNonZero.add(p.id);
+						cur = p;
 					}
+					return;
 				}
 			});
 			return candidates.filter(a => keepNonZero.has(a.id));

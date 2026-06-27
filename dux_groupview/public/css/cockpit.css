@@ -521,6 +521,59 @@
 	border-color: var(--rgi-text-primary);
 }
 
+/* Maximize TB — same shape as .dgv-tb-export, sits next to it */
+.dgv-tb-maximize {
+	background: transparent;
+	border: 1px solid var(--rgi-border);
+	color: var(--rgi-text-primary);
+	font-family: var(--rgi-font-sans);
+	font-size: 12px;
+	height: 30px;
+	padding: 0 12px;
+	border-radius: 3px;
+	cursor: pointer;
+	white-space: nowrap;
+}
+.dgv-tb-maximize:hover { background: var(--rgi-bg-row-alt); }
+.dgv-tb-maximize:focus-visible {
+	outline: none;
+	border-color: var(--rgi-text-primary);
+}
+
+/* Maximize-mode layout — hides everything but the TB and floats it
+   to fill the viewport. Triggered by a class on <body> so it can also
+   suppress page-level chrome (Frappe nav, sidebar, breadcrumb). */
+body.dgv-tb-maximized .rgi-header,
+body.dgv-tb-maximized .rgi-headline,
+body.dgv-tb-maximized .rgi-spotlight,
+body.dgv-tb-maximized .rgi-footer,
+body.dgv-tb-maximized .dgv-synthetic-banner,
+body.dgv-tb-maximized .navbar,
+body.dgv-tb-maximized .page-head,
+body.dgv-tb-maximized .layout-side-section,
+body.dgv-tb-maximized footer.web-footer {
+	display: none !important;
+}
+body.dgv-tb-maximized .rgi-body {
+	padding: 0 !important;
+	margin: 0 !important;
+}
+body.dgv-tb-maximized .rgi-tb {
+	margin: 0 !important;
+}
+body.dgv-tb-maximized .dgv-cockpit-shell {
+	padding: 12px 16px !important;
+	max-width: none !important;
+	width: 100% !important;
+}
+/* Stretch the pivot scroll container so it consumes whatever viewport
+   height is left after the slim toolbar -- the pivot's own
+   .pivot-container CSS sets a fixed 600px height that we need to
+   override here. */
+body.dgv-tb-maximized #pivot-grid .pivot-container {
+	height: calc(100vh - 140px) !important;
+}
+
 
 /* Table */
 
