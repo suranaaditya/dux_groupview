@@ -99,11 +99,18 @@ def _build_tb_xlsx(snapshot_date, trusts, accounts, balances):
 
 	header_font = Font(bold=True, color="FFFFFF")
 	group_font = Font(bold=True)
-	body_align = Alignment(horizontal="right", vertical="center")
 	left_align = Alignment(horizontal="left", vertical="center")
+	right_align = Alignment(horizontal="right", vertical="center")
 	wrap_center = Alignment(
 		horizontal="center", vertical="center", wrap_text=True
 	)
+	# Account labels use this much indent per depth level. 2 indent
+	# units ≈ 6 character widths in Excel -- a comfortable visual step
+	# per hierarchy level. Numeric cells mirror the same step on the
+	# right side (`indent` on a right-aligned cell pulls the value
+	# leftward), so each row visually steps inward across every column.
+	LABEL_INDENT_PER_DEPTH = 2
+	NUMBER_INDENT_PER_DEPTH = 2
 
 	# --- Row 1: title ---
 	ws.cell(row=1, column=1, value=f"Trial Balance — {snapshot_date.isoformat()}")
@@ -193,10 +200,15 @@ def _build_tb_xlsx(snapshot_date, trusts, accounts, balances):
 		depth = int(acct.get("depth") or 0)
 		is_group = bool(acct.get("is_group"))
 		row_font = group_font if is_group else None
+		num_align = Alignment(
+			horizontal="right", vertical="center",
+			indent=depth * NUMBER_INDENT_PER_DEPTH,
+		)
 
 		label = ws.cell(row=row_idx, column=1, value=acct["name"])
 		label.alignment = Alignment(
-			horizontal="left", vertical="center", indent=depth,
+			horizontal="left", vertical="center",
+			indent=depth * LABEL_INDENT_PER_DEPTH,
 		)
 		if row_font:
 			label.font = row_font
@@ -211,7 +223,7 @@ def _build_tb_xlsx(snapshot_date, trusts, accounts, balances):
 				value=v if v != 0 else None,
 			)
 			cell.number_format = _NUM_FMT
-			cell.alignment = body_align
+			cell.alignment = num_align
 			if row_font:
 				cell.font = row_font
 
@@ -220,7 +232,7 @@ def _build_tb_xlsx(snapshot_date, trusts, accounts, balances):
 			value=row_total if row_total != 0 else None,
 		)
 		total_cell.number_format = _NUM_FMT
-		total_cell.alignment = body_align
+		total_cell.alignment = num_align
 		if row_font:
 			total_cell.font = row_font
 
@@ -252,7 +264,7 @@ def _build_tb_xlsx(snapshot_date, trusts, accounts, balances):
 			value=t if t != 0 else None,
 		)
 		c.number_format = _NUM_FMT
-		c.alignment = body_align
+		c.alignment = right_align
 		c.font = group_font
 		c.fill = PatternFill("solid", fgColor="E9ECEF")
 	gc = ws.cell(
@@ -260,15 +272,20 @@ def _build_tb_xlsx(snapshot_date, trusts, accounts, balances):
 		value=grand if grand != 0 else None,
 	)
 	gc.number_format = _NUM_FMT
-	gc.alignment = body_align
+	gc.alignment = right_align
 	gc.font = group_font
 	gc.fill = PatternFill("solid", fgColor="E9ECEF")
 
 	# --- Layout polish: widths + frozen panes ---
-	ws.column_dimensions["A"].width = 48
+	# Deeper rows pull their numbers inward by `depth *
+	# NUMBER_INDENT_PER_DEPTH` character widths; without a little
+	# extra room a deep account with a wide value like
+	# "58,30,28,364.49" would crowd the column. 24 chars fits
+	# comfortably even at depth 4.
+	ws.column_dimensions["A"].width = 52
 	for i in range(n_cos):
-		ws.column_dimensions[get_column_letter(2 + i)].width = 18
-	ws.column_dimensions[get_column_letter(total_col)].width = 20
+		ws.column_dimensions[get_column_letter(2 + i)].width = 24
+	ws.column_dimensions[get_column_letter(total_col)].width = 26
 
 	# Freeze the title + two header rows AND the account column.
 	ws.freeze_panes = "B4"
