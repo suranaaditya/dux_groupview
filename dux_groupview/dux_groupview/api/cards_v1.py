@@ -221,10 +221,22 @@ def _resolve_match(match: dict, companies: list) -> list:
 		if balance_sign not in ("positive", "negative", "any"):
 			return []
 		exclude_parent_stems = conf.get("exclude_parent_stems")
+		include_acct_list = conf.get("include_account_names_in_list")
+		exclude_acct_list = conf.get("exclude_account_names_in_list")
 		st_ph, st_params = _named_in("st", stems)
 		ex_clause_unaliased, ex_clause_aliased, ex_params = (
 			_exclude_parent_stems_clauses(exclude_parent_stems)
 		)
+		# Mirror of spotlight_refresh.py: the ICD include / exclude
+		# filters added in the same PR as the ICD card. The drill must
+		# honor them too, otherwise the "View GL entries" / "By company"
+		# breakdown shows the full Unsecured Loans universe while the
+		# card aggregate only counts the ICD subset (or vice versa).
+		acct_unaliased, acct_aliased, acct_params = (
+			_account_name_list_clauses(include_acct_list, exclude_acct_list)
+		)
+		ex_clause_unaliased = (ex_clause_unaliased + " " + acct_unaliased).strip()
+		ex_clause_aliased   = (ex_clause_aliased   + " " + acct_aliased).strip()
 		return _resolve_with_optional_sign_filter(
 			tabaccount_only_sql=f"""
 				SELECT name FROM `tabAccount`
@@ -249,11 +261,55 @@ def _resolve_match(match: dict, companies: list) -> list:
 				  AND s.balance {{sign_op}} 0
 				  {ex_clause_aliased}
 			""",
-			params={"root_type": root_type, **st_params, **co_params, **ex_params},
+			params={
+				"root_type": root_type,
+				**st_params, **co_params, **ex_params, **acct_params,
+			},
 			balance_sign=balance_sign,
 		)
 
 	return []
+
+
+def _account_name_list_clauses(include_list_id, exclude_list_id):
+	"""Build account_name include/exclude SQL clauses for drill resolution.
+
+	Returns `(unaliased, aliased, params)` so the surrounding SQL
+	template (which has both no-alias and `a.`-aliased flavours) can
+	concatenate the appropriate clause. Mirrors the include/exclude
+	logic from spotlight_refresh._resolve_account_name_list. Same edge
+	cases:
+	  - include + empty/unknown list -> ` AND 1=0` (matches nothing,
+	    drill returns empty -- correct)
+	  - exclude + empty/unknown list -> no clause (no-op)
+	"""
+	parts_un, parts_al, params = [], [], {}
+	if include_list_id is not None:
+		# Lazy import to avoid a circular: spotlight_refresh imports
+		# nothing from cards_v1, so the dependency is clean here.
+		from dux_groupview.dux_groupview.snapshots.spotlight_refresh import (
+			_resolve_account_name_list,
+		)
+		names = _resolve_account_name_list(include_list_id)
+		if not names:
+			parts_un.append("AND 1=0")
+			parts_al.append("AND 1=0")
+		else:
+			ph, p = _named_in("inc", names)
+			parts_un.append(f"AND account_name IN ({ph})")
+			parts_al.append(f"AND a.account_name IN ({ph})")
+			params.update(p)
+	if exclude_list_id is not None:
+		from dux_groupview.dux_groupview.snapshots.spotlight_refresh import (
+			_resolve_account_name_list,
+		)
+		names = _resolve_account_name_list(exclude_list_id)
+		if names:
+			ph, p = _named_in("exc", names)
+			parts_un.append(f"AND account_name NOT IN ({ph})")
+			parts_al.append(f"AND a.account_name NOT IN ({ph})")
+			params.update(p)
+	return (" ".join(parts_un), " ".join(parts_al), params)
 
 
 def _exclude_parent_stems_clauses(value):
