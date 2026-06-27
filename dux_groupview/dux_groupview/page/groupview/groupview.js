@@ -1596,9 +1596,9 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 			const isGroup = !!a.is_group;
 			const value = Number(a.balance) || 0;
 			const klass = isGroup ? 'dgv-focus-row-group' : 'dgv-focus-row-leaf';
-			const balanceCell = isGroup
-				? '<td class="dgv-focus-balance"></td>'
-				: `<td class="dgv-focus-balance ${value < 0 ? 'dgv-focus-negative' : ''}">${escape(formatRupeesIndianLocal(value))}</td>`;
+			// Group rows now show their rolled-up subtree total
+			// (bubbled up server-side in focus_v1._shape_accounts).
+			const balanceCell = `<td class="dgv-focus-balance ${value < 0 ? 'dgv-focus-negative' : ''}">${escape(formatRupeesIndianLocal(value))}</td>`;
 			const $row = $(`
 				<tr class="${klass}"
 				    data-account-name="${escape(a.account_name)}"

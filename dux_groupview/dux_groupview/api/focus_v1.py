@@ -272,6 +272,14 @@ def _shape_accounts(rows):
 		depth_cache[acct_name] = d
 		return d
 
+	# Bubble leaf balances up into ancestor groups so group rows carry
+	# the roll-up total instead of 0. (The snapshot stores balances per
+	# leaf only -- group accounts have no snapshot row, so the SQL above
+	# returns 0 for them.) Same pattern as pivot.py's bubble-up. We
+	# snapshot the direct balances first so a leaf's own value never
+	# contributes to an ancestor more than once.
+	_bubble_up_balances(by_name)
+
 	# Output preserves the SQL's lft-min ordering.
 	out = []
 	for r in rows:
@@ -280,6 +288,27 @@ def _shape_accounts(rows):
 		entry["depth"] = _depth(acct_name)
 		out.append(entry)
 	return out
+
+
+def _bubble_up_balances(by_name):
+	"""Add each account's direct balance to all its ancestors in-place.
+
+	`by_name` is `{account_name: {balance, parent_account, ...}}`. The
+	bubble-up is the same invariant the pivot uses: `balance[node] =
+	own_contribution + sum(balance[child] for child in children)`. We
+	snapshot directs first to avoid double-counting if iteration order
+	is unfavorable. Used by `_shape_accounts` (on-screen view) and the
+	CSV export (`export_focused_view_csv`) so both display the same
+	rolled-up group totals.
+	"""
+	direct = {n: e["balance"] for n, e in by_name.items()}
+	for name, val in direct.items():
+		if val == 0:
+			continue
+		parent = by_name[name]["parent_account"]
+		while parent and parent in by_name:
+			by_name[parent]["balance"] += val
+			parent = by_name[parent]["parent_account"]
 
 
 def _summary_tiles(snapshot_date, co_tuple, flip_tuple):
@@ -416,13 +445,20 @@ def export_focused_view_csv(scope_type, scope_value, as_of_date):
 		as_dict=True,
 	)
 
-	# Mirror the depth-walk in _shape_accounts so the CSV's Depth
-	# column matches what the on-screen view shows.
+	# Mirror the depth-walk + bubble-up from _shape_accounts so the CSV
+	# matches what the on-screen view shows -- group rows carry the
+	# rolled-up subtree total, not their meaningless own-row 0.
 	by_name = {}
 	for r in rows:
 		acct = r["account_name"]
 		parent = _strip_company_suffix(r["parent_account_raw"]) if r["parent_account_raw"] else ""
-		by_name[acct] = {"parent": parent}
+		by_name[acct] = {
+			"parent_account": parent,  # named to match _bubble_up_balances
+			"balance": float(flt(r["balance"])),
+			"is_group": bool(int(r["is_group"] or 0)),
+		}
+
+	_bubble_up_balances(by_name)
 
 	depth_cache = {}
 
@@ -432,7 +468,7 @@ def export_focused_view_csv(scope_type, scope_value, as_of_date):
 		entry = by_name.get(acct)
 		if not entry:
 			return 0
-		parent = entry["parent"]
+		parent = entry["parent_account"]
 		if not parent or parent not in by_name:
 			depth_cache[acct] = 0
 			return 0
@@ -446,19 +482,16 @@ def export_focused_view_csv(scope_type, scope_value, as_of_date):
 	writer.writerow(CSV_HEADERS)
 
 	for r in rows:
-		balance = float(flt(r["balance"]))
-		is_group = bool(int(r["is_group"] or 0))
+		acct_name = r["account_name"] or ""
+		entry = by_name[acct_name]
+		balance = entry["balance"]
+		is_group = entry["is_group"]
 		# Sub-rupee filter on leaves only (commit 3.1).
 		if not is_group and abs(balance) < 1.0:
 			continue
-		acct_name = r["account_name"] or ""
 		root_type = r["root_type"] or ""
 		depth = _depth(acct_name)
-		# Group rows: empty Balance cell so spreadsheets show a blank
-		# rather than 0.00 (group own-row balance is meaningless --
-		# the on-screen UI also leaves it blank).
-		balance_cell = "" if is_group else f"{balance:.2f}"
-		writer.writerow([acct_name, root_type, depth, balance_cell])
+		writer.writerow([acct_name, root_type, depth, f"{balance:.2f}"])
 
 	# Compose the filename from a "<scope_type>_<scope_value>" label
 	# so the exported filename clearly identifies what was exported
