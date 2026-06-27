@@ -1,4 +1,6 @@
 /* DuxPivotGrid — virtualized pivot grid for the GroupView cockpit.
+ * Build marker: 2026-06-27 (force Frappe Cloud asset rebuild — the
+ * previous deploy left pivot_grid.js stale on the CDN).
  *
  * Reads server payload from dux_groupview.api.pivot.get_pivot_data and
  * renders it as a virtualized HTML table with:
