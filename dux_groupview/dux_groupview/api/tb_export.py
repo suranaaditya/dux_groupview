@@ -12,6 +12,7 @@ mirrors the pivot's frontend rule -- an account is included only if it
 company.
 """
 
+import json
 import re
 from datetime import datetime
 from io import BytesIO
@@ -73,6 +74,29 @@ def export_tb_xlsx(snapshot_date, companies=None):
 
 	xlsx_bytes = _build_tb_xlsx(snapshot_date, trusts, accounts, balances)
 	_send_xlsx(xlsx_bytes, snapshot_date)
+
+
+@frappe.whitelist()
+def export_focused_view_xlsx(scope_type, scope_value, as_of_date):
+	"""Stream the focused view (single company or single trust) as xlsx.
+
+	Resolves `scope_type` / `scope_value` via `focus_v1._resolve_focused_companies`
+	(which enforces the same permission + existence checks as the focused-view
+	CSV export), then reuses the regular `export_tb_xlsx` pipeline. Output
+	has one column for company focus and N columns for trust focus -- the
+	xlsx builder is already scope-agnostic.
+	"""
+	_require_cockpit_role()
+	from dux_groupview.dux_groupview.api.focus_v1 import (
+		_resolve_focused_companies,
+	)
+	companies = _resolve_focused_companies(scope_type, scope_value)
+	# Pre-resolved list goes through export_tb_xlsx's own _resolve_scope,
+	# which intersects with User Permissions again -- idempotent and safe.
+	export_tb_xlsx(
+		snapshot_date=as_of_date,
+		companies=json.dumps(companies),
+	)
 
 
 # ---------------------------------------------------------------------------

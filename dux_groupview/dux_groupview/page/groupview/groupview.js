@@ -35,6 +35,11 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 					        title="Download the focused view as CSV">
 						Export CSV
 					</button>
+					<button type="button" class="dgv-focus-export"
+					        id="dgv-focus-export-xlsx"
+					        title="Download the focused view as a formatted Excel file">
+						Download Excel
+					</button>
 					<button type="button" class="dgv-focus-close"
 					        id="dgv-focus-close"
 					        aria-label="Exit focus mode">
@@ -1130,6 +1135,21 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 		return `${base}?${params.toString()}`;
 	}
 
+	function buildFocusedViewXlsxUrl(scopeType, scopeValue, asOfDate) {
+		// Hits the focus-scoped wrapper in tb_export.py, which resolves
+		// the trust/company scope via focus_v1._resolve_focused_companies
+		// and reuses the same xlsx builder the cockpit Download Excel
+		// button uses -- so the focused view's xlsx has the same indented,
+		// trust-grouped, Indian-formatted style.
+		const base = '/api/method/dux_groupview.dux_groupview.api.tb_export.export_focused_view_xlsx';
+		const params = new URLSearchParams({
+			scope_type: scopeType,
+			scope_value: scopeValue,
+			as_of_date: asOfDate,
+		});
+		return `${base}?${params.toString()}`;
+	}
+
 	function buildTbXlsxUrl(snapshotDate, companies) {
 		const base = '/api/method/dux_groupview.dux_groupview.api.tb_export.export_tb_xlsx';
 		const params = new URLSearchParams({ snapshot_date: snapshotDate });
@@ -1527,6 +1547,36 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 			`);
 			return;
 		}
+
+		// Hide zero-balance rows. Mirrors the main TB pivot rule: any
+		// account with |balance| >= 1 paisa stays, plus the full parent
+		// chain so groups never lose their visible children. Floor at
+		// 0.01 absorbs floating-point dust without hiding any business-
+		// meaningful value.
+		const byName = new Map(accounts.map(a => [a.account_name, a]));
+		const keep = new Set();
+		accounts.forEach(a => {
+			if (Math.abs(Number(a.balance) || 0) < 0.01) return;
+			keep.add(a.account_name);
+			let cur = a;
+			while (cur && cur.parent_account) {
+				const p = byName.get(cur.parent_account);
+				if (!p) break;
+				keep.add(p.account_name);
+				cur = p;
+			}
+		});
+		const visibleAccounts = accounts.filter(a => keep.has(a.account_name));
+
+		if (!visibleAccounts.length) {
+			$body.append(`
+				<div class="dgv-focus-empty">
+					No non-zero balances for this date.
+				</div>
+			`);
+			return;
+		}
+
 		const $table = $(`
 			<table class="dgv-focus-table">
 				<thead>
@@ -1540,15 +1590,15 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 			</table>
 		`);
 		const $tbody = $table.find('tbody');
-		accounts.forEach(a => {
+		visibleAccounts.forEach(a => {
 			const depth = Math.max(0, Number(a.depth) || 0);
 			const padPx = 12 + depth * 12;
 			const isGroup = !!a.is_group;
 			const value = Number(a.balance) || 0;
 			const klass = isGroup ? 'dgv-focus-row-group' : 'dgv-focus-row-leaf';
-			const balanceCell = isGroup
-				? '<td class="dgv-focus-balance"></td>'
-				: `<td class="dgv-focus-balance ${value < 0 ? 'dgv-focus-negative' : ''}">${escape(formatRupeesIndianLocal(value))}</td>`;
+			// Group rows now show their rolled-up subtree total
+			// (bubbled up server-side in focus_v1._shape_accounts).
+			const balanceCell = `<td class="dgv-focus-balance ${value < 0 ? 'dgv-focus-negative' : ''}">${escape(formatRupeesIndianLocal(value))}</td>`;
 			const $row = $(`
 				<tr class="${klass}"
 				    data-account-name="${escape(a.account_name)}"
@@ -1688,6 +1738,16 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 			.on('click.dgv-focus-export', function() {
 				if (!focusMode) return;
 				window.location.href = buildFocusedViewCsvUrl(
+					focusMode.type, focusMode.value, currentDate
+				);
+			});
+
+		// Excel export. Same pattern as CSV; the xlsx endpoint reuses
+		// the cockpit's tb_export builder so the formatting matches.
+		$('#dgv-focus-export-xlsx').off('click.dgv-focus-export-xlsx')
+			.on('click.dgv-focus-export-xlsx', function() {
+				if (!focusMode) return;
+				window.location.href = buildFocusedViewXlsxUrl(
 					focusMode.type, focusMode.value, currentDate
 				);
 			});
