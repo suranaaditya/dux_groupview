@@ -573,22 +573,46 @@ aggregate_card_value = _aggregate
 
 
 def refresh_spotlight_cache_today(doc=None, method=None):
-	"""Thin wrapper for doc_events -- refresh today's spotlight cache.
+	"""Thin wrapper for doc_events -- refresh the latest snapshot's cache.
 
 	Frappe document event hooks pass (doc, method); the underlying
 	`refresh_spotlight_cache` takes a snapshot_date kwarg. This wrapper
 	bridges them so DGV ICD Account writes can directly trigger a
 	cache rebuild without callers having to know the signature dance.
+
+	Refreshes for the LATEST completed snapshot date rather than today()
+	-- today() may not have a snapshot yet (dev, or any prod hour
+	between scheduler runs), in which case the aggregation would
+	compute 0 against an empty row set and overwrite nothing useful.
+	The dashboard reads whatever snapshot date the user has selected,
+	which on every site is the latest-available, so refreshing that
+	date is what makes the change visible.
+
+	Historical sparkline points from earlier dates retain their
+	pre-edit values; an ICD edit doesn't retroactively rewrite history.
+	If the user wants the entire backfill recomputed they can run
+	the manual refresh from the health page.
+
 	Failures are logged (not raised) so a bad ICD edit doesn't reject
 	the underlying save.
 	"""
 	try:
-		from frappe.utils import today
-		refresh_spotlight_cache(today())
+		latest = _latest_complete_snapshot_date()
+		if latest is None:
+			return
+		refresh_spotlight_cache(latest)
 	except Exception:
 		frappe.log_error(
 			message=frappe.get_traceback(),
 			title="DGV: spotlight cache refresh from doc hook failed",
 		)
+
+
+def _latest_complete_snapshot_date():
+	row = frappe.db.sql(
+		"SELECT MAX(snapshot_date) FROM `tabDGV TB Snapshot` "
+		"WHERE status = 'Complete'"
+	)
+	return row[0][0] if row and row[0][0] else None
 prior_month_snapshot_date = _prior_month_snapshot_date
 historical_month_end_dates = _historical_month_end_dates
