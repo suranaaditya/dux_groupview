@@ -502,6 +502,25 @@
 	border-color: var(--rgi-text-primary);
 }
 
+/* Download Excel — sits to the right of the search input */
+.dgv-tb-export {
+	background: transparent;
+	border: 1px solid var(--rgi-border);
+	color: var(--rgi-text-primary);
+	font-family: var(--rgi-font-sans);
+	font-size: 12px;
+	height: 30px;
+	padding: 0 12px;
+	border-radius: 3px;
+	cursor: pointer;
+	white-space: nowrap;
+}
+.dgv-tb-export:hover { background: var(--rgi-bg-row-alt); }
+.dgv-tb-export:focus-visible {
+	outline: none;
+	border-color: var(--rgi-text-primary);
+}
+
 
 /* Table */
 
