@@ -335,6 +335,7 @@
 			const byId = this._byId;
 			const search = this.searchQuery;
 
+			let candidates;
 			if (search) {
 				// Search overrides depth + manual collapse: show every
 				// account whose name matches, plus its ancestors so the
@@ -352,13 +353,44 @@
 						}
 					}
 				});
-				return accounts.filter(a => keep.has(a.id));
+				candidates = accounts.filter(a => keep.has(a.id));
+			} else {
+				// Default mode: visible iff every ancestor in the chain is
+				// "expanded" in the merged sense (depth-default + manual
+				// overrides). See _isGroupExpanded.
+				candidates = accounts.filter(a => this._isAccountVisible(a));
 			}
 
-			// Default mode: visible iff every ancestor in the chain is
-			// "expanded" in the merged sense (depth-default + manual
-			// overrides). See _isGroupExpanded.
-			return accounts.filter(a => this._isAccountVisible(a));
+			// Hide rows whose balance is 0 across every visible column.
+			// The bubble-up invariant in pivot.py means any non-zero leaf
+			// also makes its ancestors non-zero, so the direct check is
+			// usually sufficient; we still promote ancestors of non-zero
+			// candidates as a safety net for the rare exact-offset case
+			// (children that net to 0 at the parent). This avoids orphan
+			// rows whose parent group is hidden.
+			const visibleCompanies = (this._visibleCols || [])
+				.map(c => c.company);
+			if (!visibleCompanies.length) return candidates;
+			const balances = this.data.balances || {};
+			const keepNonZero = new Set();
+			candidates.forEach(a => {
+				const row = balances[a.id];
+				if (!row) return;
+				for (let i = 0; i < visibleCompanies.length; i++) {
+					if ((row[visibleCompanies[i]] || 0) !== 0) {
+						keepNonZero.add(a.id);
+						let cur = a;
+						while (cur && cur.parent) {
+							const p = byId.get(cur.parent);
+							if (!p) break;
+							keepNonZero.add(p.id);
+							cur = p;
+						}
+						return;
+					}
+				}
+			});
+			return candidates.filter(a => keepNonZero.has(a.id));
 		}
 
 		_visibleByDepth(node) {

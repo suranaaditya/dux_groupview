@@ -127,6 +127,12 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 
 						<input type="text" class="dgv-pivot-search"
 						       placeholder="Search account…" />
+
+						<button type="button" class="dgv-tb-export"
+						        id="dgv-tb-export"
+						        title="Download the full trial balance as an Excel file">
+							Download Excel
+						</button>
 					</div>
 
 					<div id="pivot-grid"></div>
@@ -605,6 +611,18 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 			if (pivotGrid) pivotGrid.setFormat(formatSetting);
 		});
 
+		// Download Excel: browser-level navigation triggers the download
+		// directly because the endpoint sets type=binary +
+		// content-disposition (see tb_export._send_xlsx, mirrors the
+		// CSV-export pattern in gl_drill_v1._set_csv_response).
+		$('#dgv-tb-export').off('click.dgv-tb-export')
+			.on('click.dgv-tb-export', function() {
+				if (!currentDate) return;
+				window.location.href = buildTbXlsxUrl(
+					currentDate, scopeCompanies,
+				);
+			});
+
 		// Disabled view buttons (Movement / Compare): styled but do nothing.
 		$('.dgv-view-btn[disabled]').off('click').on('click', function(e) {
 			e.preventDefault();
@@ -1066,6 +1084,18 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 			scope_value: scopeValue,
 			as_of_date: asOfDate,
 		});
+		return `${base}?${params.toString()}`;
+	}
+
+	function buildTbXlsxUrl(snapshotDate, companies) {
+		const base = '/api/method/dux_groupview.dux_groupview.api.tb_export.export_tb_xlsx';
+		const params = new URLSearchParams({ snapshot_date: snapshotDate });
+		// Match the server's `_resolve_scope` contract: omit `companies`
+		// for the "all I'm allowed to see" case, send a JSON list for an
+		// explicit scope. Keeps the URL short for the common case.
+		if (Array.isArray(companies) && companies.length) {
+			params.set('companies', JSON.stringify(companies));
+		}
 		return `${base}?${params.toString()}`;
 	}
 
