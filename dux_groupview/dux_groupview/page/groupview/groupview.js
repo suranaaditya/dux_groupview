@@ -133,6 +133,12 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 						        title="Download the full trial balance as an Excel file">
 							Download Excel
 						</button>
+
+						<button type="button" class="dgv-tb-maximize"
+						        id="dgv-tb-maximize"
+						        title="Maximize the trial balance to fill the screen (Esc to exit)">
+							Maximize
+						</button>
 					</div>
 
 					<div id="pivot-grid"></div>
@@ -623,6 +629,15 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 				);
 			});
 
+		// Maximize TB: hide header / spotlight / footer and stretch the
+		// pivot to fill the viewport for side-by-side TB comparison.
+		// Session-only -- intentionally not persisted, since this is a
+		// "right now I'm comparing" mode, not a preference.
+		$('#dgv-tb-maximize').off('click.dgv-tb-maximize')
+			.on('click.dgv-tb-maximize', function() {
+				toggleTbMaximize();
+			});
+
 		// Disabled view buttons (Movement / Compare): styled but do nothing.
 		$('.dgv-view-btn[disabled]').off('click').on('click', function(e) {
 			e.preventDefault();
@@ -656,6 +671,34 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 		if (!e.detail) return;
 		openDrillFromPivot(e.detail.account, e.detail.account, [e.detail.company]);
 	}
+
+	// --- Maximize TB ---------------------------------------------------
+	// Toggles a body-level class that the CSS uses to hide header /
+	// spotlight / footer and stretch the TB to fill the viewport. Esc
+	// exits. Session-only -- not persisted to localStorage.
+	function isTbMaximized() {
+		return document.body.classList.contains('dgv-tb-maximized');
+	}
+	function setTbMaximized(on) {
+		document.body.classList.toggle('dgv-tb-maximized', !!on);
+		const $btn = $('#dgv-tb-maximize');
+		$btn.text(on ? 'Restore' : 'Maximize');
+		$btn.attr('title', on
+			? 'Exit maximize (Esc)'
+			: 'Maximize the trial balance to fill the screen (Esc to exit)');
+	}
+	function toggleTbMaximize() {
+		setTbMaximized(!isTbMaximized());
+	}
+	// Esc exits maximize mode. Registered once at page load; the
+	// `focusMode` check defers to focus mode's own UX (no Esc handler
+	// today, but if one is added later we don't want to double-fire).
+	$(document).off('keydown.dgv-tb-maximize')
+		.on('keydown.dgv-tb-maximize', function(e) {
+			if (e.key !== 'Escape') return;
+			if (!isTbMaximized()) return;
+			setTbMaximized(false);
+		});
 
 	function openDrillFromPivot(accountId, accountName, companiesOverride) {
 		if (!window.dgvOpenAccountDrillPanel) return;
