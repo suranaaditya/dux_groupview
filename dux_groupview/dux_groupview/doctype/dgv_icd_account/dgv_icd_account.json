@@ -1,0 +1,64 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "field:account_name",
+ "creation": "2026-06-27 00:00:00.000000",
+ "description": "Stripped account_name of a leaf account whose owning company treats it as an Inter-College Deposit (ICD) rather than an external unsecured loan. Used by the ICD spotlight card to split the Unsecured Loans subtree.",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "account_name"
+ ],
+ "fields": [
+  {
+   "description": "Stripped account_name (the name without the ' - <company_abbr>' suffix). Must exactly match the account_name column on tabAccount for at least one leaf under the Unsecured Loans subtree.",
+   "fieldname": "account_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Account Name",
+   "reqd": 1,
+   "search_index": 1,
+   "set_only_once": 1,
+   "unique": 1
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-06-27 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Dux GroupView",
+ "name": "DGV ICD Account",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "report": 1,
+   "role": "GroupView Owner",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "read": 1,
+   "report": 1,
+   "role": "GroupView Viewer"
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "account_name",
+ "sort_order": "ASC",
+ "states": [],
+ "track_changes": 1
+}

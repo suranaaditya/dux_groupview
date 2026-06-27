@@ -147,14 +147,19 @@ app_include_css = [
 # Document Events
 # ---------------
 # Hook on document methods and events
-
-# doc_events = {
-# 	"*": {
-# 		"on_update": "method",
-# 		"on_cancel": "method",
-# 		"on_trash": "method"
-# 	}
-# }
+#
+# `DGV ICD Account` writes refresh the spotlight cache so the ICD /
+# Unsecured Loans card split takes effect immediately when an account
+# is added or removed via the desk list view. The /app/dgv-icd-mapping
+# settings page batch-writes via raw SQL and triggers ONE manual
+# refresh at the end (api/icd_settings.save_icd_list) -- these hooks
+# are the slow-path fallback for ad-hoc single-row edits.
+doc_events = {
+	"DGV ICD Account": {
+		"on_update": "dux_groupview.dux_groupview.snapshots.spotlight_refresh.refresh_spotlight_cache_today",
+		"on_trash":  "dux_groupview.dux_groupview.snapshots.spotlight_refresh.refresh_spotlight_cache_today",
+	}
+}
 
 # Scheduled Tasks
 # ---------------

@@ -144,6 +144,12 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 						        title="Maximize the trial balance to fill the screen (Esc to exit)">
 							Maximize
 						</button>
+
+						<button type="button" class="dgv-tb-icd-config"
+						        id="dgv-tb-icd-config"
+						        title="Manage which accounts are classified as ICD (inter-college deposits)">
+							Configure ICD
+						</button>
 					</div>
 
 					<div id="pivot-grid"></div>
@@ -641,6 +647,14 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 		$('#dgv-tb-maximize').off('click.dgv-tb-maximize')
 			.on('click.dgv-tb-maximize', function() {
 				toggleTbMaximize();
+			});
+
+		// Configure ICD: opens the curation page for splitting Unsecured
+		// Loans into ICD vs external. Owner-only page (Frappe handles
+		// the permission gate via the page's roles array).
+		$('#dgv-tb-icd-config').off('click.dgv-tb-icd-config')
+			.on('click.dgv-tb-icd-config', function() {
+				frappe.set_route('dgv-icd-mapping');
 			});
 
 		// Disabled view buttons (Movement / Compare): styled but do nothing.

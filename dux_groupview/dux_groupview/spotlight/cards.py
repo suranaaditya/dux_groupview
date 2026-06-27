@@ -228,6 +228,13 @@ CARDS = [
 			# new (correct) value lands on top of historical (wrong)
 			# values. Pre-warned in the PR description.
 			#
+			# `exclude_account_names_in_list: "icd"` (added when the
+			# ICD card shipped): drops any account flagged in
+			# DGV ICD Account so this card shows only external
+			# unsecured loans -- internal inter-college deposits live
+			# in the separate `icd` card. Empty ICD list is a no-op
+			# (the card behaves like before, gross of ICD).
+			#
 			# Known gap: 31 suppliers in the "Unsecured Loan Lenders"
 			# supplier_group currently post to leaves under other
 			# parents (mostly "Current Liabilities") and are NOT
@@ -239,11 +246,32 @@ CARDS = [
 			"by_parent_account_stem_in": {
 				"stems": ["Unsecured Loans"],
 				"root_type": "Liability",
+				"exclude_account_names_in_list": "icd",
 			},
 		},
 		"polarity": "neutral",
 		"format": "crore",
 		"color": "#5F5E5A",
+	},
+	{
+		"id": "icd",
+		"label": "ICD (inter-college deposits)",
+		"match": {
+			# Same Unsecured Loans subtree as `unsecured_loans`, but
+			# intersected with the configured ICD account list. The
+			# settings page (/app/dgv-icd-mapping) maintains the
+			# DGV ICD Account doctype that backs this filter.
+			# Empty list -> the `include_account_names_in_list`
+			# handler emits `AND 1=0`, so the card aggregates to 0.
+			"by_parent_account_stem_in": {
+				"stems": ["Unsecured Loans"],
+				"root_type": "Liability",
+				"include_account_names_in_list": "icd",
+			},
+		},
+		"polarity": "neutral",
+		"format": "crore",
+		"color": "#0E7C7B",
 	},
 	{
 		"id": "cash_and_bank",

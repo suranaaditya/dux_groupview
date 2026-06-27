@@ -209,6 +209,46 @@ def _apply_display_sign(card, value):
 
 
 
+def _resolve_account_name_list(list_id):
+	"""Resolve a card-level account-name list reference to actual names.
+
+	Currently supports one source -- the `DGV ICD Account` doctype,
+	keyed as `"icd"`. Adding new lists later means adding a branch here
+	(and a doctype, or a hardcoded constant, or wherever the names
+	come from). Returns a list of stripped account_name values, or
+	None if the list_id is unrecognised (caller treats as a defensive
+	"match nothing" -- safer than silently aggregating the universe).
+	"""
+	if list_id == "icd":
+		# DGV ICD Account stores one row per ICD-flagged account, with
+		# `account_name` as the (stripped) value. Empty table -> []
+		# (caller turns this into a "match nothing" clause for include,
+		# or a no-op for exclude).
+		return frappe.db.sql_list(
+			"SELECT account_name FROM `tabDGV ICD Account`"
+		)
+	return None
+
+
+def _named_account_names(prefix, value):
+	"""Validate + name-bind a list of stripped account_names.
+
+	Mirrors `_named_ex_stems` shape (returns "" + {} when there's
+	nothing to bind). `prefix` lets callers avoid placeholder
+	collisions when one predicate uses two name lists (include + ex)
+	in the same WHERE.
+	"""
+	if not isinstance(value, list) or not value:
+		return ("", {})
+	if not all(isinstance(x, str) for x in value):
+		return ("", {})
+	placeholders = ", ".join(
+		f"%({prefix}_{i})s" for i in range(len(value))
+	)
+	params = {f"{prefix}_{i}": x for i, x in enumerate(value)}
+	return (placeholders, params)
+
+
 def _named_ex_stems(value):
 	"""Validate and name-bind an `exclude_parent_stems` value.
 
@@ -387,6 +427,39 @@ def _match_clause(card):
 				f"NOT IN ({ex_placeholders})"
 			)
 			params.update(ex_params)
+
+		# Optional ICD-list filters (used to split Unsecured Loans into
+		# ICD vs external). Resolved from `DGV ICD Account` at query
+		# time so card aggregates reflect the latest settings without a
+		# code change.
+		#
+		#   include_account_names_in_list: "icd" -> AND account_name IN (...)
+		#   exclude_account_names_in_list: "icd" -> AND account_name NOT IN (...)
+		#
+		# Edge cases:
+		#   - include + empty list -> 1=0 (card aggregates to 0;
+		#     correct: nothing flagged ICD => ICD card is zero)
+		#   - exclude + empty list -> no clause (card unchanged;
+		#     correct: nothing flagged ICD => Unsecured Loans intact)
+		#   - unknown list_id -> 1=0 for include, no-op for exclude
+		#     (defensive: never silently widen scope)
+		include_list_id = conf.get("include_account_names_in_list")
+		exclude_list_id = conf.get("exclude_account_names_in_list")
+		if include_list_id is not None:
+			names = _resolve_account_name_list(include_list_id)
+			if not names:
+				exclusion_sql += " AND 1=0"
+			else:
+				ph, p = _named_account_names("inc", names)
+				exclusion_sql += f" AND account_name IN ({ph})"
+				params.update(p)
+		if exclude_list_id is not None:
+			names = _resolve_account_name_list(exclude_list_id)
+			if names:
+				ph, p = _named_account_names("exc", names)
+				exclusion_sql += f" AND account_name NOT IN ({ph})"
+				params.update(p)
+
 		clause = (
 			"account IN ("
 			"SELECT name FROM `tabAccount` "
@@ -497,5 +570,25 @@ def _upsert(card_id, snapshot_date, value, delta, delta_percent,
 # ---------------------------------------------------------------------------
 
 aggregate_card_value = _aggregate
+
+
+def refresh_spotlight_cache_today(doc=None, method=None):
+	"""Thin wrapper for doc_events -- refresh today's spotlight cache.
+
+	Frappe document event hooks pass (doc, method); the underlying
+	`refresh_spotlight_cache` takes a snapshot_date kwarg. This wrapper
+	bridges them so DGV ICD Account writes can directly trigger a
+	cache rebuild without callers having to know the signature dance.
+	Failures are logged (not raised) so a bad ICD edit doesn't reject
+	the underlying save.
+	"""
+	try:
+		from frappe.utils import today
+		refresh_spotlight_cache(today())
+	except Exception:
+		frappe.log_error(
+			message=frappe.get_traceback(),
+			title="DGV: spotlight cache refresh from doc hook failed",
+		)
 prior_month_snapshot_date = _prior_month_snapshot_date
 historical_month_end_dates = _historical_month_end_dates
