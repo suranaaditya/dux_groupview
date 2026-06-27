@@ -28,7 +28,7 @@ import re
 
 import frappe
 from frappe import _
-from frappe.utils import flt, today
+from frappe.utils import flt
 
 from dux_groupview.dux_groupview.api.pivot import _require_cockpit_role
 from dux_groupview.dux_groupview.api.utils import FLIP_ROOT_TYPES
@@ -209,13 +209,20 @@ def save_icd_list(account_names):
 		)
 	frappe.db.commit()
 
-	# Single cache refresh after all writes.
+	# Single cache refresh after all writes. Target the latest completed
+	# snapshot date (what the dashboard reads), not today() -- today
+	# may not have a snapshot yet on dev or between scheduler runs, and
+	# refreshing the cache against an empty row set would just write
+	# zeros. The latest snapshot is what the user sees on the cockpit.
 	if to_add or to_remove:
 		from dux_groupview.dux_groupview.snapshots.spotlight_refresh import (
+			_latest_complete_snapshot_date,
 			refresh_spotlight_cache,
 		)
 		try:
-			refresh_spotlight_cache(today())
+			target = _latest_complete_snapshot_date()
+			if target is not None:
+				refresh_spotlight_cache(target)
 		except Exception:
 			frappe.log_error(
 				message=frappe.get_traceback(),
