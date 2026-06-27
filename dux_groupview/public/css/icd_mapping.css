@@ -1,0 +1,258 @@
+/* ICD Mapping settings page styles.
+ *
+ * Visual language follows the cockpit (cockpit.css): cream surface,
+ * navy text, terracotta accent for negatives, soft borders. The page
+ * is a one-screen curation UI -- header, filters, scrollable table,
+ * orphans section.
+ */
+
+.dgv-icd-shell {
+	padding: 24px 32px;
+	max-width: 1280px;
+	margin: 0 auto;
+	font-family: var(--rgi-font-sans, "Inter", "Segoe UI", system-ui, sans-serif);
+	color: var(--rgi-text-primary, #1B2A4E);
+}
+
+.dgv-icd-header {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 24px;
+	margin-bottom: 20px;
+	border-bottom: 1px solid var(--rgi-border, #E4DFD6);
+	padding-bottom: 16px;
+}
+
+.dgv-icd-title-block {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.dgv-icd-back {
+	background: transparent;
+	border: none;
+	color: var(--rgi-text-secondary, #5F5E5A);
+	font-size: 13px;
+	padding: 0;
+	margin-bottom: 4px;
+	cursor: pointer;
+	text-align: left;
+	align-self: flex-start;
+}
+.dgv-icd-back:hover { color: var(--rgi-text-primary, #1B2A4E); }
+
+.dgv-icd-title {
+	font-size: 22px;
+	font-weight: 600;
+	margin: 0;
+}
+
+.dgv-icd-subtitle {
+	font-size: 13px;
+	color: var(--rgi-text-secondary, #5F5E5A);
+}
+
+.dgv-icd-toolbar {
+	display: flex;
+	gap: 8px;
+	flex-shrink: 0;
+}
+
+.dgv-icd-btn {
+	background: transparent;
+	border: 1px solid var(--rgi-border, #E4DFD6);
+	color: var(--rgi-text-primary, #1B2A4E);
+	font-family: inherit;
+	font-size: 13px;
+	height: 32px;
+	padding: 0 14px;
+	border-radius: 4px;
+	cursor: pointer;
+	white-space: nowrap;
+}
+.dgv-icd-btn:hover { background: var(--rgi-bg-row-alt, #F5F1E8); }
+.dgv-icd-btn:focus-visible {
+	outline: none;
+	border-color: var(--rgi-text-primary, #1B2A4E);
+}
+
+.dgv-icd-btn-primary {
+	background: var(--rgi-text-primary, #1B2A4E);
+	color: #FFFFFF;
+	border-color: var(--rgi-text-primary, #1B2A4E);
+}
+.dgv-icd-btn-primary:hover {
+	background: #0F1933;
+	color: #FFFFFF;
+}
+
+/* Filters + search row */
+
+.dgv-icd-controls {
+	display: flex;
+	align-items: center;
+	gap: 16px;
+	margin-bottom: 12px;
+	flex-wrap: wrap;
+}
+
+.dgv-icd-filters {
+	display: inline-flex;
+	border: 1px solid var(--rgi-border, #E4DFD6);
+	border-radius: 3px;
+	overflow: hidden;
+}
+
+.dgv-icd-filter {
+	background: transparent;
+	border: none;
+	border-right: 1px solid var(--rgi-border, #E4DFD6);
+	color: var(--rgi-text-secondary, #5F5E5A);
+	font-family: inherit;
+	font-size: 12px;
+	height: 30px;
+	padding: 0 12px;
+	cursor: pointer;
+}
+.dgv-icd-filter:last-child { border-right: none; }
+.dgv-icd-filter:hover { background: var(--rgi-bg-row-alt, #F5F1E8); }
+.dgv-icd-filter-active {
+	background: var(--rgi-text-primary, #1B2A4E);
+	color: #FFFFFF;
+}
+.dgv-icd-filter-active:hover {
+	background: var(--rgi-text-primary, #1B2A4E);
+}
+
+.dgv-icd-search {
+	flex: 1;
+	max-width: 320px;
+	height: 30px;
+	border: 1px solid var(--rgi-border, #E4DFD6);
+	border-radius: 3px;
+	padding: 0 10px;
+	font-size: 12px;
+	font-family: inherit;
+	background: var(--rgi-bg-surface, #FFFFFF);
+}
+.dgv-icd-search:focus {
+	outline: none;
+	border-color: var(--rgi-text-primary, #1B2A4E);
+}
+
+.dgv-icd-counts {
+	margin-left: auto;
+	font-size: 12px;
+	color: var(--rgi-text-secondary, #5F5E5A);
+}
+
+/* Table */
+
+.dgv-icd-table-wrap {
+	border: 1px solid var(--rgi-border, #E4DFD6);
+	border-radius: 4px;
+	max-height: 65vh;
+	overflow-y: auto;
+	background: var(--rgi-bg-surface, #FFFFFF);
+}
+
+.dgv-icd-table {
+	width: 100%;
+	border-collapse: collapse;
+	font-size: 13px;
+}
+
+.dgv-icd-table thead {
+	position: sticky;
+	top: 0;
+	background: var(--rgi-bg-row-alt, #F5F1E8);
+	z-index: 1;
+}
+
+.dgv-icd-table th {
+	font-weight: 600;
+	color: var(--rgi-text-secondary, #5F5E5A);
+	text-transform: uppercase;
+	font-size: 11px;
+	letter-spacing: 0.4px;
+	padding: 10px 12px;
+	text-align: left;
+	border-bottom: 1px solid var(--rgi-border, #E4DFD6);
+}
+
+.dgv-icd-th-toggle    { width: 44px; text-align: center; }
+.dgv-icd-th-balance   { width: 140px; text-align: right; }
+.dgv-icd-th-companies { width: 110px; text-align: right; }
+.dgv-icd-th-where     { width: 30%; }
+
+.dgv-icd-table td {
+	padding: 8px 12px;
+	border-bottom: 1px solid #F0EBE0;
+	vertical-align: middle;
+}
+.dgv-icd-table tr:hover td { background: var(--rgi-bg-row-alt, #F5F1E8); }
+
+.dgv-icd-td-toggle    { text-align: center; }
+.dgv-icd-td-name      { font-weight: 500; }
+.dgv-icd-td-balance   {
+	text-align: right;
+	font-variant-numeric: tabular-nums;
+}
+.dgv-icd-td-companies {
+	text-align: right;
+	color: var(--rgi-text-secondary, #5F5E5A);
+}
+.dgv-icd-td-where {
+	color: var(--rgi-text-secondary, #5F5E5A);
+	font-size: 12px;
+}
+.dgv-icd-neg { color: var(--rgi-text-negative, #C8553D); }
+
+.dgv-icd-empty {
+	text-align: center;
+	color: var(--rgi-text-secondary, #5F5E5A);
+	padding: 24px;
+	font-style: italic;
+}
+
+/* Orphans section */
+
+.dgv-icd-orphans {
+	margin-top: 24px;
+	padding: 16px 20px;
+	border: 1px dashed #D8A800;
+	border-radius: 4px;
+	background: #FFFAEB;
+}
+
+.dgv-icd-orphans-title {
+	font-size: 14px;
+	font-weight: 600;
+	margin: 0 0 4px;
+	color: #6E5500;
+}
+
+.dgv-icd-orphans-help {
+	font-size: 12px;
+	color: #6E5500;
+	margin-bottom: 8px;
+}
+
+.dgv-icd-orphans-list {
+	list-style: none;
+	padding: 0;
+	margin: 0;
+}
+
+.dgv-icd-orphan {
+	padding: 4px 0;
+	font-size: 13px;
+}
+.dgv-icd-orphan label {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	cursor: pointer;
+}

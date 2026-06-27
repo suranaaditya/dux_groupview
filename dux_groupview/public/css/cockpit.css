@@ -540,6 +540,25 @@
 	border-color: var(--rgi-text-primary);
 }
 
+/* Configure ICD — owner-only settings entry point */
+.dgv-tb-icd-config {
+	background: transparent;
+	border: 1px solid var(--rgi-border);
+	color: var(--rgi-text-primary);
+	font-family: var(--rgi-font-sans);
+	font-size: 12px;
+	height: 30px;
+	padding: 0 12px;
+	border-radius: 3px;
+	cursor: pointer;
+	white-space: nowrap;
+}
+.dgv-tb-icd-config:hover { background: var(--rgi-bg-row-alt); }
+.dgv-tb-icd-config:focus-visible {
+	outline: none;
+	border-color: var(--rgi-text-primary);
+}
+
 /* Maximize-mode layout — hides everything but the TB and floats it
    to fill the viewport. Triggered by a class on <body> so it can also
    suppress page-level chrome (Frappe nav, sidebar, breadcrumb). */
