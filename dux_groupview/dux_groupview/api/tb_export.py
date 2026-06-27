@@ -104,11 +104,16 @@ def _build_tb_xlsx(snapshot_date, trusts, accounts, balances):
 	wrap_center = Alignment(
 		horizontal="center", vertical="center", wrap_text=True
 	)
-	# Account labels use this much indent per depth level. 2 indent
-	# units ≈ 6 character widths in Excel -- a comfortable visual step
-	# per hierarchy level. Numeric cells mirror the same step on the
-	# right side (`indent` on a right-aligned cell pulls the value
-	# leftward), so each row visually steps inward across every column.
+	# Both labels and value cells indent on their LEFT edge by this
+	# many units per depth level -- so a deep account's number steps
+	# inward in the same direction its label does (root flush, leaves
+	# pushed right). 2 indent units ≈ 6 character widths in Excel.
+	#
+	# Trade-off: numeric cells are left-aligned to receive the indent;
+	# decimal points across mixed-depth rows therefore don't line up
+	# in a vertical column. The hierarchy cue beats decimal alignment
+	# for this view -- users wanting strict decimal alignment can
+	# select the data and re-align in Excel.
 	LABEL_INDENT_PER_DEPTH = 2
 	NUMBER_INDENT_PER_DEPTH = 2
 
@@ -201,7 +206,7 @@ def _build_tb_xlsx(snapshot_date, trusts, accounts, balances):
 		is_group = bool(acct.get("is_group"))
 		row_font = group_font if is_group else None
 		num_align = Alignment(
-			horizontal="right", vertical="center",
+			horizontal="left", vertical="center",
 			indent=depth * NUMBER_INDENT_PER_DEPTH,
 		)
 
