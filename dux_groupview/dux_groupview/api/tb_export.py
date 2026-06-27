@@ -182,19 +182,31 @@ def _build_tb_xlsx(snapshot_date, trusts, accounts, balances):
 			c: float(flt(v)) * flip for c, v in row.items()
 		}
 
+	# Hide rows whose displayed value is 0. Check the SUM across visible
+	# companies, not each cell individually -- per-cell would keep
+	# "offsetting" rows where +X and -X net to 0 in the Group Total but
+	# each cell is non-zero. Those rows look like all dashes in the
+	# displayed total and users (correctly) expect them hidden. 0.01
+	# threshold absorbs floating-point dust without hiding any
+	# business-meaningful value. Mirrors the JS rule in pivot_grid.js
+	# _visibleAccounts().
 	visible_companies = [c for (_t, _n, _col, c) in company_cols]
 	keep = set()
 	for acct in accounts:
 		row = flipped.get(acct["id"]) or {}
-		if any((row.get(c) or 0) != 0 for c in visible_companies):
-			keep.add(acct["id"])
-			cur = acct
-			while cur.get("parent"):
-				p = by_id.get(cur["parent"])
-				if not p:
-					break
-				keep.add(p["id"])
-				cur = p
+		row_sum = sum(
+			float(row.get(c) or 0) for c in visible_companies
+		)
+		if abs(row_sum) < 0.01:
+			continue
+		keep.add(acct["id"])
+		cur = acct
+		while cur.get("parent"):
+			p = by_id.get(cur["parent"])
+			if not p:
+				break
+			keep.add(p["id"])
+			cur = p
 
 	# --- Data rows ---
 	row_idx = 4

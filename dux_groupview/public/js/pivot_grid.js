@@ -361,42 +361,50 @@
 				candidates = accounts.filter(a => this._isAccountVisible(a));
 			}
 
-			// Hide rows whose balance is 0 across every visible column.
-			// The bubble-up invariant in pivot.py means any non-zero leaf
-			// also makes its ancestors non-zero, so the direct check is
-			// usually sufficient; we still promote ancestors of non-zero
-			// candidates as a safety net for the rare exact-offset case
-			// (children that net to 0 at the parent). This avoids orphan
-			// rows whose parent group is hidden.
+			// Hide rows whose displayed value is 0. We check the SUM across
+			// visible columns rather than each cell individually -- the
+			// per-cell check would keep "offsetting" rows where +X in one
+			// company and -X in another net to 0 in the Group Total but
+			// each individual cell is non-zero. Those rows show as all
+			// dashes in the displayed total, so users (correctly) expect
+			// them hidden.
+			//
+			// Ancestor promotion: any non-zero-sum account keeps its full
+			// parent chain so groups never lose their children. The
+			// bubble-up invariant in pivot.py guarantees that if any
+			// descendant has a non-zero contribution to the group's sum,
+			// the group's sum is also non-zero (otherwise the group's
+			// descendants must also exactly offset). So the promotion is
+			// mostly a no-op safety net.
 			const visibleCompanies = (this._visibleCols || [])
 				.map(c => c.company);
 			if (!visibleCompanies.length) return candidates;
 			const balances = this.data.balances || {};
-			const keepNonZero = new Set();
+			const keep = new Set();
 			// Coerce to Number explicitly: Frappe occasionally serializes
-			// decimals as strings, and `"0.00" !== 0` is true (different
-			// types), which would otherwise leak zero rows through the
-			// filter. Number("0.00") === 0 is true.
+			// decimals as strings, and string arithmetic would concat
+			// instead of sum. Number("0.00") === 0 is correct.
 			candidates.forEach(a => {
 				const row = balances[a.id];
 				if (!row) return;
+				let sum = 0;
 				for (let i = 0; i < visibleCompanies.length; i++) {
-					const raw = row[visibleCompanies[i]];
-					if (raw == null) continue;
-					const n = Number(raw);
-					if (!isFinite(n) || n === 0) continue;
-					keepNonZero.add(a.id);
-					let cur = a;
-					while (cur && cur.parent) {
-						const p = byId.get(cur.parent);
-						if (!p) break;
-						keepNonZero.add(p.id);
-						cur = p;
-					}
-					return;
+					const n = Number(row[visibleCompanies[i]]);
+					if (isFinite(n)) sum += n;
+				}
+				// 1-paisa floor absorbs floating-point dust without hiding
+				// any business-meaningful value.
+				if (Math.abs(sum) < 0.01) return;
+				keep.add(a.id);
+				let cur = a;
+				while (cur && cur.parent) {
+					const p = byId.get(cur.parent);
+					if (!p) break;
+					keep.add(p.id);
+					cur = p;
 				}
 			});
-			return candidates.filter(a => keepNonZero.has(a.id));
+			return candidates.filter(a => keep.has(a.id));
 		}
 
 		_visibleByDepth(node) {
