@@ -1,0 +1,22 @@
+{
+  "name": "GroupView",
+  "short_name": "GroupView",
+  "description": "Group financial administration cockpit",
+  "start_url": "/app/groupview",
+  "scope": "/app",
+  "display": "standalone",
+  "background_color": "#F5F1E8",
+  "theme_color": "#1B2A4E",
+  "icons": [
+    {
+      "src": "/assets/dux_groupview/pwa/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/assets/dux_groupview/pwa/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
