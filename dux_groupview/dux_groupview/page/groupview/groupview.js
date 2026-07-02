@@ -8,6 +8,35 @@ frappe.pages['groupview'].on_page_load = function(wrapper) {
 	$(wrapper).find('.page-head').hide();
 	$(wrapper).find('.page-title').hide();
 
+	// Home-screen app support (iPad / Android "Add to Home Screen").
+	// Injected at page load rather than via hooks so the tags only
+	// exist when the user is ON the cockpit — iOS reads the DOM at the
+	// moment the user taps "Add to Home Screen", so adding from this
+	// page yields a branded standalone app named "GroupView" that
+	// opens straight to /app/groupview (manifest start_url). Any
+	// pre-existing desk manifest link is replaced so ours wins.
+	if (!document.querySelector('link[data-dgv-pwa]')) {
+		document.querySelectorAll('link[rel="manifest"]')
+			.forEach((el) => el.remove());
+		const head = document.head;
+		const tags = [
+			['link', { rel: 'manifest',
+			           href: '/assets/dux_groupview/pwa/manifest.json' }],
+			['link', { rel: 'apple-touch-icon',
+			           href: '/assets/dux_groupview/pwa/icon-180.png' }],
+			['meta', { name: 'apple-mobile-web-app-capable', content: 'yes' }],
+			['meta', { name: 'apple-mobile-web-app-status-bar-style',
+			           content: 'default' }],
+			['meta', { name: 'apple-mobile-web-app-title', content: 'GroupView' }],
+		];
+		tags.forEach(([tag, attrs]) => {
+			const el = document.createElement(tag);
+			Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, v));
+			el.setAttribute('data-dgv-pwa', '1');
+			head.appendChild(el);
+		});
+	}
+
 	const $body = $(wrapper).find('.layout-main-section').empty();
 
 	$body.html(`
