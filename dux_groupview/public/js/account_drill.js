@@ -611,37 +611,47 @@
 		});
 		bindTrendTooltip(trendHost);
 
-		// Hide the by-company section when scope is a single company.
-		// Same conditional-render rationale as by-party for non-trackable
-		// accounts: a one-row "By company" table adds no information when
-		// the user's scope is already a single entity. Multi-company scope
-		// with one active company still renders ("only X moved" is useful
-		// information; we trigger off the scope, not the result size).
+		// By-company section renders for every scope size. It used to be
+		// hidden for single-company scopes ("a one-row table adds no
+		// information") -- but the company row is also the ONLY gateway
+		// to the per-account breakdown (click to expand), so hiding it
+		// left single-company drills with no account-level detail at
+		// all. Instead: always render, and for a single-company scope
+		// auto-expand the lone row so the detail is immediately visible
+		// without an extra click.
 		var coSection = bodyEl.querySelector('.dgv-drill-by-company');
 		var isSingleCoScope = Array.isArray(args.companies)
 		                     && args.companies.length === 1;
-		if (isSingleCoScope) {
-			coSection.hidden = true;
-			coHost.innerHTML = '';
-		} else {
-			coSection.hidden = false;
-			coHost.innerHTML = renderCompanyBreakdownTable(data.by_company || [], {
-				showSparklines: false,
-				maxNameLength: null,
-				expandable: true,
+		coSection.hidden = false;
+		coHost.innerHTML = renderCompanyBreakdownTable(data.by_company || [], {
+			showSparklines: false,
+			maxNameLength: null,
+			expandable: true,
+		});
+		bindCompanyRowExpansion(coHost, args, ctx);
+		// Re-apply any pending expansions (returntrip restore path).
+		if (pendingExpansion && pendingExpansion.length) {
+			var pending = pendingExpansion;
+			pendingExpansion = null;
+			pending.forEach(function (co) {
+				var tr = coHost.querySelector(
+					'tr.dgv-drill-co-row[data-company="' +
+					cssEscape(co) + '"]'
+				);
+				if (tr) toggleCompanyExpansion(tr, args, ctx);
 			});
-			bindCompanyRowExpansion(coHost, args, ctx);
-			// Re-apply any pending expansions (returntrip restore path).
-			if (pendingExpansion && pendingExpansion.length) {
-				var pending = pendingExpansion;
-				pendingExpansion = null;
-				pending.forEach(function (co) {
-					var tr = coHost.querySelector(
-						'tr.dgv-drill-co-row[data-company="' +
-						cssEscape(co) + '"]'
-					);
-					if (tr) toggleCompanyExpansion(tr, args, ctx);
-				});
+		}
+		// Single-company auto-expand. Runs after the returntrip replay
+		// and guards on expandedCompanies so we never double-toggle
+		// (toggle on an already-expanded row would collapse it).
+		if (isSingleCoScope) {
+			var loneRow = coHost.querySelector(
+				'tr.dgv-drill-co-row[data-company]');
+			if (loneRow) {
+				var loneCo = loneRow.getAttribute('data-company');
+				if (loneCo && !expandedCompanies.has(loneCo)) {
+					toggleCompanyExpansion(loneRow, args, ctx);
+				}
 			}
 		}
 
